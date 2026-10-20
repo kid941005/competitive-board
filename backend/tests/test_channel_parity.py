@@ -46,7 +46,8 @@ from app.audit import AuditLog, parse_changes  # noqa: E402
 from app.compare import format_number, metric_applies  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
 from app.importer import import_rows, import_xlsx  # noqa: E402
-from app.main import _default_selection, app  # noqa: E402
+from app.main import app  # noqa: E402
+from app.selection import _default_selection  # noqa: E402
 from app.models import Entity, Product, ProductSpec, SpecMetric, SpecSource  # noqa: E402
 from app.seed import seed  # noqa: E402
 from app.timeutil import fmt_local  # noqa: E402

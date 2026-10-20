@@ -436,18 +436,21 @@ def import_rows(
             session.add(existing)
         else:
             old_value = None
-            session.add(
-                ProductSpec(
-                    product_id=product.id,
-                    metric_id=metric.id,
-                    value_num=new_num,
-                    value_text=new_text,
-                    condition=new_cond,
-                    source_id=source_for(row.get("来源链接", "")).id,
-                    confidence=_confidence(row.get("置信度", "")),
-                    verified=False,
-                )
+            created = ProductSpec(
+                product_id=product.id,
+                metric_id=metric.id,
+                value_num=new_num,
+                value_text=new_text,
+                condition=new_cond,
+                source_id=source_for(row.get("来源链接", "")).id,
+                confidence=_confidence(row.get("置信度", "")),
+                verified=False,
             )
+            session.add(created)
+            # 登记进缓存：同一份表里同一指标写了两行时，第二行应「更新刚建的那条」，
+            # 而不是再插一条。数据库现在有 (product_id, metric_id) 唯一索引，
+            # 不这样做整批会因唯一冲突回滚。
+            specs_of(product.id)[metric.id] = created  # type: ignore[index]
         report.written_specs += 1
         report.details.append({
             "model": model,

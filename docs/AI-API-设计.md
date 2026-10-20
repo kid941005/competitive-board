@@ -104,6 +104,7 @@
 | `ENTITY_EXISTS` / `ENTITY_SIMILAR` | 409 | 公司同名 / 近名 |
 | `CATEGORY_CONFLICT` | 409 | 型号跨大类、指标不适用 |
 | `CONFLICT_VERSION` | 409 | `If-Match` 与当前 `ETag` 不符 |
+| `UNIQUE_CONFLICT` | 409 | 唯一索引兜底被触发（并发写同一型号/同一格），重试即可 |
 | `CONFIRM_REQUIRED` | 400 | 危险操作缺 `confirm=true` |
 
 ### 3.2 三个典型调用

@@ -42,6 +42,7 @@ from .db import get_session
 from .importer import import_rows
 from .models import ApiIdempotency, Entity, Product, ProductSpec, SpecMetric
 from .numeric import clamp_confidence
+from .selection import _matrix_payload, _parse_ids
 from .sanitize import safe_url
 from .timeutil import iso_utc
 
@@ -58,6 +59,8 @@ E: dict[str, int] = {
     "ENTITY_SIMILAR": 409,
     "CATEGORY_CONFLICT": 409,
     "CONFLICT_VERSION": 409,
+    # 唯一索引兜底：并发提交同一型号/同一参数，或迁移后仍有重复数据
+    "UNIQUE_CONFLICT": 409,
     "CONFIRM_REQUIRED": 400,
 }
 
@@ -595,8 +598,6 @@ def get_matrix(
     session: Session = Depends(get_session),
 ):
     """复用页面那套矩阵计算，保证「AI 看到的」与「人看到的」是同一份数据。"""
-    from .main import _matrix_payload, _parse_ids  # 局部导入：避免与 main 循环依赖
-
     products = list(session.exec(select(Product)).all())
     sset = settings_store.all_values(session)
     ids = _parse_ids(
@@ -976,12 +977,17 @@ def batch_specs(
             session.add(existing)
             action = "updated"
         else:
-            session.add(ProductSpec(
+            created = ProductSpec(
                 product_id=product.id, metric_id=metric.id,
                 value_num=num, value_text=text, condition=item.condition,
                 confidence=clamp_confidence(item.confidence),
                 verified=item.verified,
-            ))
+            )
+            session.add(created)
+            # 同一批里重复提交同一 (型号, 指标) 时，第二项应更新第一项，
+            # 否则会撞上 (product_id, metric_id) 唯一索引，整批 500。
+            specs_by_key[(product.id, metric.id)] = created  # type: ignore[index]
+            specs_by_pid.setdefault(product.id, []).append(created)  # type: ignore[arg-type]
             action = "created"
         applied += 1
         results.append({**base, "ok": True, "action": action})

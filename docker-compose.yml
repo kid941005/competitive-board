@@ -25,7 +25,7 @@ x-logging: &default-logging
 services:
   app:
     # 镜像由 GitHub Actions 构建并发布（见 .github/workflows/build-image.yml）
-    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.7.3}
+    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.8.0}
     container_name: competitive-board
     restart: unless-stopped
     logging: *default-logging
@@ -35,6 +35,8 @@ services:
       # 首次启动写入示例数据；库里已有数据时自动跳过
       CIB_SEED_DEMO: "${CIB_SEED_DEMO:-1}"
       CIB_MAX_COMPARE: "${CIB_MAX_COMPARE:-8}"
+      # 未入库规格书原文的保留天数（被参数引用的不受影响）
+      CIB_DATASHEET_DAYS: "${CIB_DATASHEET_DAYS:-30}"
       # 初始管理员：仅当库里没有任何管理员时创建。
       # 密码留空则随机生成并打印到日志，用 docker compose logs app | grep 初始密码 查看
       CIB_ADMIN_USER: "${CIB_ADMIN_USER:-admin}"

@@ -9,6 +9,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("CIB_DATA_DIR", BASE_DIR / "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# 规格书原文与解析结果落在这里：<doc_id>.<ext> + <doc_id>.json。
+# 单独成常量是因为「写入」（页面路由）与「清理」（datasheet_store）都要用到它。
+DATASHEET_DIR = DATA_DIR / "datasheets"
+
 
 def database_url() -> str:
     url = os.getenv("DATABASE_URL", "").strip()

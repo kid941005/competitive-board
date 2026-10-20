@@ -106,6 +106,16 @@ SPECS: tuple[SettingSpec, ...] = (
         help="低于该值的识别结果默认不勾选，需人工确认。",
     ),
     SettingSpec(
+        key="datasheet.keep_days",
+        label="未入库规格书的保留天数",
+        group="规格书",
+        kind="int",
+        default=int(os.getenv("CIB_DATASHEET_DAYS", "30")),
+        minimum=1,
+        maximum=3650,
+        help="上传后没有提交入库的原文，超过该天数在启动时清理；已被参数引用的永久保留。",
+    ),
+    SettingSpec(
         key="audit.retention_days",
         label="变更日志保留天数",
         group="安全",

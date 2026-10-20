@@ -32,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:0.7.3
+  ghcr.io/kid941005/competitive-board:0.8.0
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -115,6 +115,9 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 - 所有非幂等请求校验 CSRF 双重提交令牌（表单字段 `_csrf` 或请求头 `X-CSRF-Token`）
 - 改密码、把管理员降级、停用账号，都会**立即吊销该用户全部会话**
 - 登录失败对「账号不存在」与「密码错误」返回同一提示，且都走一次哈希校验，避免时间侧信道枚举账号
+- **登录失败限速**：按「IP + 账号」计数，连续失败 5 次后指数退避（30 秒起，封顶 15 分钟），
+  成功即清零；同一 IP 对所有账号的失败总量另设上限（防换着用户名扫）。命中时返回 429 + `Retry-After`。
+  状态在进程内存里 —— 单容器（`--workers 1`）够用，多副本部署要换成共享存储
 
 ### 防锁死
 
@@ -183,6 +186,13 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 6. **脚注与修饰语防护**：`(1)` 这类脚注不当取值；`压力型` 这种标签后紧跟「型/范围/比」的命中会降权并标「存疑」。
 
 置信度分档：单位确认 **0.90**，比较符确认 **0.80**，仅数字 **0.70**；换算 −0.05，修饰语 −0.15。默认只勾选 ≥ 0.75 的行。
+
+### 原文保留
+
+上传的 PDF / 文本落在 `CIB_DATA_DIR/datasheets`（`<doc_id>.<ext>` + 同名 `.json`）。
+**被参数引用的永久保留** —— 那是溯源链接的唯一凭据；上传了但没提交入库的，
+超过 `datasheet.keep_days`（默认 30 天）在启动时清掉，连同解析结果一起删。
+清理只删「没人引用且过期」的，不会碰任何已入库的出处。
 
 ### 复核页能改什么
 
@@ -347,6 +357,25 @@ Entity（公司：自研 / 友商 / 客户）
 - `precision`：显示精度，同时作为差异判定的量化粒度。
 - `applies_to`：该指标适用于哪些产品大类（逗号分隔），留空表示全类通用。
 
+### 表结构与升级
+
+`init_db()` 做两件事：先 `create_all` 补齐缺的表，再 `schema.migrate()` 把库升到
+`CURRENT_SCHEMA_VERSION`。规则与 Alembic 一致，但只有 150 行：
+
+1. 版本号记在 `schema_meta` 表里；
+2. 每一步在自己的事务里执行，失败即回滚，不会留下半套结构；
+3. **库比代码新就拒绝启动** —— 老镜像配新库，等到查询时才报 `no such column` 是最难查的故障。
+
+v2 给两处加了唯一索引，并且**先合并存量重复再建索引**（顺序反了，启动会直接失败）：
+
+| 索引 | 覆盖 | 为什么 |
+|---|---|---|
+| `ux_products_entity_model` | `products (entity_id, lower(trim(model)))` | 同一家公司内型号唯一；忽略大小写与首尾空白，`MP6` 与 `mp6 ` 是同一条 |
+| `ux_specs_product_metric` | `product_specs (product_id, metric_id)` | 一格只能有一个值，否则矩阵按字典覆盖、静默丢一条 |
+
+遇到重复数据时，迁移保留参数最多的一条、把不冲突的格子迁过去、写一条 `actor=system`
+的审计（`origin=migration`），然后才建索引。所有 DDL 都带 `IF NOT EXISTS`，重复执行安全。
+
 ### 为什么要 `applies_to`
 
 气泵看流量（L/min）/ 静压（kPa），风扇看风量 / 厚度，液泵看 µL 级流量 / 背压——**三套口径完全不通用**。不按大类裁剪，跨类对比会退化成一张大面积空白的表。
@@ -457,9 +486,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 169 项测试，通过才推**。标签有 `0.7.3`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 184 项测试，通过才推**。标签有 `0.8.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本由 `CIB_IMAGE_TAG` 决定，默认 `0.7.3` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
+版本由 `CIB_IMAGE_TAG` 决定，默认 `0.8.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -498,27 +527,27 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:0.7.3
+  ghcr.io/kid941005/competitive-board:0.8.0
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=0.7.3 -t competitive-board:0.7.3 ./backend
+docker build --build-arg APP_VERSION=0.8.0 -t competitive-board:0.8.0 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.7.3
+  competitive-board:0.8.0
 ```
 
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `CIB_IMAGE_TAG` | `0.7.3` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
+| `CIB_IMAGE_TAG` | `0.8.0` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
 | `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
 | `CIB_SEED_DEMO` | `1` | 首次启动写入示例数据；库里已有数据自动跳过 |
@@ -527,6 +556,7 @@ docker run -d --name competitive-board \
 | `CIB_SESSION_HOURS` | `12` | 会话有效期（小时），运行时可在系统设置里改 |
 | `CIB_COOKIE_SECURE` | `0` | HTTPS 部署必须置 `1`，否则 Cookie 会明文传输 |
 | `CIB_MAX_COMPARE` | `8` | 单页最多对比型号数的初始默认 |
+| `CIB_DATASHEET_DAYS` | `30` | 未入库规格书的保留天数（运行期可在系统设置里改） |
 | `APP_PORT` | `8000` | 宿主端口（只绑 127.0.0.1） |
 | `POSTGRES_PASSWORD` | — | 启用 PG 时必填 |
 
@@ -571,7 +601,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.7.3` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.8.0` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
@@ -591,11 +621,14 @@ python tests/test_labels.py           #  6 项：自家公司用公司名，不�
 python tests/test_fixes.py            # 10 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS）
 python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
 python tests/test_channel_parity.py   # 13 项：四条写入通道的规则一致性（applies_to / 置信度 / 出处 / 日志时间）
+python tests/test_schema.py           #  6 项：表结构迁移（新库 / 老库升级去重 / 版本过新拒启 / 唯一约束兜底）
+python tests/test_retention.py        #  4 项：规格书原文保留（被引用的不删、过期的删、未到期留着）
+python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 # 或 pytest tests/
 ```
 
-共 **169 项**（含 13 项通道一致性回归）。覆盖内容：
+共 **184 项**（后端 173 + 前端 11）。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -607,6 +640,9 @@ node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器�
 - **变更日志**：改参数记「旧值 → 新值」、只改条件不误报值变更、清空记为空、没变化不写日志、删除留快照、导入逐项且共享 request_id、viewer 看不到、`/api/v1/audit` 需 admin scope、保留期只清过期
 - **AI 接口**：无凭证 401 / scope 不足 403 的统一信封、令牌 secret 含下划线仍可校验、dry_run 真不落库（连公司都不建）、幂等重放只写一条、批量写参数逐项回执、`If-Match` 过期 409、JSON 原生数字不崩、`/tools` 清单可被 function-calling 消费、旧页面路由未被影响
 - **通道一致性**（`test_channel_parity.py`）：只改一格不该动别的参数的出处与置信度、导入与规格书提交必须和批量接口一样校验 `applies_to`、置信度在三条通道都钳 0~1、重复建同名公司不记假日志、日志按本地时区显示、勾选复核要留痕、导入不再每行一次查询、重复导入是 no-op、报错行号等于文件真实行号、出处链接只收 http(s)
+- **表结构与迁移**：全新库补齐索引与版本号、0.7.x 老库带着重复数据升级（合并型号 / 去重参数 / 留审计）、库比代码新时拒绝启动、唯一索引在并发下回 409、同一批内重复项不炸
+- **规格书保留**：被参数引用的永不删、过期且无引用的连原文一起删、未到期保留、`keep_days=0` 关闭清理
+- **登录限速**：第 5 次失败后开始退避、第 6 次返回 429 + `Retry-After`、退避期内正确密码也不放行、成功登录清零、不影响其他账号
 - **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
 
 `test_auth.py` 与 `test_datasheet_import.py` 各用独立临时数据目录，不碰开发库。
@@ -618,7 +654,6 @@ node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器�
 - 网页参数自动抓取（changedetection.io 已就绪，接入在 P1）
 - 多条件参数透视（如同时看 @1.9GHz 与 @2.4GHz）
 - 细粒度权限（当前是两角色；如需「只读某几个友商」这类行级控制，需在 `auth` 之上再加数据域）
-- 操作审计日志（改参数、改账号目前只有 `updated_by` 字段，无完整审计流）
 - 参数变更历史与趋势（表结构已留 `captured_at`，视图未做）
 - 新闻动态流（第一部分）
 
@@ -640,12 +675,25 @@ backend/
 │   ├── audit.py          变更日志：快照 / 差异 / 查询 / 保留期清理
 │   ├── exporters.py      Excel 导出（冻结窗格 / 最优高亮 / 缺失灰显 / 完整度 / 说明页）
 │   ├── seed.py           示例数据
-│   ├── main.py           路由 + 鉴权异常处置
+│   ├── main.py           装配层：app / lifespan / 异常处理 / 健康检查
+│   ├── selection.py      选中与矩阵组装（页面、导出、/api/v1 共用）
+│   ├── web_shared.py     模板环境、权限依赖、表单校验、公司/型号查找
+│   ├── routes_auth.py    登录 / 登出 / 首页
+│   ├── routes_compare.py 对比页、只读 JSON、导出
+│   ├── routes_products.py 产品管理与批量导入
+│   ├── routes_datasheet.py 规格书导入
+│   ├── routes_admin.py   账号 / 令牌 / 日志 / 系统参数
+│   ├── schema.py         表结构版本与迁移（唯一索引 + 存量去重）
+│   ├── throttle.py       登录失败退避（IP + 账号）
+│   ├── datasheet_store.py 规格书原文的保留与清理
+│   ├── timeutil.py       库里存 UTC、界面按 TZ 渲染
+│   ├── sanitize.py       出处链接协议白名单
 │   ├── templates/        登录 / 对比 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
 │   └── static/           app.css, compare.js, datasheet.js, import.js, product-edit.js（零依赖）
 ├── tests/                test_compare / test_datasheet / test_datasheet_import
 │                         test_import_export / test_product_edit / test_api_v1
 │                         test_audit / test_labels / test_fixes / test_auth
+│                         test_channel_parity / test_schema / test_retention / test_throttle
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt
