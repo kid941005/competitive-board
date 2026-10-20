@@ -614,6 +614,7 @@ def datasheet_page(
             ent_by_id=ent_by_id,
             product_id=product_id,
             metric_total=len(products),
+            product_total=len(products),
             min_confidence=sset["datasheet.min_confidence"],
             max_upload_mb=sset["datasheet.max_upload_mb"],
         ),

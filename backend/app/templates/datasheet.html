@@ -2,7 +2,12 @@
 {% block title %}导入规格书 · 竞品情报看板{% endblock %}
 
 {% block body %}
-<div id="cfg" data-product="{{ product_id or '' }}" data-min-conf="{{ min_confidence }}" data-max-mb="{{ max_upload_mb }}" hidden></div>
+<div id="cfg"
+     data-product="{{ product_id or '' }}"
+     data-min-conf="{{ min_confidence }}"
+     data-max-mb="{{ max_upload_mb }}"
+     data-product-total="{{ product_total }}"
+     hidden></div>
 {% include "_header.html" %}
 
 <section class="panel">
@@ -28,9 +33,10 @@
       <span id="fileName">点击选择文件，或拖拽到此处</span>
     </label>
 
-    <button type="button" class="btn" id="analyzeBtn" disabled>开始识别</button>
+    <button type="button" class="btn" id="analyzeBtn" aria-disabled="true">开始识别</button>
   </div>
 
+  <p class="ds-status" id="dsStatus"></p>
   <p class="ds-msg" id="uploadMsg"></p>
 </section>
 

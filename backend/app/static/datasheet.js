@@ -12,6 +12,8 @@
   var dropZone = document.getElementById("dropZone");
   var analyzeBtn = document.getElementById("analyzeBtn");
   var uploadMsg = document.getElementById("uploadMsg");
+  var dsStatus = document.getElementById("dsStatus");
+  var PRODUCT_TOTAL = Number((cfg && cfg.dataset.productTotal) || 0);
 
   var reviewPanel = document.getElementById("reviewPanel");
   var reviewBody = document.getElementById("reviewBody");
@@ -27,22 +29,54 @@
     productSel.value = cfg.dataset.product;
   }
 
-  function refreshBtn() {
-    analyzeBtn.disabled = !(state.file && productSel.value);
+  // ── 就绪状态 ────────────────────────────────────────────────
+  // 按钮不用 disabled：禁用态点击没有任何反馈，用户无法判断是「没选齐」还是「页面坏了」。
+  // 改为始终可点，点下去就把缺什么说清楚，同时在旁边常驻一行状态提示。
+  function currentProblem() {
+    if (!PRODUCT_TOTAL) return "系统里还没有产品，请先用 CSV 导入产品后再上传规格书";
+    if (!productSel.value) return "请先选择要导入的型号";
+    if (!state.file) return "请选择规格书文件（PDF / TXT / Markdown）";
+    var mb = state.file.size / 1024 / 1024;
+    if (mb > MAX_MB) return "文件 " + mb.toFixed(1) + " MB，超过上限 " + MAX_MB + " MB";
+    return null;
+  }
+
+  function updateStatus() {
+    var problem = currentProblem();
+    if (dsStatus) {
+      dsStatus.textContent = problem ? "待完成：" + problem : "已就绪，可以开始识别";
+      dsStatus.className = "ds-status" + (problem ? "" : " ready");
+    }
+    if (analyzeBtn) analyzeBtn.setAttribute("aria-disabled", problem ? "true" : "false");
+    return problem;
+  }
+
+  function flashNeed(el) {
+    if (!el) return;
+    el.classList.add("need-attention");
+    setTimeout(function () {
+      el.classList.remove("need-attention");
+    }, 1600);
   }
 
   // ── 文件选择 ────────────────────────────────────────────────
   function setFile(f) {
     state.file = f || null;
-    fileName.textContent = f ? f.name + "（" + (f.size / 1024).toFixed(0) + " KB）" : "点击选择文件，或拖拽到此处";
+    fileName.textContent = f
+      ? f.name + "（" + (f.size / 1024).toFixed(0) + " KB）"
+      : "点击选择文件，或拖拽到此处";
     dropZone.classList.toggle("has-file", !!f);
-    refreshBtn();
+    uploadMsg.textContent = "";
+    updateStatus();
   }
 
   fileInput.addEventListener("change", function () {
     setFile(fileInput.files && fileInput.files[0]);
   });
-  productSel.addEventListener("change", refreshBtn);
+  productSel.addEventListener("change", function () {
+    uploadMsg.textContent = "";
+    updateStatus();
+  });
 
   ["dragenter", "dragover"].forEach(function (ev) {
     dropZone.addEventListener(ev, function (e) {
@@ -60,19 +94,53 @@
     if (e.dataTransfer && e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
   });
 
+  updateStatus();
+
+  // ── 响应解析：非 JSON 也要给出人话 ──────────────────────────
+  function readJson(res) {
+    return res.text().then(function (text) {
+      var data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch (e) {
+        data = null;
+      }
+      if (!res.ok) {
+        var detail =
+          (data && (data.detail || data.message)) ||
+          (res.status === 401
+            ? "登录已过期，请刷新页面重新登录"
+            : res.status === 403
+            ? "没有权限执行该操作"
+            : "HTTP " + res.status);
+        throw new Error(detail);
+      }
+      if (!data) throw new Error("服务端返回了非 JSON 响应（HTTP " + res.status + "）");
+      return data;
+    });
+  }
+
   // ── 识别 ────────────────────────────────────────────────────
   analyzeBtn.addEventListener("click", function () {
-    if (!state.file || !productSel.value) return;
-    if (state.file.size > MAX_MB * 1024 * 1024) {
+    var problem = currentProblem();
+    if (problem) {
       uploadMsg.className = "ds-msg warn";
-      uploadMsg.textContent = "文件超过 " + MAX_MB + " MB，请压缩后重试。";
+      uploadMsg.textContent = problem;
+      if (!productSel.value) {
+        productSel.focus();
+        flashNeed(productSel);
+      } else if (!state.file) {
+        flashNeed(dropZone);
+        dropZone.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
       return;
     }
+
     var fd = new FormData();
     fd.append("file", state.file);
     fd.append("product_id", productSel.value);
 
-    analyzeBtn.disabled = true;
+    analyzeBtn.setAttribute("aria-disabled", "true");
     uploadMsg.className = "ds-msg";
     uploadMsg.textContent = "正在解析文档并匹配指标…";
 
@@ -81,19 +149,14 @@
       body: fd,
       headers: { "X-CSRF-Token": CSRF }
     })
-      .then(function (r) {
-        return r.json().then(function (body) {
-          if (!r.ok) throw new Error(body.detail || "识别失败");
-          return body;
-        });
-      })
+      .then(readJson)
       .then(render)
       .catch(function (err) {
         uploadMsg.className = "ds-msg warn";
         uploadMsg.textContent = "识别失败：" + err.message;
       })
       .finally(function () {
-        refreshBtn();
+        updateStatus();
       });
   });
 
@@ -265,12 +328,7 @@
         rows: payloadRows
       })
     })
-      .then(function (r) {
-        return r.json().then(function (body) {
-          if (!r.ok) throw new Error(body.detail || "写入失败");
-          return body;
-        });
-      })
+      .then(readJson)
       .then(function (res) {
         var parts = [];
         if (res.written) parts.push("新增 " + res.written + " 项");

@@ -352,6 +352,7 @@ pip install -r requirements-dev.txt   # 额外装 httpx，生产镜像不需要
 python tests/test_compare.py       # 20 项：对比逻辑与 CSV 导入
 python tests/test_datasheet.py     # 18 项：规格书识别
 python tests/test_auth.py          # 25 项：权限体系（含接口层拦截与 CSRF）
+node tests/js/test_datasheet_ui.js # 7 项：导入页交互（无浏览器依赖）
 # 或 pytest tests/
 ```
 
@@ -360,6 +361,7 @@ python tests/test_auth.py          # 25 项：权限体系（含接口层拦截�
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、区间取上限、修饰语降权、别名不重复计数、多页页码
 - **权限体系**：密码哈希与策略、角色→权限位边界、匿名访问的页面跳转与接口 401、普通用户在页面与接口层被 403 拦截、导航项隐藏、CSRF 缺失被拒、停用账号会话立即失效、最后一个管理员不可降级/停用、系统参数改完即时生效
+- **导入页交互**（Node + 最小 DOM 桩）：按钮未就绪时点击必须给出「缺什么」的提示而不是静默无反应、条件齐备后进入就绪态并发出带 CSRF 头的请求、超大文件被拦截、无产品时给前置提示
 
 `test_auth.py` 使用独立临时数据目录，不碰开发库。
 
