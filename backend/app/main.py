@@ -79,9 +79,12 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.3.1", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE / "templates"))
+# 静态资源版本号：前端改动后改 app.version 即可让浏览器重新拉取，
+# 避免「代码已修复但用户还跑着缓存里的旧脚本」这种假象。
+templates.env.globals["asset_v"] = app.version
 
 
 # ── 认证 / 授权异常：页面层与接口层分别处置 ────────────────────────────────

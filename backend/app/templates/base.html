@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}竞品参数对比{% endblock %}</title>
   {% if csrf %}<meta name="csrf-token" content="{{ csrf }}">{% endif %}
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
 </head>
 <body>
   {% block body %}{% endblock %}
