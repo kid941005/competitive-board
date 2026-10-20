@@ -22,7 +22,7 @@
       <select id="companySel" class="ds-select">
         <option value="">— 选择公司 —</option>
         {% for e in companies %}
-        <option value="{{ e.id }}"{% if entity_id == e.id %} selected{% endif %}>{{ e.name }}{% if e.kind == 'self' %}（本方）{% endif %}</option>
+        <option value="{{ e.id }}"{% if entity_id == e.id %} selected{% endif %}>{{ e.name }}</option>
         {% endfor %}
         <option value="__new__">＋ 新建公司…</option>
       </select>

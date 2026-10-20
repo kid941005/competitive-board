@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from sqlmodel import Session, select
 
 from .db import engine, init_db
+from . import config
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 
 # ── 指标字典 ───────────────────────────────────────────────────────────────
@@ -93,7 +94,8 @@ ALIASES = {
 # ── 实体 ───────────────────────────────────────────────────────────────────
 # (key, kind, 名称, 英文名, 地区, 分级)
 ENTITIES = [
-    ("self", "self", "本公司", None, "中国", "A"),
+    # 本方公司直接用真实名称，页面上不再出现「本方 / 我方」这类代称
+    ("self", "self", config.SELF_COMPANY_NAME, None, "中国", "A"),
     ("murata", "competitor", "村田制作所", "Murata", "日本", "A"),
     ("xmems", "competitor", "xMEMS Labs", "xMEMS", "美国", "B"),
     ("frore", "competitor", "Frore Systems", "Frore Systems", "美国", "B"),

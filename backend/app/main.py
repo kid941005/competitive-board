@@ -81,6 +81,8 @@ async def lifespan(_app: FastAPI):
     with Session(engine) as session:
         auth.purge_expired(session)
         generated = auth.ensure_bootstrap_admin(session)
+        # 老数据卷里自家公司可能还叫「本公司」，启动时改成真实名称（幂等）
+        _rename_legacy_self(session)
         # 日志会无限增长，按保留期在启动时清一次
         d = settings_store.all_values(session)
         audit.purge(session, int(d.get("audit.retention_days", audit.RETENTION_DEFAULT_DAYS)))
@@ -94,7 +96,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.7.1", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -250,6 +252,20 @@ def _perm_user(perm: str):
     return dependency
 
 
+def _rename_legacy_self(session: Session) -> None:
+    """把历史占位名（本公司 / 本方 / 我方）改成真实公司名。
+
+    只改 kind=self 且名字恰好是占位名的那一条，改名本身不产生日志 ——
+    它不是业务数据变更，而是本次文案统一的一部分。
+    """
+    for ent in session.exec(select(Entity).where(Entity.kind == "self")).all():
+        if ent.name in config.SELF_LEGACY_NAMES:
+            ent.name = config.SELF_COMPANY_NAME
+            session.add(ent)
+            print(f"[startup] 自家公司名 {ent.name} → {config.SELF_COMPANY_NAME}", flush=True)
+    session.commit()
+
+
 def _rid() -> str:
     """一次请求的关联 id：批量操作会产生多行日志，靠它折叠成一组。"""
     return uuid.uuid4().hex[:12]
@@ -367,7 +383,7 @@ def _matrix_payload(session: Session, ids: list[int], sset: dict) -> dict:
         "entities": entities,
         "ent_by_id": ent_by_id,
         "categories": categories,
-        "kind_label": {"self": "本方", "competitor": "友商", "customer": "客户"},
+        "kind_label": {"self": "自研", "competitor": "友商", "customer": "客户"},
         "cat_label": {code: category_label(code) for code in set(chosen_cats)},
         "cat_all": config.CATEGORY_LABEL,
         "chosen_cats": sorted(chosen_cats),
@@ -384,6 +400,7 @@ def _matrix_payload(session: Session, ids: list[int], sset: dict) -> dict:
         "diff_total": diff_count(rows),
         "selected": ids,
         "max_compare": sset["compare.max_products"],
+        "self_name": _self_name(session),
     }
 
 
@@ -665,6 +682,16 @@ def _norm_company(name: str) -> str:
     return re.sub(r"[\s\-_.·/\\()（）&]+", "", name or "").casefold()
 
 
+def _self_name(session: Session) -> str:
+    """本方公司名。
+
+    页面与提示语一律用真实公司名，不出现「本方 / 我方」这类代称 ——
+    代称在多人协作时没有信息量，而公司名本身就是要看的东西。
+    """
+    ent = session.exec(select(Entity).where(Entity.kind == "self")).first()
+    return ent.name if ent else "左蓝微"
+
+
 def _find_company(session: Session, name: str) -> tuple[Entity | None, list[Entity]]:
     """返回 (完全同名, 近名列表)。
 
@@ -789,7 +816,7 @@ async def api_ds_analyze(
         if not entity:
             raise HTTPException(404, "公司不存在，请刷新页面重选")
         if entity.kind == "customer":
-            raise HTTPException(400, "客户不是竞品来源，请选择友商或本方")
+            raise HTTPException(400, f"客户不是竞品来源，请选择友商或{_self_name(session)}")
     else:
         name = (entity_name or "").strip()
         if not name:
@@ -888,7 +915,7 @@ def api_ds_commit(
         if not entity:
             raise HTTPException(404, "公司不存在，请刷新页面重选")
         if entity.kind == "customer":
-            raise HTTPException(400, "客户不是竞品来源，请选择友商或本方")
+            raise HTTPException(400, f"客户不是竞品来源，请选择友商或{_self_name(session)}")
     else:
         name = (target.entity_name or "").strip()
         if not name:
@@ -1380,7 +1407,12 @@ def product_save_meta(
 
     other = _find_product(session, product.entity_id, model)
     if other and other.id != product.id:
-        return _redirect(f"/products/{product_id}", f"型号 {model} 已被本公司另一条记录占用", "err")
+        owner = session.get(Entity, product.entity_id)
+        return _redirect(
+            f"/products/{product_id}",
+            f"型号 {model} 已被{owner.name if owner else '同一公司'}另一条记录占用",
+            "err",
+        )
 
     if product.category and category != product.category:
         # 换大类会让历史参数落到错误的指标体系里，必须先清空或另建型号

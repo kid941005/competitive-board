@@ -38,6 +38,11 @@ CATEGORY_LABEL: dict[str, str] = {
     "pump_liquid": "压电液泵",
 }
 
+# 自家公司名。页面上直接用这个名字，不再用「本方 / 我方 / 本公司」这类代称。
+SELF_COMPANY_NAME = "左蓝微"
+# 历史版本用过的占位名，启动时会被替换成 SELF_COMPANY_NAME（老数据卷兼容）
+SELF_LEGACY_NAMES: tuple[str, ...] = ("本公司", "本方", "我方")
+
 # 允许自动导入规格书的大类（当前与 CATEGORY_LABEL 一致，留出扩展位）
 IMPORTABLE_CATEGORIES: tuple[str, ...] = tuple(CATEGORY_LABEL)
 

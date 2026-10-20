@@ -18,7 +18,7 @@
       <span>公司</span>
       <select name="entity_id" class="ds-select" required>
         {% for e in companies %}
-        <option value="{{ e.id }}">{{ e.name }}{% if e.kind == 'self' %}（本方）{% endif %}</option>
+        <option value="{{ e.id }}">{{ e.name }}</option>
         {% endfor %}
       </select>
     </label>
@@ -56,10 +56,7 @@
       <tbody>
         {% for r in rows %}
         <tr>
-          <td>
-            {{ r.entity.name if r.entity else '—' }}
-            {% if r.entity and r.entity.kind == 'self' %}<span class="tag-self">本方</span>{% endif %}
-          </td>
+          <td>{{ r.entity.name if r.entity else '—' }}</td>
           <td class="mono">{{ r.product.model }}</td>
           <td>{{ cat_all.get(r.product.category, r.product.category or '未分类') }}</td>
           <td>

@@ -55,7 +55,7 @@
     if (!/^\d+$/.test(opt.value)) return;
     COMPANIES.push({
       id: opt.value,
-      name: String(opt.textContent || "").replace(/（本方）\s*$/, "").trim()
+      name: String(opt.textContent || "").trim()
     });
   });
 

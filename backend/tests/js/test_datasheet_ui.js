@@ -113,7 +113,7 @@ els.cfg.dataset = { entity: "", minConf: "0.75", maxMb: "25", productTotal: "11"
 // 公司下拉：id 型选项会被脚本读成「已有公司」，"__new__" 是新建入口
 els.companySel.options = [
   { value: "", textContent: "— 选择公司 —" },
-  { value: "1", textContent: "本公司（本方）" },
+  { value: "1", textContent: "左蓝微" },
   { value: "2", textContent: "村田制作所" },
   { value: "3", textContent: "巴特尔斯微技术" },
   { value: "__new__", textContent: "＋ 新建公司…" },

@@ -14,9 +14,9 @@
   {% for ent in entities %}
     {% set items = all_products | selectattr('entity_id', 'equalto', ent.id) | list %}
     {% if items %}
-    <div class="ent-row">
+    <div class="ent-row" data-kind="{{ ent.kind }}">
       <div class="ent-label">
-        <span class="ent-kind {{ ent.kind }}">{{ kind_label[ent.kind] }}</span>
+        {% if ent.kind != 'self' %}<span class="ent-kind {{ ent.kind }}">{{ kind_label[ent.kind] }}</span>{% endif %}
         <span class="ent-name">{{ ent.name }}</span>
         {% if ent.tier %}<span class="ent-tier">{{ ent.tier }}</span>{% endif %}
       </div>
@@ -38,7 +38,7 @@
   {% endfor %}
 
   <div class="picker-foot">
-    {% if has_self %}<button type="button" class="link" id="pickSelf">只看本方</button>{% endif %}
+    {% if has_self %}<button type="button" class="link" id="pickSelf">只看{{ self_name }}</button>{% endif %}
     <a class="link" href="/compare">重置为默认</a>
     <span class="hint">勾选即刷新，最多 {{ max_compare }} 个型号</span>
   </div>

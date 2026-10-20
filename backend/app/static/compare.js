@@ -70,10 +70,15 @@
   var pickSelf = document.getElementById("pickSelf");
   if (pickSelf) {
     pickSelf.addEventListener("click", function () {
+      // 用行的 data-kind 判断归属：自家公司不渲染「友商」徽标，
+      // 不能再靠徽标元素的 class 来识别
       var selfChips = chips.filter(function (c) {
         var row = c.closest(".ent-row");
+        if (row && row.dataset && row.dataset.kind) {
+          return row.dataset.kind === "self";
+        }
         var kind = row && row.querySelector(".ent-kind");
-        return kind && kind.classList.contains("self");
+        return !!kind && kind.classList.contains("self");
       });
       var ids = selfChips.map(function (c) { return c.dataset.pid; });
       if (ids.length) gotoSelection(ids);
