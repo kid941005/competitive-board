@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}导入规格书 · 竞品情报看板{% endblock %}
+
+{% block body %}
+<div id="cfg" data-product="{{ product_id or '' }}" hidden></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <div>
+      <h1>导入规格书</h1>
+      <p>上传 PDF / 文本，自动识别参数 → 人工复核 → 入库（标记未复核）</p>
+    </div>
+  </div>
+  <div class="actions">
+    <a class="btn ghost" href="/compare">返回对比</a>
+  </div>
+</header>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>第一步 · 选择型号并上传</h2>
+    <span class="hint">支持 PDF / TXT / Markdown，单文件 ≤ 25 MB</span>
+  </div>
+
+  <div class="ds-form">
+    <select id="productSel" class="ds-select">
+      <option value="">— 选择型号 —</option>
+      {% for g in groups %}
+      <optgroup label="{{ g.label }}">
+        {% for p in g['items'] %}
+        <option value="{{ p.id }}"{% if product_id == p.id %} selected{% endif %}>{{ ent_by_id[p.entity_id].name }} · {{ p.model }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+    </select>
+
+    <label class="file-drop" id="dropZone">
+      <input type="file" id="fileInput" accept=".pdf,.txt,.md,.csv" hidden>
+      <span id="fileName">点击选择文件，或拖拽到此处</span>
+    </label>
+
+    <button type="button" class="btn" id="analyzeBtn" disabled>开始识别</button>
+  </div>
+
+  <p class="ds-msg" id="uploadMsg"></p>
+</section>
+
+<section class="panel" id="reviewPanel" hidden>
+  <div class="panel-head">
+    <h2>第二步 · 复核识别结果</h2>
+    <span class="hint" id="reviewHint"></span>
+  </div>
+
+  <div class="ds-toolbar">
+    <button type="button" class="link" id="checkAll">全选</button>
+    <button type="button" class="link" id="checkNone">全不选</button>
+    <button type="button" class="link" id="checkHigh">只选置信度 ≥ 80%</button>
+    <span class="hint" id="selStat"></span>
+  </div>
+
+  <div class="table-wrap ds-wrap">
+    <table class="matrix ds-table">
+      <thead>
+        <tr>
+          <th class="ds-check"><input type="checkbox" id="headCheck" aria-label="全选"></th>
+          <th>指标（可改）</th>
+          <th>值（可改）</th>
+          <th>单位</th>
+          <th>条件（可改）</th>
+          <th>页</th>
+          <th>置信度</th>
+          <th>原文片段</th>
+        </tr>
+      </thead>
+      <tbody id="reviewBody"></tbody>
+    </table>
+  </div>
+
+  <div class="ds-actions">
+    <button type="button" class="btn" id="commitBtn">写入参数表</button>
+    <span class="hint">写入后一律标记「未复核」，需在对比页逐项确认</span>
+  </div>
+  <p class="ds-msg" id="commitMsg"></p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/datasheet.js" defer></script>
+{% endblock %}

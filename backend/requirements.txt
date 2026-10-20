@@ -1,0 +1,9 @@
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+sqlmodel>=0.0.22
+jinja2>=3.1
+python-multipart>=0.0.9
+pymupdf>=1.24
+
+# PostgreSQL 驱动（生产必装；本地用 SQLite 时也一并安装，避免「开发能跑、上线才炸」）
+psycopg[binary]>=3.2

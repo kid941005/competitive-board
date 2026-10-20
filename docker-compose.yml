@@ -1,0 +1,52 @@
+# 竞品情报看板 —— 单容器默认编排（SQLite，零外部依赖）
+#
+#   docker compose up -d --build          # 启动
+#   docker compose logs -f app            # 看日志
+#   docker compose down                   # 停止（数据保留在命名卷里）
+#
+# 需要 PostgreSQL 时叠加 override：
+#   docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d --build
+#
+# 端口默认只绑 127.0.0.1，不直接暴露公网。对外访问请在前面加反向代理并启用认证。
+
+name: competitive-board
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: competitive-board:0.2.0
+    container_name: competitive-board
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      # 数据目录：SQLite 数据库与上传的规格书都落在这里
+      CIB_DATA_DIR: /app/data
+      # 首次启动写入示例数据；库里已有数据时自动跳过
+      CIB_SEED_DEMO: "${CIB_SEED_DEMO:-1}"
+      CIB_MAX_COMPARE: "${CIB_MAX_COMPARE:-8}"
+      CIB_FLOAT_EPS: "${CIB_FLOAT_EPS:-1e-9}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    volumes:
+      - appdata:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  appdata:
+    name: competitive-board-data

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}暂无数据 · 竞品参数对比{% endblock %}
+
+{% block body %}
+<main class="empty-state">
+  <h1>还没有任何产品数据</h1>
+  <p>指标字典已就绪（{{ counts.metrics }} 个指标）。接下来二选一：</p>
+  <ol>
+    <li>写入示例数据：<code>python -m app.seed</code></li>
+    <li>用 CSV 导入真实参数：<a href="/api/import/template">下载模板</a></li>
+  </ol>
+</main>
+{% endblock %}

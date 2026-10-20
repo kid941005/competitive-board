@@ -1,0 +1,239 @@
+# 竞品情报看板 — 部署编排（Docker Compose）
+#
+# 用法：
+#   cp .env.example .env && 编辑 .env
+#   docker compose --profile infra up -d        # 仅基础设施（P0 立即可用）
+#   docker compose --profile infra --profile app up -d   # 含自建 API / Web（P0 后期）
+#
+# 设计约束：
+#   1. 所有端口默认只绑 127.0.0.1，不直接暴露公网；对外统一走反向代理。
+#   2. 全部使用具名卷（named volume），不用宿主目录 bind mount。
+#      —— 本项目跑在 Windows + Docker Desktop，bind mount 对 PG 数据文件、
+#         SQLite、大量小快照文件的 I/O 折损明显，且偶发权限/锁问题。
+#   3. 采集侧组件与业务代码完全解耦，可单独 restart 而不影响看板。
+#   4. 定时任务容器固定单副本（见 api 服务 deploy.replicas 与注释）。
+
+name: ci-board
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+services:
+  # ───────────────────────────── 存储 ─────────────────────────────
+  postgres:
+    <<: *default-restart
+    image: pgvector/pgvector:pg16
+    # 注意：不要换成官方 postgres:16 镜像，否则 CREATE EXTENSION vector 会失败。
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ciboard}
+      POSTGRES_USER: ${POSTGRES_USER:-ciboard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # 中文全文检索与排序依赖
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    # 生产建议用调优后的配置覆盖
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=80
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ciboard} -d ${POSTGRES_DB:-ciboard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [backend]
+    # 不映射宿主端口。需本地连库时用：docker compose exec postgres psql -U ciboard
+
+  redis:
+    <<: *default-restart
+    image: redis:7-alpine
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [backend]
+
+  # 页面快照与 PDF 手册。P0 可先用卷，量大后再换 MinIO/S3。
+  # minio:
+  #   image: minio/minio:latest
+  #   command: server /data --console-address ":9001"
+  #   environment:
+  #     MINIO_ROOT_USER: ${MINIO_USER:-ciboard}
+  #     MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?required}
+  #   volumes: [miniodata:/data]
+  #   networks: [backend]
+
+  # ─────────────────────────── 采集层 ───────────────────────────
+  rsshub:
+    <<: *default-restart
+    image: diygod/rsshub:latest
+    profiles: ["infra"]
+    logging: *default-logging
+    depends_on:
+      redis: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      CACHE_TYPE: redis
+      REDIS_URL: redis://redis:6379/
+      CACHE_EXPIRE: "600"
+      # 抓取超时，国内源偶发慢
+      REQUEST_TIMEOUT: "15000"
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "127.0.0.1:${RSSHUB_PORT:-1200}:1200"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:1200/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks: [backend, egress]
+
+  # 中文热榜数据源。官方未提供稳定镜像标签，需自行构建或改用社区镜像并校验来源。
+  # 若已有 TrendRadar 实例，可直接复用其 newsnow 地址，无需此服务。
+  # newsnow:
+  #   build:
+  #     context: ./vendor/newsnow
+  #   profiles: ["infra"]
+  #   environment:
+  #     NODE_ENV: production
+  #   ports:
+  #     - "127.0.0.1:4444:4444"
+  #   networks: [backend, egress]
+
+  changedetection:
+    <<: *default-restart
+    image: dgtlmoon/changedetection.io:latest
+    profiles: ["infra"]
+    logging: *default-logging
+    depends_on:
+      - sockpuppetbrowser
+    environment:
+      BASE_URL: ${CDIO_BASE_URL:-http://127.0.0.1:5000}
+      LISTEN_HOST: 0.0.0.0
+      PORT: 5000
+      PLAYWRIGHT_DRIVER_URL: ws://sockpuppetbrowser:3000
+      # 该服务自身账号体系很弱，务必开启基础认证
+      AUTH_BASIC_USER: ${CDIO_USER:?CDIO_USER is required}
+      AUTH_BASIC_PASS: ${CDIO_PASS:?CDIO_PASS is required}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - cdiodata:/datastore
+    ports:
+      - "127.0.0.1:${CDIO_PORT:-5000}:5000"
+    networks: [backend, egress]
+
+  # Chromium 抓取器。这是全栈最吃内存的容器，且必须给足共享内存。
+  sockpuppetbrowser:
+    image: dgtlmoon/sockpuppetbrowser:latest
+    profiles: ["infra"]
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      SCREEN_WIDTH: "1920"
+      SCREEN_HEIGHT: "1024"
+      SCREEN_DEPTH: "24"
+      MAX_CONCURRENT_CHROME_PROCESSES: ${MAX_CHROME:-2}
+      TZ: ${TZ:-Asia/Shanghai}
+    # 关键：不给 shm 时 Chromium 渲染大页面会随机崩
+    shm_size: "1gb"
+    networks: [backend, egress]
+
+  # ──────────────────────── 自建应用（P0 后期） ────────────────────────
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    profiles: ["app"]
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ciboard}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ciboard}
+      CIB_DATA_DIR: /app/data
+      CIB_SEED_DEMO: ${CIB_SEED_DEMO:-1}
+      REDIS_URL: redis://redis:6379/1
+      RSSHUB_BASE: http://rsshub:1200
+      CDIO_BASE: http://changedetection:5000
+      CDIO_USER: ${CDIO_USER}
+      CDIO_PASS: ${CDIO_PASS}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - apidata:/app/data
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    # 定时采集必须单实例。若扩容，改用 PG advisory lock 选主，不要简单加副本。
+    deploy:
+      replicas: 1
+    networks: [backend, egress]
+
+  web:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    profiles: ["app"]
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      api: { condition: service_started }
+    environment:
+      API_BASE_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE: ${PUBLIC_API_BASE:-/api}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3001}:3000"
+    networks: [backend]
+
+  # ─────────────────────────── 反向代理（可选） ───────────────────────────
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   ports: ["80:80", "443:443"]
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddydata:/data
+  #     - caddyconfig:/config
+  #   networks: [backend]
+
+volumes:
+  pgdata:
+  redisdata:
+  cdiodata:
+  apidata:
+  # miniodata:
+  # caddydata:
+  # caddyconfig:
+
+networks:
+  # 内部通信，不出网
+  backend:
+    internal: false
+  # 需要访问互联网的容器单独挂这个网，便于必要时做出口策略
+  egress:

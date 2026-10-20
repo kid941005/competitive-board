@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}{{ products|length }} 个型号参数对比 · 竞品情报看板{% endblock %}
+
+{% block body %}
+<div id="cfg" data-max="{{ max_compare }}" hidden></div>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <div>
+      <h1>竞品参数对比</h1>
+      <p>{% for c in chosen_cats %}{{ cat_label[c] }}{% if not loop.last %} / {% endif %}{% endfor %} · {{ products|length }} 个型号 · {{ rows|length }} 项指标</p>
+    </div>
+  </div>
+  <div class="actions">
+    <a class="btn ghost" href="/datasheet">导入规格书</a>
+    <a class="btn" href="/export.csv?p={{ selected|join(',') }}">导出 CSV</a>
+    <a class="btn ghost" href="/api/matrix?p={{ selected|join(',') }}" target="_blank" rel="noopener">查看 JSON</a>
+  </div>
+</header>
+
+<section class="panel picker">
+  <div class="panel-head">
+    <h2>选择对比型号</h2>
+    <span class="hint">已选 <b id="selCount">{{ selected|length }}</b> / 最多 {{ max_compare }}</span>
+  </div>
+
+  {% for ent in entities %}
+    {% set items = all_products | selectattr('entity_id', 'equalto', ent.id) | list %}
+    {% if items %}
+    <div class="ent-row">
+      <div class="ent-label">
+        <span class="ent-kind {{ ent.kind }}">{{ kind_label[ent.kind] }}</span>
+        <span class="ent-name">{{ ent.name }}</span>
+        {% if ent.tier %}<span class="ent-tier">{{ ent.tier }}</span>{% endif %}
+      </div>
+      <div class="chips">
+        {% for pr in items %}
+        <button type="button"
+                class="chip{% if pr.id in selected %} on{% endif %}"
+                data-pid="{{ pr.id }}"
+                data-model="{{ pr.model }}"
+                data-pcat="{{ pr.category or '' }}"
+                title="{{ pr.name or pr.model }}（{{ cat_all.get(pr.category, pr.category or '未分类') }}）">
+          {{ pr.model }}
+          {% if pr.status != 'active' %}<em>{{ pr.status }}</em>{% endif %}
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  {% endfor %}
+
+  <div class="picker-foot">
+    {% if has_self %}<button type="button" class="link" id="pickSelf">只看本方</button>{% endif %}
+    <a class="link" href="/compare">重置为默认</a>
+    <span class="hint">勾选即刷新，最多 {{ max_compare }} 个型号</span>
+  </div>
+</section>
+
+<section class="toolbar">
+  <div class="tabs" id="catTabs">
+    <button type="button" class="tab on" data-cat="">全部指标</button>
+    {% for c in categories %}
+    <button type="button" class="tab" data-cat="{{ c }}">{{ c }}</button>
+    {% endfor %}
+  </div>
+
+  <div class="filters">
+    <label class="switch">
+      <input type="checkbox" id="onlyDiff" {% if only == 'diff' %}checked{% endif %}>
+      <span>只看有差异<em id="diffTotal">{{ diff_total }}</em></span>
+    </label>
+    <label class="switch">
+      <input type="checkbox" id="onlyMissing" {% if only == 'missing' %}checked{% endif %}>
+      <span>只看有缺失</span>
+    </label>
+    <input type="search" id="search" class="search" placeholder="搜索指标…" autocomplete="off">
+  </div>
+</section>
+
+<div class="table-wrap" id="tableWrap">
+  <table class="matrix" id="matrix">
+    <thead>
+      <tr>
+        <th class="metric-col">
+          <span class="th-label">指标</span>
+        </th>
+        {% for pr in products %}
+        <th class="prod-col">
+          <div class="prod-ent {{ ent_by_id[pr.entity_id].kind }}">{{ ent_by_id[pr.entity_id].name }}</div>
+          <div class="prod-model">{{ pr.model }}</div>
+          <div class="prod-cat">{{ cat_all.get(pr.category, pr.category or '未分类') }}</div>
+          <div class="prod-comp" title="参数完整度：该型号已公开指标占比">
+            <span class="bar"><i style="width: {{ (completeness[pr.id] * 100) | round(0, 'floor') }}%"></i></span>
+            <span class="num">{{ (completeness[pr.id] * 100) | round(0, 'floor') }}%</span>
+          </div>
+        </th>
+        {% endfor %}
+      </tr>
+    </thead>
+
+    <tbody>
+      {% set ns = namespace(cat='') %}
+      {% for row in rows %}
+        {% if row.metric.category != ns.cat %}
+          {% set ns.cat = row.metric.category %}
+          <tr class="group-row" data-cat="{{ ns.cat }}">
+            <td colspan="{{ products|length + 1 }}">{{ ns.cat }}</td>
+          </tr>
+        {% endif %}
+
+        <tr class="metric-row"
+            data-cat="{{ row.metric.category }}"
+            data-diff="{{ '1' if row.differs else '0' }}"
+            data-missing="{{ '1' if row.has_missing else '0' }}"
+            data-name="{{ row.metric.name|lower }}">
+          <th class="metric-col">
+            <span class="m-name">{{ row.metric.name }}{% if row.metric.is_key_metric %}<i class="key-dot" title="关键指标"></i>{% endif %}</span>
+            {% if row.metric.unit %}<span class="m-unit">{{ row.metric.unit }}</span>{% endif %}
+            {% if row.metric.better == 'higher' %}<span class="m-better up">越高越好</span>
+            {% elif row.metric.better == 'lower' %}<span class="m-better down">越低越好</span>
+            {% endif %}
+          </th>
+
+          {% for pr in products %}
+            {% set c = row.cells[pr.id] %}
+            <td class="cell{% if c.is_best %} best{% endif %}{% if c.is_missing %} missing{% endif %}"
+                {% if not c.is_missing %}
+                data-trace="1"
+                data-product="{{ pr.model }}"
+                data-entity="{{ ent_by_id[pr.entity_id].name }}"
+                data-metric="{{ row.metric.name }}"
+                data-unit="{{ row.metric.unit }}"
+                data-value="{{ c.display }}"
+                data-cond="{{ c.condition or '' }}"
+                data-src-url="{{ c.source_url or '' }}"
+                data-src-title="{{ c.source_title or '' }}"
+                data-captured="{{ c.captured_at or '' }}"
+                data-confidence="{{ c.confidence }}"
+                data-verified="{{ '1' if c.verified else '0' }}"
+                {% endif %}>
+              <span class="v">{{ c.display }}</span>
+              {% if c.is_best %}<i class="best-tag">最优</i>{% endif %}
+              {% if not c.is_missing and not c.verified %}<i class="unverified" title="未人工复核"></i>{% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="table-empty" id="tableEmpty" hidden>
+  <p>当前筛选条件下没有匹配的指标。</p>
+</div>
+
+<footer class="foot">
+  <p>
+    点击任意数值可查看来源与抓取时间。
+    <span class="legend"><i class="sw best"></i>最优值</span>
+    <span class="legend"><i class="sw missing"></i>未公开</span>
+    <span class="legend"><i class="sw unv"></i>未复核</span>
+  </p>
+  <p class="foot-note">数据来自厂商公开资料与文献典型值；标橙点者为未人工复核，使用前请按现行数据手册核对。</p>
+</footer>
+
+<div class="popover" id="popover" hidden>
+  <div class="pop-head">
+    <span id="popTitle">来源</span>
+    <button type="button" class="pop-close" id="popClose" aria-label="关闭">×</button>
+  </div>
+  <dl class="pop-body" id="popBody"></dl>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/compare.js" defer></script>
+{% endblock %}

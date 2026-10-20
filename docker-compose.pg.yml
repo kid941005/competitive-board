@@ -1,0 +1,55 @@
+# PostgreSQL override —— 叠加在 docker-compose.yml 之上使用：
+#
+#   cp .env.example .env      # 填 POSTGRES_PASSWORD
+#   docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d --build
+#
+# 与 deploy/docker-compose.yml 的区别：这里只跑本应用（对比 + 规格书导入），
+# 不包含 RSSHub / changedetection 等尚未启用的采集组件。
+
+services:
+  app:
+    environment:
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-ciboard}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ciboard}"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    # 用 pgvector 版本而非纯 postgres：扩展随时可用，将来接向量检索（新闻去重/相似文章）不用换镜像。
+    image: pgvector/pgvector:pg16
+    container_name: competitive-board-db
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-ciboard}"
+      POSTGRES_USER: "${POSTGRES_USER:-ciboard}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: "${TZ:-Asia/Shanghai}"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - max_connections=80
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 不映射宿主端口；本地连库用 docker compose exec db psql -U ciboard -d ciboard
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ciboard} -d ${POSTGRES_DB:-ciboard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pgdata:
+    name: competitive-board-pgdata
