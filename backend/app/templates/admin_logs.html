@@ -89,7 +89,7 @@
         {% for it in items %}
         {% set r = it.row %}
         <tr>
-          <td class="mono dim">{{ r.at.strftime('%m-%d %H:%M:%S') if r.at else '—' }}</td>
+          <td class="mono dim">{{ r.at | localtime('%m-%d %H:%M:%S') or '—' }}</td>
           <td>
             {{ r.actor }}
             {% if r.actor_kind == 'token' %}<span class="tag-self">令牌</span>{% endif %}

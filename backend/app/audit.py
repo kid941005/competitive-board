@@ -92,6 +92,9 @@ def spec_snapshot(
         out[m.name] = _s(s.value_num) if s.value_num is not None else (s.value_text or "")
         if s.condition:
             out[f"{m.name} · 测试条件"] = s.condition
+        # 复核状态同样要留痕：它是「有人为这个数字背书」的唯一信号。
+        # 只改勾选不改值时，缺了这行 diff 就是空集，record 会直接丢日志。
+        out[f"{m.name} · 复核"] = "是" if s.verified else "否"
     return out
 
 

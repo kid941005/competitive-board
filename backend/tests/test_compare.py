@@ -16,14 +16,13 @@ from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 from app.compare import (  # noqa: E402
     build_matrix,
-    best_product_ids,
     compare_key,
     completeness,
     format_number,
     metrics_for_categories,
 )
 from app.importer import import_csv  # noqa: E402
-from app.models import Entity, Product, ProductSpec, SpecMetric, SpecSource  # noqa: E402
+from app.models import Entity, Product, ProductSpec, SpecMetric  # noqa: E402
 
 
 # ── 夹具 ───────────────────────────────────────────────────────────────────

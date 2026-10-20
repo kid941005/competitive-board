@@ -18,6 +18,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .compare import better_label
+
 BEST_FILL = PatternFill("solid", fgColor="E7F6EC")
 HEAD_FILL = PatternFill("solid", fgColor="EEF2FF")
 NOTE_FONT = Font(color="777777", size=9)
@@ -55,10 +57,9 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[1].height = 34
 
-    better_label = {"higher": "越大越好", "lower": "越小越好", "target": "取目标值", "na": "不比较"}
     for row in rows:
         metric = row.metric
-        line = [metric.category, metric.name, metric.unit, better_label.get(metric.better, metric.better)]
+        line = [metric.category, metric.name, metric.unit, better_label(metric.better)]
         for pr in products:
             cell = row.cells.get(pr.id)
             if cell is None or cell.is_missing:
@@ -130,7 +131,7 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
             shown,
         ])
         ws2.cell(ws2.max_row, 5).number_format = "0%"
-    for col, w in zip("ABCDEF", (22, 16, 14, 10, 10, 12)):
+    for col, w in zip("ABCDEF", (22, 16, 14, 10, 10, 12), strict=True):
         ws2.column_dimensions[col].width = w
     ws2.freeze_panes = "A2"
 

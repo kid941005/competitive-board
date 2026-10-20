@@ -13,7 +13,8 @@
 压电陶瓷（材料牌号 PZT-4 / 5H / 8，d33/Qm 那套典型值表）**不在本看板范围内**——
 它是材料，不是器件，规格书形态与器件 datasheet 不同，混进来只会让指标池变成大片空白。
 
-第一部分「友商 / 客户关联新闻动态」尚未开始，规划见 `../竞品情报看板-开源调研与技术方案.md`。
+第一部分「友商 / 客户关联新闻动态」尚未开始；采集栈的编排草稿在 `deploy/`（含 RSSHub / changedetection），
+**不参与看板本体部署**，看板用仓库根目录的单镜像编排即可。
 
 ---
 
@@ -31,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:0.7.2
+  ghcr.io/kid941005/competitive-board:0.7.3
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -202,16 +203,21 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 
 **Excel 与 CSV 走同一套校验**，只在「读文件」这一步分叉。这是刻意的：否则很容易出现「CSV 拦住了、Excel 放过去了」的差异，而 Excel 恰恰是业务同事最常用的格式。
 
-四条规则：
+五条规则：
 
 | 规则 | 原因 |
 |---|---|
 | 指标必须在字典里，否则整行跳过 | 否则半年后每个友商一套字段，横向对比彻底失效 |
+| 指标必须适用于该型号的大类（如「液体流量」不能写进气泵） | 否则会写进一条对比页永远不显示的参数 —— 报告说成功，界面上什么都看不到 |
 | 大类填了就必须认得出（代码或中文名），认不出不猜 | 猜错会让参数落到错误的指标体系里 |
 | 已有型号不能改换大类 | 同上，且会让历史参数错位 |
 | 数值留空 = 未公开，跳过不写 | 不会把已有值覆盖成空 |
 
 导入的参数一律 `verified=False`，需在「产品管理」里逐项确认。
+
+**重复导入是安全的**：值与条件都没变的行会被跳过（报告里的「无变化跳过」），既不写库、也不清掉已复核标记、更不会再造一条来源记录。改动过的行才会更新，并重新标为未复核。
+
+报错里的行号是**文件里的真实行号**（表头不在第一行也准），直接照它去改。程序生成的 xlsx（openpyxl / pandas）若用了公式且没被 Excel 保存过，公式列读出来是空值，导入前请「复制 → 粘贴为值」。
 
 ---
 
@@ -236,9 +242,10 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | `/products` | 全部型号清单（含完整度）+ 新建型号 + 删除 |
 | `/products/{id}` | 改型号元信息；逐项改参数值 / 测试条件 / 复核状态；清空数值即删除该项 |
 
-四条实现约定：
+五条实现约定：
 
 - **表单里没出现的指标不动**。早期版本把「没提交」当成「清空」，只要漏渲染一项就会静默删参数——现在区分「空值」与「未提交」。
+- **只有真改了的那几项被写**。值、条件、复核标记都没变的行会跳过（提示里显示「未变 N」）—— 早前实现会把整页参数回写一遍，导致「只改一格」也把其余各项的出处改成 manual、置信度提到 100%，溯源链接就此丢失。
 - **数值型填了非数字**：不覆盖旧值，明确报错返回。
 - **已有参数的型号不能换大类**，要改先清空参数。
 - 人工改动记 `confidence=1.0`、来源 `manual`、`verified` 按勾选；普通用户访问一律 403。
@@ -296,13 +303,13 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d 
 
 | 字段 | 说明 |
 |---|---|
-| 时间 / 操作者 | 用户名；AI 调用记为令牌名，并标「令牌」 |
+| 时间 / 操作者 | 用户名；AI 调用记为令牌名，并标「令牌」。时间按部署时区显示（库里存 UTC，`TZ` 决定展示时区） |
 | 来源 | 页面 / 规格书 / 表格导入 / API |
 | 动作 | 新建 / 修改 / 删除 / 导入 |
 | 对象 | 型号 / 参数 / 公司 / 令牌 / 系统参数 |
 | 变更内容 | **`旧值 → 新值`**，逐字段展开，最多 200 项 |
 
-覆盖的写入点：改型号元信息、改参数值/条件/复核、批量写参数、导入（逐项）、规格书提交、建/删型号、建公司、签发/吊销令牌、改系统参数。
+覆盖的写入点：改型号元信息、改参数值/条件/**复核状态**、批量写参数、导入（逐项）、规格书提交、建/删型号、建公司、签发/吊销令牌、改系统参数。
 
 ### 四条设计取舍
 
@@ -310,6 +317,7 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d 
 2. **值与条件分开记**。只改 `@15Vpp → @18Vdc` 时，不应表现为「值从 0.7 变成 0.72」。
 3. **删除留快照**。删之前把型号元信息和全部参数值写进日志 —— 否则删完就再也说不清丢了什么。
 4. **没变化就不写**。重复提交同一份数据不产生日志，避免把真正的变更淹掉。
+5. **复核状态单独记**。`已复核` 是「有人为这个数字背书」的唯一信号，只改勾选不改值时也必须留一条 `复核 否 → 是`。
 
 ### 几条使用建议
 
@@ -449,9 +457,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑完 156 项测试，通过才推**。标签有 `0.7.2`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 169 项测试，通过才推**。标签有 `0.7.3`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本由 `CIB_IMAGE_TAG` 决定，默认 `0.7.2` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
+版本由 `CIB_IMAGE_TAG` 决定，默认 `0.7.3` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -490,27 +498,27 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:0.7.2
+  ghcr.io/kid941005/competitive-board:0.7.3
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=0.7.2 -t competitive-board:0.7.2 ./backend
+docker build --build-arg APP_VERSION=0.7.3 -t competitive-board:0.7.3 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.7.2
+  competitive-board:0.7.3
 ```
 
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `CIB_IMAGE_TAG` | `0.7.2` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
+| `CIB_IMAGE_TAG` | `0.7.3` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
 | `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
 | `CIB_SEED_DEMO` | `1` | 首次启动写入示例数据；库里已有数据自动跳过 |
@@ -547,7 +555,9 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 ### 三个要注意的点
 
 1. **数据目录优先用命名卷，不要 bind mount 宿主目录。** 当前环境是 Windows + Docker Desktop，bind mount 对 SQLite 的 I/O 折损明显，还可能遇到文件锁与权限问题。需要取文件时用 `docker cp`。
-2. **端口默认只绑 `127.0.0.1`。** 要对外访问必须在前面加反向代理并启用认证——应用本身没有登录体系。
+2. **端口默认只绑 `127.0.0.1`。** 对外访问请加反向代理并启用 HTTPS。应用自带登录与双角色权限
+   （见上文「账号与权限」），但仍不建议直接暴露公网：初始管理员密码会打印在容器日志里，
+   第一次登录后务必先改掉。
 3. **`--workers` 固定为 1。** SQLite 写入与规格书落盘都在进程内，多 worker 会争锁。切到 PostgreSQL 后可自行调大，但需确认上传文件落盘路径共享。
 
 ### 与 `deploy/` 的关系
@@ -557,11 +567,11 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 | `docker-compose.yml` | 仅本应用（SQLite），默认拉 `ghcr.io/kid941005/competitive-board` | 单机试用、正式部署 |
 | `docker-compose.build.yml` | 叠加：改为本地源码构建（同名镜像标签） | 改了代码要重建 |
 | `docker-compose.pg.yml` | 叠加 PostgreSQL | 团队共用 |
-| `deploy/docker-compose.yml` | 完整采集栈（RSSHub / changedetection / Redis / PG） | 启用新闻动态流之后 |
+| `deploy/docker-compose.yml` | 采集栈规划稿（RSSHub / changedetection / Redis / PG） | 仅在推进「新闻动态」时用，不参与看板部署 |
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.7.2` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.7.3` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
@@ -580,11 +590,12 @@ python tests/test_audit.py            # 13 项：日志记录、旧值/新值、
 python tests/test_labels.py           #  6 项：自家公司用公司名，不出现「本方 / 我方」
 python tests/test_fixes.py            # 10 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS）
 python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
+python tests/test_channel_parity.py   # 13 项：四条写入通道的规则一致性（applies_to / 置信度 / 出处 / 日志时间）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 # 或 pytest tests/
 ```
 
-共 **156 项**。覆盖内容：
+共 **169 项**（含 13 项通道一致性回归）。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -595,6 +606,7 @@ node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器�
 - **界面文案**：自家公司（左蓝微）在选择器里只显示名称、不带类别徽标、「只看 ××」用公司名、导入与产品管理页下拉无「（本方）」后缀、导出「类别」记为「自研」、全文不出现「本方 / 我方 / 本公司」
 - **变更日志**：改参数记「旧值 → 新值」、只改条件不误报值变更、清空记为空、没变化不写日志、删除留快照、导入逐项且共享 request_id、viewer 看不到、`/api/v1/audit` 需 admin scope、保留期只清过期
 - **AI 接口**：无凭证 401 / scope 不足 403 的统一信封、令牌 secret 含下划线仍可校验、dry_run 真不落库（连公司都不建）、幂等重放只写一条、批量写参数逐项回执、`If-Match` 过期 409、JSON 原生数字不崩、`/tools` 清单可被 function-calling 消费、旧页面路由未被影响
+- **通道一致性**（`test_channel_parity.py`）：只改一格不该动别的参数的出处与置信度、导入与规格书提交必须和批量接口一样校验 `applies_to`、置信度在三条通道都钳 0~1、重复建同名公司不记假日志、日志按本地时区显示、勾选复核要留痕、导入不再每行一次查询、重复导入是 no-op、报错行号等于文件真实行号、出处链接只收 http(s)
 - **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
 
 `test_auth.py` 与 `test_datasheet_import.py` 各用独立临时数据目录，不碰开发库。

@@ -37,10 +37,13 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from . import audit, auth, config, settings_store, tokens
-from .compare import build_matrix, completeness, format_number, metrics_for_categories
+from .compare import format_number, metrics_for_categories
 from .db import get_session
 from .importer import import_rows
 from .models import ApiIdempotency, Entity, Product, ProductSpec, SpecMetric
+from .numeric import clamp_confidence
+from .sanitize import safe_url
+from .timeutil import iso_utc
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
 
@@ -216,7 +219,7 @@ def _spec_dict(s: ProductSpec, m: SpecMetric) -> dict:
         "display": format_number(s.value_num, m.precision) if s.value_num is not None else s.value_text,
         "condition": s.condition, "verified": s.verified, "confidence": s.confidence,
         "source_id": s.source_id,
-        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        "updated_at": iso_utc(s.updated_at),
     }
 
 
@@ -256,7 +259,7 @@ def _check_category(category: str | None) -> str:
             "VALIDATION_FAILED",
             f"未知产品大类「{category or ''}」",
             field="category",
-            hint="可选：" + "、".join(f"{c}（{l}）" for c, l in config.CATEGORY_LABEL.items()),
+            hint="可选：" + "、".join(f"{c}（{label}）" for c, label in config.CATEGORY_LABEL.items()),
         )
     return category
 
@@ -291,14 +294,20 @@ def _norm_name(name: str) -> str:
 
 
 def _resolve_entity_for_create(session: Session, entity_id: int | None,
-                               entity_name: str | None, force: bool) -> Entity:
+                               entity_name: str | None, force: bool) -> tuple[Entity, bool]:
+    """返回 (公司, 是否本次新建)。
+
+    「命中同名就复用」对建型号是正确的（型号必须挂在已有公司下），但对
+    `POST /entities` 就会误导：调用方拿到 201 以为建成了，审计里还多一条
+    「新建公司」的假记录。所以要连「是不是真的新建了」一起返回。
+    """
     if entity_id is not None:
         ent = session.get(Entity, entity_id)
         if ent is None:
             raise ApiError("NOT_FOUND", f"公司 id={entity_id} 不存在", field="entity_id")
         if ent.kind == "customer":
             raise ApiError("VALIDATION_FAILED", "客户不是竞品来源", field="entity_id")
-        return ent
+        return ent, False
 
     name = (entity_name or "").strip()
     if not name:
@@ -313,7 +322,7 @@ def _resolve_entity_for_create(session: Session, entity_id: int | None,
         if not other:
             continue
         if other == key:
-            return e
+            return e, False
         if len(key) >= 2 and (key in other or other in key):
             similar.append(e)
     if similar and not force:
@@ -327,7 +336,7 @@ def _resolve_entity_for_create(session: Session, entity_id: int | None,
     ent = Entity(kind="competitor", name=name, tier="C")
     session.add(ent)
     session.flush()
-    return ent
+    return ent, True
 
 
 def _find_product_ci(session: Session, entity_id: int, model: str) -> Product | None:
@@ -457,7 +466,7 @@ def get_context(
             "entities": len(entities), "products": len(products),
             "metrics": len(metrics), "specs": int(spec_count or 0),
         },
-        "categories": [{"code": c, "label": l} for c, l in config.CATEGORY_LABEL.items()],
+        "categories": [{"code": c, "label": label} for c, label in config.CATEGORY_LABEL.items()],
         "entities": [_entity_dict(e) for e in entities],
         "products": [
             {"id": p.id, "model": p.model, "category": p.category,
@@ -531,9 +540,12 @@ def list_products(
     for p in rows:
         pool = metrics_for_categories(metrics, {p.category} if p.category else set())
         data.append(_product_dict(p, ents.get(p.entity_id), filled.get(p.id or 0, 0), len(pool)))
+    # total 曾是「本页条数」，调用方据此以为库里只有 3 条。分开说清楚：
+    # count = 本页条数，has_more + next_cursor = 还有没有下一页。
     return ok(
         data,
-        total=len(data),
+        count=len(data),
+        has_more=has_more,
         next_cursor=rows[-1].id if has_more and rows else None,
     )
 
@@ -585,11 +597,10 @@ def get_matrix(
     """复用页面那套矩阵计算，保证「AI 看到的」与「人看到的」是同一份数据。"""
     from .main import _matrix_payload, _parse_ids  # 局部导入：避免与 main 循环依赖
 
-    entities = list(session.exec(select(Entity)).all())
     products = list(session.exec(select(Product)).all())
     sset = settings_store.all_values(session)
     ids = _parse_ids(
-        p, products, entities,
+        p, products,
         preferred_cat=sset["ui.default_category"],
         limit=sset["compare.max_products"],
     )
@@ -656,7 +667,7 @@ def get_changes(
             "product_id": p.id, "model": p.model, "category": p.category,
             "spec": _spec_dict(s, metrics[s.metric_id]) if s.metric_id in metrics else None,
         })
-    next_since = specs[-1].updated_at.isoformat() if specs else since
+    next_since = (iso_utc(specs[-1].updated_at) or since) if specs else since
     return ok(items, total=len(items), next_since=next_since,
               hint="把 next_since 原样作为下次的 since；产品元信息变更不在本接口范围内")
 
@@ -674,12 +685,19 @@ def create_entity(
     if (replayed := _replay(session, key, "POST", "/api/v1/entities")) is not None:
         return replayed
 
-    ent = _resolve_entity_for_create(session, None, body.name, body.force)
+    ent, created = _resolve_entity_for_create(session, None, body.name, body.force)
     dry = _is_dry(request, body)
     data = _entity_dict(ent)
     if dry:
         session.rollback()
-        resp = ok(data, dry_run=True, hint="预演：未落库")
+        resp = ok(data, dry_run=True, created=created, hint="预演：未落库")
+    elif not created:
+        # 同名公司已存在：不是错误，但也不能报 201「已创建」并记一条假的新建日志
+        session.rollback()
+        resp = ok(
+            data, created=False,
+            hint="同名公司已存在，直接复用；要改名称请用已有 id 建型号",
+        )
     else:
         actor, kind = _actor(principal)
         audit.record(
@@ -689,8 +707,8 @@ def create_entity(
             request_id=uuid.uuid4().hex[:12],
         )
         session.commit()
-        resp = ok(data, status=201)
-    if not dry:
+        resp = ok(data, status=201, created=True)
+    if not dry and created:
         _remember(session, key, "POST", "/api/v1/entities", resp)
     return resp
 
@@ -710,7 +728,7 @@ def create_product(
     category = _check_category(body.category)
     model = _clean_model(body.model)
     status = _check_status(body.status)
-    ent = _resolve_entity_for_create(session, body.entity_id, body.entity_name, body.force)
+    ent, _created = _resolve_entity_for_create(session, body.entity_id, body.entity_name, body.force)
 
     existing = _find_product_ci(session, ent.id, model)  # type: ignore[arg-type]
     if existing is not None:
@@ -786,7 +804,7 @@ def patch_product(
     if body.status is not None:
         product.status = _check_status(body.status)
     if body.datasheet_url is not None:
-        product.datasheet_url = body.datasheet_url.strip() or None
+        product.datasheet_url = safe_url(body.datasheet_url)
     if body.note is not None:
         product.note = body.note.strip() or None
     if body.category is not None and body.category != product.category:
@@ -953,7 +971,7 @@ def batch_specs(
             existing.value_num, existing.value_text = num, text
             existing.condition = item.condition
             existing.verified = item.verified
-            existing.confidence = item.confidence if item.confidence is not None else 1.0
+            existing.confidence = clamp_confidence(item.confidence)
             existing.updated_at = datetime.now(timezone.utc)
             session.add(existing)
             action = "updated"
@@ -961,7 +979,7 @@ def batch_specs(
             session.add(ProductSpec(
                 product_id=product.id, metric_id=metric.id,
                 value_num=num, value_text=text, condition=item.condition,
-                confidence=item.confidence if item.confidence is not None else 1.0,
+                confidence=clamp_confidence(item.confidence),
                 verified=item.verified,
             ))
             action = "created"

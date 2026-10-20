@@ -67,8 +67,8 @@
             {% if u.is_active %}<span class="pill-ok">启用</span>
             {% else %}<span class="pill-off">停用</span>{% endif %}
           </td>
-          <td class="mono dim">{{ u.created_at.strftime('%Y-%m-%d') if u.created_at else '—' }}</td>
-          <td class="mono dim">{{ u.last_login_at.strftime('%m-%d %H:%M') if u.last_login_at else '—' }}</td>
+          <td class="mono dim">{{ u.created_at | localtime('%Y-%m-%d') or '—' }}</td>
+          <td class="mono dim">{{ u.last_login_at | localtime('%m-%d %H:%M') or '—' }}</td>
           <td class="rowacts">
             <form method="post" action="/admin/users/{{ u.id }}/role" class="inlinerow">
               <input type="hidden" name="_csrf" value="{{ csrf }}">

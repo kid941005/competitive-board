@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .models import Product, ProductSpec, SpecMetric
+from .timeutil import fmt_local
 
 
 @dataclass
@@ -125,7 +126,8 @@ def build_matrix(
                     source_id=spec.source_id,
                     source_url=getattr(src, "url", None),
                     source_title=getattr(src, "title", None),
-                    captured_at=spec.captured_at.isoformat()[:16] if spec.captured_at else None,
+                    # 按部署时区显示：库里是 UTC，浮层里直接显示 UTC 会差 8 小时
+                    captured_at=fmt_local(spec.captured_at) if spec.captured_at else None,
                 )
             row.cells[product.id] = cell
 
@@ -164,6 +166,20 @@ def metric_scope(metric: SpecMetric) -> set[str]:
     return {s.strip() for s in (metric.applies_to or "").split(",") if s.strip()}
 
 
+# 优劣方向的中文表述。页面、CSV 导出、Excel 导出共用一个口径 ——
+# 曾经 CSV 输出 higher/lower、Excel 输出「越大越好」，同一列两种说法。
+BETTER_LABEL: dict[str, str] = {
+    "higher": "越大越好",
+    "lower": "越小越好",
+    "target": "取目标值",
+    "na": "不比较",
+}
+
+
+def better_label(code: str | None) -> str:
+    return BETTER_LABEL.get(code or "", code or "")
+
+
 def metrics_for_categories(
     metrics: list[SpecMetric], categories: set[str]
 ) -> list[SpecMetric]:
@@ -182,4 +198,21 @@ def metrics_for_categories(
         if not scope or scope & categories:
             out.append(m)
     return out
+
+
+def metric_applies(metric: SpecMetric, category: str | None) -> bool:
+    """这条指标能否写进这个产品大类。
+
+    与 metrics_for_categories 是同一套规则的两个用法：那个决定「页面显示哪些行」，
+    这个决定「写入要不要接受」。两者必须同源 —— 早期只有批量接口做了写入校验，
+    Excel 导入与规格书提交不做，于是液泵的「液体流量」能写进气泵型号：
+    写成功了（报告说 written=1）、但对比页按大类裁剪永远不渲染它，
+    变成既看不见又删不掉的幽灵数据。
+
+    category 为空（未分类型号）时不做判断：不能因为分类没填就拒收。
+    """
+    if not category:
+        return True
+    scope = metric_scope(metric)
+    return not scope or category in scope
 

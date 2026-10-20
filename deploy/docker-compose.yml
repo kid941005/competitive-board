@@ -167,8 +167,8 @@ services:
       context: ../backend
       dockerfile: Dockerfile
       args:
-        APP_VERSION: ${CIB_IMAGE_TAG:-0.7.2}
-    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.7.2}
+        APP_VERSION: ${CIB_IMAGE_TAG:-0.7.3}
+    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.7.3}
     profiles: ["app"]
     restart: unless-stopped
     logging: *default-logging
@@ -201,22 +201,10 @@ services:
       replicas: 1
     networks: [backend, egress]
 
-  web:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-    profiles: ["app"]
-    restart: unless-stopped
-    logging: *default-logging
-    depends_on:
-      api: { condition: service_started }
-    environment:
-      API_BASE_URL: http://api:8000
-      NEXT_PUBLIC_API_BASE: ${PUBLIC_API_BASE:-/api}
-      TZ: ${TZ:-Asia/Shanghai}
-    ports:
-      - "127.0.0.1:${WEB_PORT:-3001}:3000"
-    networks: [backend]
+  # 说明：这里曾有一个 `web` 服务（Next.js 前端，build.context: ../frontend）。
+  # 仓库里并没有 frontend/ 目录 —— 展示层最终走服务端渲染，单镜像即完整应用。
+  # 保留一个指向不存在目录的 service 只会让 `--profile app up` 直接失败，故移除。
+  # 真要加分离前端时，先建目录再加回来。
 
   # ─────────────────────────── 反向代理（可选） ───────────────────────────
   # caddy:

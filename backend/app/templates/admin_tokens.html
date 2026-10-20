@@ -67,9 +67,9 @@
           <td>{{ t.name }}</td>
           <td class="mono">{{ t.prefix }}…</td>
           <td class="mono">{{ t.scopes }}</td>
-          <td class="dim">{{ t.created_at.strftime('%Y-%m-%d %H:%M') if t.created_at else '—' }}</td>
-          <td class="dim">{{ t.last_used_at.strftime('%Y-%m-%d %H:%M') if t.last_used_at else '从未' }}</td>
-          <td class="dim">{{ t.expires_at.strftime('%Y-%m-%d') if t.expires_at else '长期' }}</td>
+          <td class="dim">{{ t.created_at | localtime('%Y-%m-%d %H:%M') or '—' }}</td>
+          <td class="dim">{{ t.last_used_at | localtime('%Y-%m-%d %H:%M') or '从未' }}</td>
+          <td class="dim">{{ t.expires_at | localtime('%Y-%m-%d') or '长期' }}</td>
           <td>
             {% if t.revoked_at %}<span class="pill-off">已吊销</span>
             {% else %}<span class="pill-ok">有效</span>{% endif %}

@@ -49,21 +49,28 @@ from .auth import (
     User,
 )
 from .config import category_label
-from .compare import build_matrix, completeness, diff_count, format_number, metrics_for_categories
+from .compare import (
+    better_label,
+    build_matrix,
+    completeness,
+    diff_count,
+    format_number,
+    metric_applies,
+    metrics_for_categories,
+)
 from .datasheet import extract_candidates, read_document, summarize
 from .db import engine, get_session, init_db
 from .exporters import matrix_xlsx
 from .importer import (
     CSV_TEMPLATE,
     import_csv,
-    import_rows,
     import_xlsx,
-    rows_from_csv,
-    rows_from_xlsx,
     xlsx_template,
 )
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
-from .numeric import parse_number
+from .numeric import clamp_confidence, parse_number
+from .sanitize import safe_url
+from .timeutil import fmt_local
 
 BASE = Path(__file__).resolve().parent
 DATASHEET_DIR = config.DATA_DIR / "datasheets"
@@ -97,7 +104,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.7.2", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.7.3", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -105,6 +112,8 @@ templates = Jinja2Templates(directory=str(BASE / "templates"))
 # 静态资源版本号：前端改动后改 app.version 即可让浏览器重新拉取，
 # 避免「代码已修复但用户还跑着缓存里的旧脚本」这种假象。
 templates.env.globals["asset_v"] = app.version
+# 库里存 UTC、界面按部署时区显示：模板里一律用 {{ ts | localtime }}，不要再裸 strftime
+templates.env.filters["localtime"] = fmt_local
 
 
 # ── 认证 / 授权异常：页面层与接口层分别处置 ────────────────────────────────
@@ -324,22 +333,29 @@ def _load(session: Session):
     return entities, products, metrics, sources
 
 
+# 首屏默认只放 4 列：横向可读性优先。想要更多可以自己勾到 max_compare，
+# 但打开页面就塞 8 列在窄屏上是没法看的。
+DEFAULT_VIEW_MAX = 4
+
+
 def _default_selection(
     products: list[Product],
-    entities: list[Entity],
     preferred_cat: str | None = None,
-    limit: int = 8,
+    limit: int = DEFAULT_VIEW_MAX,
 ) -> list[int]:
-    """默认视图：优先取管理员配置的大类，跨友商各取最多 2 个型号。
+    """默认视图：优先取管理员配置的大类，同一家公司最多 2 个型号，总数不超过上限。
 
-    刻意不跨大类 —— 压电陶瓷与压电泵的指标不通用，混在一张表里只会看到空白。
+    「每家 2 个」是为了横向比较时不被某一家刷屏；总数上限取 min(limit, 4) ——
+    原实现把 4 写死在循环里，传 limit=8 也只出 4 个，与参数语义不符。
+    刻意不跨大类：泵与风扇的指标口径不通用，混在一张表里只会看到空白。
     """
     counts: dict[str, int] = {}
     for p in products:
         if p.category:
             counts[p.category] = counts.get(p.category, 0) + 1
     if not counts:
-        return [p.id for p in products[:4] if p.id]  # type: ignore[misc]
+        cap = max(1, min(limit, DEFAULT_VIEW_MAX))
+        return [p.id for p in products[:cap] if p.id]  # type: ignore[misc]
 
     if preferred_cat and preferred_cat in counts:
         chosen_cat = preferred_cat
@@ -347,28 +363,30 @@ def _default_selection(
         chosen_cat = max(counts.items(), key=lambda kv: kv[1])[0]
     pool = [p for p in products if p.category == chosen_cat] or products
 
+    cap = max(1, min(limit, DEFAULT_VIEW_MAX))
     picked: list[int] = []
     per_entity: dict[int, int] = {}
     for p in pool:
-        if len(picked) >= 4:
+        if len(picked) >= cap:
             break
         if per_entity.get(p.entity_id, 0) >= 2:
             continue
         picked.append(p.id)  # type: ignore[arg-type]
         per_entity[p.entity_id] = per_entity.get(p.entity_id, 0) + 1
-    return picked[:limit]
+    return picked
 
 
 def _parse_ids(
     raw: str | None,
     products: list[Product],
-    entities: list[Entity],
     preferred_cat: str | None = None,
-    limit: int = 8,
+    limit: int = DEFAULT_VIEW_MAX,
 ) -> list[int]:
+    """解析 ?p=1,2,3。参数非法或全部无效时回落默认视图 —— 宁可显示默认 4 列，
+    也不要给一张空表（前端勾选逻辑假设至少有一列）。"""
     valid = {p.id for p in products}
     if not raw:
-        return _default_selection(products, entities, preferred_cat, limit)
+        return _default_selection(products, preferred_cat, limit)
     out: list[int] = []
     for chunk in raw.split(","):
         chunk = chunk.strip()
@@ -377,7 +395,7 @@ def _parse_ids(
         pid = int(chunk)
         if pid in valid and pid not in out:
             out.append(pid)
-    return out[:limit] or _default_selection(products, entities, preferred_cat, limit)
+    return out[:limit] or _default_selection(products, preferred_cat)
 
 
 def _matrix_payload(session: Session, ids: list[int], sset: dict, loaded=None) -> dict:
@@ -504,7 +522,7 @@ def compare_page(
     user, auth_session = pair
     sset = settings_store.all_values(session)
     loaded = _load(session)
-    entities, products, metrics, _ = loaded
+    _, products, metrics, _ = loaded
     if not products:
         return templates.TemplateResponse(
             request=request,
@@ -523,7 +541,6 @@ def compare_page(
     ids = _parse_ids(
         p,
         products,
-        entities,
         preferred_cat=sset["ui.default_category"],
         limit=sset["compare.max_products"],
     )
@@ -555,11 +572,10 @@ def api_matrix(
 ):
     sset = settings_store.all_values(session)
     loaded = _load(session)
-    entities, products, _, _ = loaded
+    _, products, _, _ = loaded
     ids = _parse_ids(
         p,
         products,
-        entities,
         preferred_cat=sset["ui.default_category"],
         limit=sset["compare.max_products"],
     )
@@ -1023,6 +1039,14 @@ def api_ds_commit(
             errors.append(f"指标 {row.metric_key} 不在字典中，已跳过")
             skipped += 1
             continue
+        # 与批量接口、表格导入同一条规则：指标必须适用于该型号的大类，
+        # 否则会写进一条「永远不显示」的幽灵参数（对比页按大类裁剪指标行）。
+        if not metric_applies(metric, product.category):
+            errors.append(
+                f"{metric.name} 不适用于「{category_label(product.category)}」，已跳过"
+            )
+            skipped += 1
+            continue
         is_num = metric.value_type == "number"
         if is_num and row.value_num is None:
             errors.append(f"{metric.name}：缺少数值，已跳过")
@@ -1044,7 +1068,7 @@ def api_ds_commit(
             existing.value_text = None if is_num else row.value_text
             existing.condition = row.condition or None
             existing.source_id = source.id
-            existing.confidence = min(max(row.confidence, 0.0), 1.0)
+            existing.confidence = clamp_confidence(row.confidence)
             existing.verified = False
             existing.updated_at = datetime.now(timezone.utc)
             session.add(existing)
@@ -1058,7 +1082,7 @@ def api_ds_commit(
                     value_text=None if is_num else row.value_text,
                     condition=row.condition or None,
                     source_id=source.id,
-                    confidence=min(max(row.confidence, 0.0), 1.0),
+                    confidence=clamp_confidence(row.confidence),
                     verified=False,
                 )
             )
@@ -1216,11 +1240,10 @@ def api_import_template(_pair=Depends(_perm(P_WRITE))):
 def _export_dataset(p: str | None, session: Session) -> dict:
     sset = settings_store.all_values(session)
     loaded = _load(session)
-    entities, products, _, _ = loaded
+    _, products, _, _ = loaded
     ids = _parse_ids(
         p,
         products,
-        entities,
         preferred_cat=sset["ui.default_category"],
         limit=sset["compare.max_products"],
     )
@@ -1257,7 +1280,7 @@ def export_csv(
     header += [f"{data['ent_by_id'][pr.entity_id].name} {pr.model}" for pr in data["products"]]
     w.writerow(header)
     for row in data["rows"]:
-        line = [row.metric.name, row.metric.unit, row.metric.better]
+        line = [row.metric.name, row.metric.unit, better_label(row.metric.better)]
         for pr in data["products"]:
             cell = row.cells[pr.id]
             line.append("" if cell.is_missing else cell.display)
@@ -1483,7 +1506,7 @@ def product_save_meta(
     product.name = name.strip() or model
     product.category = category
     product.status = status
-    product.datasheet_url = datasheet_url.strip() or None
+    product.datasheet_url = safe_url(datasheet_url)
     product.note = note.strip() or None
     session.add(product)
     audit.record(
@@ -1536,7 +1559,7 @@ async def product_save_specs(
             _source_holder.append(src)
         return _source_holder[0]
 
-    written = updated = removed = 0
+    written = updated = removed = unchanged = 0
     errors: list[str] = []
     for m in pool:
         if m.id is None:
@@ -1569,9 +1592,26 @@ async def product_save_specs(
             num, value_text = None, raw
 
         if cur:
+            # 「值/条件没变」与「改了这一格」必须分开处理：页面把每个指标都渲染成输入框，
+            # 所以保存一次会把整页的值都回帖上来。原来无条件改写 source_id 与 confidence，
+            # 结果是「只改一格 → 其余 20 项的出处全变成 manual、置信度全变 100%」，
+            # 溯源链接从此指向一条空来源，且日志只记了那一格，损失不可追。
+            value_changed = (
+                cur.value_num != num
+                or (cur.value_text or None) != (value_text or None)
+                or (cur.condition or None) != cond
+            )
+            if not value_changed and cur.verified == verified:
+                unchanged += 1
+                continue
+
             cur.value_num, cur.value_text = num, value_text
-            cur.condition, cur.source_id = cond, _source().id
-            cur.confidence, cur.verified = 1.0, verified
+            cur.condition = cond
+            cur.verified = verified
+            if value_changed:
+                # 只有真改了值，才轮到「人工录入」这条来源接管，置信度才提到 1.0
+                cur.source_id = _source().id
+                cur.confidence = 1.0
             cur.updated_at = datetime.now(timezone.utc)
             session.add(cur)
             updated += 1
@@ -1587,11 +1627,13 @@ async def product_save_specs(
         session, actor=user.username, action="update", object_type="spec",
         object_id=product.id, label=product.model, origin="web",
         changes=audit.diff(before_specs, audit.spec_snapshot(session, product.id, {m.id: m for m in metrics})),
-        note=f"新增 {written}、更新 {updated}、清除 {removed}",
+        note=f"新增 {written}、更新 {updated}、清除 {removed}、未变 {unchanged}",
         request_id=_rid(),
     )
     session.commit()
     msg = f"已保存：新增 {written}、更新 {updated}、清除 {removed}"
+    if unchanged:
+        msg += f"、未变 {unchanged}"
     if errors:
         msg += "；" + "；".join(errors)
         return _redirect(f"/products/{product_id}", msg, "err")
@@ -2062,4 +2104,5 @@ async def admin_settings_save(
 # ── 健康检查（容器用，不过鉴权）───────────────────────────────────────────
 @app.get("/healthz")
 def healthz():
-    return {"ok": True}
+    """容器健康检查用，不鉴权。带版本号：镜像升级后能一眼确认跑的是哪个版本。"""
+    return {"ok": True, "version": app.version}

@@ -42,3 +42,21 @@ def parse_number(raw: object) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+# 置信度的合法区间。三条写入通道（表格导入 / 规格书提交 / 批量接口）都必须经过它 ——
+# 早期只有导入和规格书做了钳制，批量接口原样落库，传 5 就存 5，
+# 前端算 conf*100 会显示「500%」。收口到一个函数，避免下次又漏一条通道。
+CONFIDENCE_MIN = 0.0
+CONFIDENCE_MAX = 1.0
+
+
+def clamp_confidence(value: float | None, default: float = 1.0) -> float:
+    """把置信度收敛到 0~1；None 用 default（缺省视为「人工录入」，即最高可信）。"""
+    if value is None:
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(number, CONFIDENCE_MIN), CONFIDENCE_MAX)

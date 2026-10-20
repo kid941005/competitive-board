@@ -102,6 +102,7 @@
         if (r.created_products) bits.push("新建型号 " + r.created_products);
         bits.push("写入参数 " + r.written_specs);
         if (r.skipped_missing) bits.push("数值为空跳过 " + r.skipped_missing);
+        if (r.skipped_unchanged) bits.push("无变化跳过 " + r.skipped_unchanged);
         msg.innerHTML = "导入完成：" + esc(bits.join("，")) +
           '。<a href="/products">去产品管理复核 →</a>';
 
@@ -111,6 +112,7 @@
           ["新建型号", r.created_products],
           ["写入参数", r.written_specs],
           ["数值为空跳过", r.skipped_missing],
+          ["无变化跳过", r.skipped_unchanged || 0],
           ["报错行数", (r.errors || []).length],
         ];
         grid.innerHTML = cells.map(function (c) {

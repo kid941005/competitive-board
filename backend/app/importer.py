@@ -26,8 +26,10 @@ from datetime import datetime, timezone
 from sqlmodel import Session, select
 
 from . import config
+from .compare import metric_applies
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
-from .numeric import parse_number
+from .numeric import clamp_confidence, parse_number
+from .sanitize import safe_url
 
 # 规范列名 → 可接受的写法（中英文都收，避免用户改表头就导入失败）
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -57,6 +59,8 @@ class ImportReport:
     created_entities: int = 0
     written_specs: int = 0
     skipped_missing: int = 0
+    # 值、条件都没变：不写库、不记日志，也不能把人工复核标记清掉
+    skipped_unchanged: int = 0
     errors: list[str] = field(default_factory=list)
     # 逐项变更明细（供审计日志使用）：{model, metric, old, new}
     details: list[dict] = field(default_factory=list)
@@ -68,12 +72,20 @@ class ImportReport:
             "created_entities": self.created_entities,
             "written_specs": self.written_specs,
             "skipped_missing": self.skipped_missing,
+            "skipped_unchanged": self.skipped_unchanged,
             "errors": self.errors,
         }
 
 
 def _norm_key(s: str) -> str:
     return re.sub(r"[\s\-_.·/\\()（）]+", "", (s or "").strip()).lower()
+
+
+def _scope_message(lineno: int, metric: SpecMetric, category: str) -> str:
+    return (
+        f"第 {lineno} 行：指标「{metric.name}」不适用于"
+        f"「{config.category_label(category)}」，已跳过"
+    )
 
 
 def normalize_header(raw: str) -> str | None:
@@ -98,10 +110,7 @@ def _confidence(raw: str) -> float:
     这里不能用 `x or 1.0`：0.0 是「完全不可信」的合法取值，
     用 or 会把最差的置信度翻成最高。实测传 0 曾经落库成 1.0。
     """
-    value = parse_number(raw)
-    if value is None:
-        return 1.0
-    return min(max(value, 0.0), 1.0)
+    return clamp_confidence(parse_number(raw))
 
 
 def resolve_category(raw: str) -> str | None:
@@ -125,7 +134,11 @@ def resolve_category(raw: str) -> str | None:
 
 
 def rows_from_csv(text: str) -> tuple[list[dict], list[str]]:
-    """解析 CSV 文本，返回 (行字典列表, 已识别的规范表头)。"""
+    """解析 CSV 文本，返回 (行字典列表, 已识别的规范表头)。
+
+    每行带 `_lineno`（文件里的真实行号，表头是第 1 行）。报错行号必须能对得上用户
+    打开文件看到的那一行，否则「第 3 行有问题」会让人在错行上找半天。
+    """
     reader = csv.reader(io.StringIO(text))
     try:
         raw_header = next(reader)
@@ -134,7 +147,7 @@ def rows_from_csv(text: str) -> tuple[list[dict], list[str]]:
     mapping = {i: normalize_header(h) for i, h in enumerate(raw_header)}
     headers = [v for v in mapping.values() if v]
     rows: list[dict] = []
-    for raw in reader:
+    for lineno, raw in enumerate(reader, start=2):
         if not any((c or "").strip() for c in raw):
             continue
         row: dict[str, str] = {}
@@ -142,6 +155,7 @@ def rows_from_csv(text: str) -> tuple[list[dict], list[str]]:
             canonical = mapping.get(i)
             if canonical:
                 row[canonical] = (cell or "").strip()
+        row["_lineno"] = str(lineno)
         rows.append(row)
     return rows, headers
 
@@ -150,6 +164,7 @@ def rows_from_xlsx(data: bytes) -> tuple[list[dict], list[str]]:
     """解析 xlsx 第一个工作表，返回 (行字典列表, 已识别的规范表头)。
 
     表头不必在第 1 行：向下找第一行含「型号」的行，兼容带标题/说明的手工表。
+    每行带 `_lineno`（工作表里的真实行号），报错才指得准。
     """
     from openpyxl import load_workbook
 
@@ -160,7 +175,7 @@ def rows_from_xlsx(data: bytes) -> tuple[list[dict], list[str]]:
         headers: list[str] = []
         rows: list[dict] = []
         header_found = False
-        for values in ws.iter_rows(values_only=True):
+        for lineno, values in enumerate(ws.iter_rows(values_only=True), start=1):
             cells = ["" if v is None else str(v).strip() for v in values]
             if not any(cells):
                 continue
@@ -180,6 +195,7 @@ def rows_from_xlsx(data: bytes) -> tuple[list[dict], list[str]]:
                 if canonical and cell:
                     row[canonical] = cell
             if row:
+                row["_lineno"] = str(lineno)
                 rows.append(row)
         return rows, headers
     finally:
@@ -187,22 +203,37 @@ def rows_from_xlsx(data: bytes) -> tuple[list[dict], list[str]]:
 
 
 def _source_cache(session: Session, batch_note: str) -> dict[str, SpecSource]:
-    """同一批里相同链接只建一条来源，避免几百行生成几百条一模一样的出处。"""
+    """同一批里相同链接只建一条来源，避免几百行生成几百条一模一样的出处。
+
+    先按「同批 + 同链接」在内存里合并；库里已有完全相同的一条（kind/title/url/note
+    都一致，即同一个文件再导一次）就复用它，不再新插一行 ——
+    否则每导一次，spec_sources 就凭空长一条，且没有任何参数指向它。
+    """
     cache: dict[str, SpecSource] = {}
 
     def get(url: str) -> SpecSource:
-        if url in cache:
-            return cache[url]
-        src = SpecSource(
-            kind="manual",
-            url=url or None,
-            title="表格导入",
-            captured_at=datetime.now(timezone.utc),
-            note=batch_note or None,
-        )
-        session.add(src)
-        session.flush()
-        cache[url] = src
+        key = safe_url(url) or ""
+        if key in cache:
+            return cache[key]
+        src = session.exec(
+            select(SpecSource).where(
+                SpecSource.kind == "manual",
+                SpecSource.title == "表格导入",
+                SpecSource.url == (key or None),
+                SpecSource.note == (batch_note or None),
+            )
+        ).first()
+        if src is None:
+            src = SpecSource(
+                kind="manual",
+                url=key or None,
+                title="表格导入",
+                captured_at=datetime.now(timezone.utc),
+                note=batch_note or None,
+            )
+            session.add(src)
+            session.flush()
+        cache[key] = src
         return src
 
     return get
@@ -268,14 +299,33 @@ def import_rows(
         for p in session.exec(select(Product)).all()
     }
     source_for = _source_cache(session, batch_note)
+    # 已填参数按产品懒加载：原来每行一次 select，200 行要 400 条 SQL（实测 406）。
+    # 同一份表通常只有几十个型号，按产品取一次就够，查询量从 O(行) 降到 O(型号)。
+    spec_cache: dict[int, dict[int, ProductSpec]] = {}
 
-    for lineno, row in enumerate(rows, start=2):
+    def specs_of(product_id: int) -> dict[int, ProductSpec]:
+        bucket = spec_cache.get(product_id)
+        if bucket is None:
+            bucket = {
+                s.metric_id: s
+                for s in session.exec(
+                    select(ProductSpec).where(ProductSpec.product_id == product_id)
+                ).all()
+            }
+            spec_cache[product_id] = bucket
+        return bucket
+
+    for idx, row in enumerate(rows, start=2):
         # 单元格统一成字符串：CSV 读出来本来就是 str，但 JSON 调用方会直接传数字/布尔/null。
         # 不归一的话 "0.7" 与 0.7 会走两条不同分支，甚至 AttributeError。
         row = {
             str(k).strip(): ("" if v is None else str(v).strip())
             for k, v in row.items()
         }
+        # 读取器会带上文件里的真实行号（表头可能不在第 1 行）；JSON 调用方没有，按顺序推
+        raw_lineno = row.pop("_lineno", "")
+        lineno = int(raw_lineno) if raw_lineno.isdigit() else idx
+
         model = row.get("型号", "")
         metric_raw = row.get("指标", "")
         value_raw = row.get("数值", "")
@@ -304,6 +354,12 @@ def import_rows(
 
         if not value_raw:
             report.skipped_missing += 1
+            continue
+
+        # 指标适用性：与批量接口同一条规则。行里写了大类就先判断，
+        # 这样被拒的行不会顺手建出一个空型号（建了也无参数，纯垃圾）。
+        if category and not metric_applies(metric, category):
+            report.errors.append(_scope_message(lineno, metric, category))
             continue
 
         # 友商 / 产品
@@ -337,6 +393,12 @@ def import_rows(
                 session.add(product)
                 session.flush()
 
+        # 行里没写大类时，只能等型号解析出来再判断（已有型号可能自带分类；
+        # 新建型号则分类为空，此时不做判断 —— 不能因为分类没填就拒收）。
+        if not category and not metric_applies(metric, product.category):
+            report.errors.append(_scope_message(lineno, metric, product.category))
+            continue
+
         num = _to_float(value_raw)
         is_number = metric.value_type == "number"
         if is_number and num is None:
@@ -345,37 +407,43 @@ def import_rows(
             )
             continue
 
-        source = source_for(row.get("来源链接", ""))
-        existing = session.exec(
-            select(ProductSpec).where(
-                ProductSpec.product_id == product.id,
-                ProductSpec.metric_id == metric.id,
-            )
-        ).first()
-        old_value = None
-        if existing:
-            old_value = existing.value_num if existing.value_num is not None else existing.value_text
+        existing = specs_of(product.id).get(metric.id)  # type: ignore[arg-type]
+        new_num = num if is_number else None
+        new_text = None if is_number else value_raw
+        new_cond = row.get("条件") or None
         new_value = num if is_number else value_raw
 
-        if existing:
-            existing.value_num = num if is_number else None
-            existing.value_text = None if is_number else value_raw
-            existing.condition = row.get("条件") or None
-            existing.source_id = source.id
+        if existing is not None:
+            # 值与条件都没变就什么都不做：不写库、不记日志、更不清人工复核标记。
+            # 原来无条件覆盖，于是「把同一份 Excel 再导一遍」会把全库已复核标记清空。
+            if (
+                existing.value_num == new_num
+                and (existing.value_text or None) == (new_text or None)
+                and (existing.condition or None) == new_cond
+            ):
+                report.skipped_unchanged += 1
+                continue
+
+            old_value = existing.value_num if existing.value_num is not None else existing.value_text
+            existing.value_num = new_num
+            existing.value_text = new_text
+            existing.condition = new_cond
+            existing.source_id = source_for(row.get("来源链接", "")).id
             existing.confidence = _confidence(row.get("置信度", ""))
             # 机器又写了一遍值，人工复核就不再成立 —— 否则页面会一直显示「已复核」
             existing.verified = False
             existing.updated_at = datetime.now(timezone.utc)
             session.add(existing)
         else:
+            old_value = None
             session.add(
                 ProductSpec(
                     product_id=product.id,
                     metric_id=metric.id,
-                    value_num=num if is_number else None,
-                    value_text=None if is_number else value_raw,
-                    condition=row.get("条件") or None,
-                    source_id=source.id,
+                    value_num=new_num,
+                    value_text=new_text,
+                    condition=new_cond,
+                    source_id=source_for(row.get("来源链接", "")).id,
                     confidence=_confidence(row.get("置信度", "")),
                     verified=False,
                 )

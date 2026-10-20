@@ -227,12 +227,18 @@
     );
     if (d.captured) parts.push(row("抓取时间", esc(d.captured.replace("T", " "))));
 
-    if (d.srcUrl) {
+    // 只渲染 http(s) 与站内相对链接：来源链接来自导入表格，历史数据里可能存着
+    // javascript: 之类的东西，直接拼进 href 就等于在管理者点「来源」时执行它。
+    var srcUrl = String(d.srcUrl || "");
+    if (srcUrl && !/^https?:\/\//i.test(srcUrl) && srcUrl.charAt(0) !== "/") {
+      srcUrl = "";
+    }
+    if (srcUrl) {
       parts.push(
         row(
           "来源",
-          '<a href="' + esc(d.srcUrl) + '" target="_blank" rel="noopener noreferrer">' +
-            esc(d.srcTitle || d.srcUrl) + "</a>"
+          '<a href="' + esc(srcUrl) + '" target="_blank" rel="noopener noreferrer">' +
+            esc(d.srcTitle || srcUrl) + "</a>"
         )
       );
     } else {

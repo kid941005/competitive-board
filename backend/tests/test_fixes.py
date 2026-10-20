@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import io
 import os
 import re
 import sys
@@ -34,7 +33,7 @@ from app.audit import AuditLog  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
 from app.importer import import_rows  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Entity, Product, ProductSpec, SpecMetric  # noqa: E402
+from app.models import Product, ProductSpec, SpecMetric  # noqa: E402
 from app.numeric import parse_number  # noqa: E402
 from app.seed import seed  # noqa: E402
 
