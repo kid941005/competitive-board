@@ -1,5 +1,7 @@
 # 竞品情报看板
 
+[![build-image](https://github.com/kid941005/competitive-board/actions/workflows/build-image.yml/badge.svg)](https://github.com/kid941005/competitive-board/actions/workflows/build-image.yml)
+
 压电领域友商竞品情报看板。当前已实现**第二部分：性能参数横向对比**（P0），覆盖三类器件：
 
 | 产品大类 | 代码 | 型号数 | 友商 |
@@ -16,6 +18,20 @@
 ---
 
 ## 快速开始
+
+不想装 Python，一条命令起服务：
+
+```bash
+docker run -d --name competitive-board \
+  -p 127.0.0.1:8000:8000 \
+  -e CIB_SEED_DEMO=1 -v competitive-board-data:/app/data \
+  ghcr.io/kid941005/competitive-board:latest
+```
+
+镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker logs competitive-board` 里。
+更多部署方式见 [Docker 部署](#docker-部署)。
+
+从源码跑：
 
 ```bash
 cd backend
@@ -427,7 +443,22 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
 
-### 方式一：单容器 + SQLite（零配置，推荐先跑通）
+### 方式零：直接拉现成镜像（免构建）
+
+```bash
+docker run -d --name competitive-board \
+  -p 127.0.0.1:8000:8000 \
+  -e CIB_SEED_DEMO=1 \
+  -e TZ=Asia/Shanghai \
+  -v competitive-board-data:/app/data \
+  --restart unless-stopped \
+  ghcr.io/kid941005/competitive-board:0.7.1
+```
+
+镜像由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑完 146 项测试，通过才推**。
+标签为 `0.7.1`（版本号）、`latest`（最新）、`sha-<7位>`（对应提交），仅 amd64。
+
+### 方式一：从源码构建 + SQLite（零配置，改代码时用）
 
 ```bash
 docker compose up -d --build
@@ -447,7 +478,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d --build
 ### 方式三：不用 compose 的裸镜像
 
 ```bash
-docker build -t competitive-board:0.2.0 ./backend
+docker build -t competitive-board:0.7.1 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
@@ -455,7 +486,7 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.2.0
+  competitive-board:0.7.1
 ```
 
 ### 环境变量
