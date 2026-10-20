@@ -110,8 +110,10 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 完整度 | 每个型号表头的进度条 = 已公开指标占比 |
 | 指标搜索 | 支持中文指标名即时过滤 |
 | 溯源浮层 | 点击任意数值 → 取值 / 测试条件 / 置信度 / 是否复核 / 抓取时间 / 来源链接 |
-| 导出 | CSV（带 BOM，Excel 直接打开不乱码）、JSON |
+| 导出 | **Excel（带格式：最优加粗、缺失「—」、完整度行、说明页）**、CSV（带 BOM）、JSON |
 | 规格书导入 | 上传 PDF，自动识别参数，人工复核后入库（见下节） |
+| 批量导入 | Excel / CSV 一次写入多型号多参数，自动建档（见下节） |
+| 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号 |
 
 ---
 
@@ -165,6 +167,59 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 
 ---
 
+
+## 批量导入（Excel / CSV）
+
+入口：`/import`（导航「批量导入」）。导入的用途是**扩充数据库**，所以型号和友商不存在时会自动建档。
+
+模板：`/api/import/template.xlsx`（带「填写说明」页）、`/api/import/template.csv`
+
+列：`型号 / 友商 / 大类 / 指标 / 数值 / 单位 / 条件 / 来源链接 / 置信度`。表头顺序不限，接受常见别名（公司=友商、参数=指标、value=数值…）；**Excel 表头不必在第一行**，标题行会被跳过。
+
+**Excel 与 CSV 走同一套校验**，只在「读文件」这一步分叉。这是刻意的：否则很容易出现「CSV 拦住了、Excel 放过去了」的差异，而 Excel 恰恰是业务同事最常用的格式。
+
+四条规则：
+
+| 规则 | 原因 |
+|---|---|
+| 指标必须在字典里，否则整行跳过 | 否则半年后每个友商一套字段，横向对比彻底失效 |
+| 大类填了就必须认得出（代码或中文名），认不出不猜 | 猜错会让参数落到错误的指标体系里 |
+| 已有型号不能改换大类 | 同上，且会让历史参数错位 |
+| 数值留空 = 未公开，跳过不写 | 不会把已有值覆盖成空 |
+
+导入的参数一律 `verified=False`，需在「产品管理」里逐项确认。
+
+---
+
+## 导出 Excel
+
+`/export.xlsx?p=...`，对比页右上「导出 Excel」。三张工作表：
+
+| 工作表 | 内容 |
+|---|---|
+| 参数对比 | 指标组 / 指标 / 单位 / 优劣 + 各型号一列；最简单优值加粗浅绿、缺失「—」灰字、未复核橙字；冻结 `E2`、首行可筛选、末行完整度 |
+| 型号清单 | 公司 / 型号 / 大类 / 类别 / 完整度 / 已公开项数 |
+| 说明 | 生成时间、最优与缺失的判定口径 |
+
+不用 CSV 顶替的原因：CSV 承载不了「谁最优、谁没公开、谁没复核」这三层信息，回到 Excel 还得手工上色。
+
+---
+
+## 产品管理（管理员）
+
+| 页面 | 能做什么 |
+|---|---|
+| `/products` | 全部型号清单（含完整度）+ 新建型号 + 删除 |
+| `/products/{id}` | 改型号元信息；逐项改参数值 / 测试条件 / 复核状态；清空数值即删除该项 |
+
+四条实现约定：
+
+- **表单里没出现的指标不动**。早期版本把「没提交」当成「清空」，只要漏渲染一项就会静默删参数——现在区分「空值」与「未提交」。
+- **数值型填了非数字**：不覆盖旧值，明确报错返回。
+- **已有参数的型号不能换大类**，要改先清空参数。
+- 人工改动记 `confidence=1.0`、来源 `manual`、`verified` 按勾选；普通用户访问一律 403。
+
+---
 
 ## 数据模型
 
@@ -262,8 +317,17 @@ python -m app.seed --force
 | POST | `/api/datasheet/analyze` | 上传规格书，返回识别候选与目标归属（**不落库**）。表单字段：`entity_id` 或 `entity_name`、`category`、`model` | `data:write` |
 | POST | `/api/datasheet/commit` | 提交复核后的参数；公司/型号不存在时**就地建档**，返回 `entity_created` / `product_created` | `data:write` |
 | GET | `/datasheet/{doc_id}/file` | 下载原始规格书（溯源链接指向这里） | `data:view` |
-| POST | `/api/import` | CSV 导入 | `data:write` |
+| GET | `/import` | 批量导入页（Excel / CSV） | `data:write` |
+| POST | `/api/import` | 表格导入，`.xlsx` / `.xlsm` / `.csv` | `data:write` |
+| GET | `/api/import/template.xlsx` | Excel 模板（含填写说明） | `data:write` |
 | GET | `/api/import/template` | CSV 模板 | `data:write` |
+| GET | `/export.xlsx?p=...` | 导出 Excel 对比表 | `data:export` |
+| GET | `/products` | 产品管理页 | `data:write` |
+| POST | `/products` | 新建型号 | `data:write` |
+| GET | `/products/{id}` | 型号编辑页 | `data:write` |
+| POST | `/products/{id}` | 保存型号元信息 | `data:write` |
+| POST | `/products/{id}/specs` | 保存参数值 / 条件 / 复核状态 | `data:write` |
+| POST | `/products/{id}/delete` | 删除型号及其参数 | `data:write` |
 | GET | `/admin/users` | 账号管理页 | `admin:users` |
 | POST | `/admin/users/create` · `/{uid}/role` · `/{uid}/toggle` · `/{uid}/password` | 建号 / 改角色 / 停用启用 / 重置密码 | `admin:users` |
 | GET | `/admin/settings` | 系统设置页 | `admin:settings` |
@@ -378,18 +442,22 @@ cd backend
 pip install -r requirements-dev.txt   # 额外装 httpx，生产镜像不需要
 python tests/test_compare.py          # 20 项：对比逻辑与 CSV 导入
 python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨界与别名边界）
-python tests/test_datasheet_import.py #  9 项：导入建档（新公司/新型号/三类拦截）
+python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
+python tests/test_import_export.py    # 10 项：Excel/CSV 导入与 Excel 导出
+python tests/test_product_edit.py     # 10 项：产品编辑与三类防护
 python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 # 或 pytest tests/
 ```
 
-共 **86 项**。覆盖内容：
+共 **106 项**。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
 - **导入建档**：新公司+新型号一次建成并落参数、同型号忽略大小写走更新且不重复建档、近名公司被 409 拦住、显式确认后可放行、型号跨大类被拒、客户实体不可作为导入来源
 - **权限体系**：密码哈希与策略、角色→权限位边界、匿名访问的页面跳转与接口 401、普通用户在页面与接口层被 403 拦截、导航项隐藏、CSRF 缺失被拒、停用账号会话立即失效、最后一个管理员不可降级/停用、系统参数改完即时生效
+- **表格导入 / 导出**：Excel 与 CSV 必须拦住同样的坏行（指标不在字典、大类无法识别、跨大类冲突），空值算未公开；导出 xlsx 可被 openpyxl 解析，最优加粗、缺失为「—」、完整度行存在、`E2` 冻结
+- **产品编辑**：改值并标记复核、清空即删除、非法数字不覆盖旧值、新增缺失项、换大类被拒（已有参数时）、建号与删除、viewer 一律 403
 - **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
 
 `test_auth.py` 与 `test_datasheet_import.py` 各用独立临时数据目录，不碰开发库。
@@ -417,12 +485,14 @@ backend/
 │   ├── settings_store.py 运行期系统参数（白名单 + 校验 + 回落默认值）
 │   ├── compare.py        纯计算：最优值 / 差异 / 完整度（无框架依赖，可直接单测）
 │   ├── datasheet.py      规格书识别引擎（PDF 解析 + 别名匹配 + 单位换算）
-│   ├── importer.py       CSV 导入与校验
+│   ├── importer.py       Excel / CSV 导入（同一套校验）+ 模板生成
+│   ├── exporters.py      Excel 导出（冻结窗格 / 最优高亮 / 缺失灰显 / 完整度 / 说明页）
 │   ├── seed.py           示例数据
 │   ├── main.py           路由 + 鉴权异常处置
-│   ├── templates/        登录 / 对比 / 规格书 / 账号管理 / 系统设置 / 403 / 空状态
-│   └── static/           app.css, compare.js, datasheet.js（零依赖）
-├── tests/                test_compare.py, test_datasheet.py, test_datasheet_import.py, test_auth.py
+│   ├── templates/        登录 / 对比 / 规格书 / 批量导入 / 产品管理 / 账号管理 / 系统设置 / 403
+│   └── static/           app.css, compare.js, datasheet.js, import.js, product-edit.js（零依赖）
+├── tests/                test_compare / test_datasheet / test_datasheet_import
+│                         test_import_export / test_product_edit / test_auth
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt

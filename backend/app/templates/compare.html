@@ -66,7 +66,8 @@
 
   <div class="toolactions">
     {% if can_export %}
-    <a class="btn ghost sm" href="/export.csv?p={{ selected|join(',') }}">导出 CSV</a>
+    <a class="btn sm" href="/export.xlsx?p={{ selected|join(',') }}">导出 Excel</a>
+    <a class="btn ghost sm" href="/export.csv?p={{ selected|join(',') }}">CSV</a>
     {% endif %}
     <a class="btn ghost sm" href="/api/matrix?p={{ selected|join(',') }}" target="_blank" rel="noopener">JSON</a>
   </div>
@@ -82,7 +83,10 @@
         {% for pr in products %}
         <th class="prod-col">
           <div class="prod-ent {{ ent_by_id[pr.entity_id].kind }}">{{ ent_by_id[pr.entity_id].name }}</div>
-          <div class="prod-model">{{ pr.model }}</div>
+          <div class="prod-model">
+            {{ pr.model }}
+            {% if can_write %}<a class="edit-dot" href="/products/{{ pr.id }}" title="编辑该型号的数据">✎</a>{% endif %}
+          </div>
           <div class="prod-cat">{{ cat_all.get(pr.category, pr.category or '未分类') }}</div>
           <div class="prod-comp" title="参数完整度：该型号已公开指标占比">
             <span class="bar"><i style="width: {{ (completeness[pr.id] * 100) | round(0, 'floor') }}%"></i></span>

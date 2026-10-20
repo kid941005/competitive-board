@@ -11,6 +11,8 @@
     <a href="/compare" class="{% if active == 'compare' %}on{% endif %}">参数对比</a>
     {% if can_write %}
     <a href="/datasheet" class="{% if active == 'datasheet' %}on{% endif %}">导入规格书</a>
+    <a href="/import" class="{% if active == 'import' %}on{% endif %}">批量导入</a>
+    <a href="/products" class="{% if active == 'products' %}on{% endif %}">产品管理</a>
     {% endif %}
     {% if is_admin %}
     <a href="/admin/users" class="{% if active == 'users' %}on{% endif %}">账号管理</a>

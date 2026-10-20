@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}{{ product.model }} · 产品管理{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if ok %}<p class="flash ok">{{ ok }}</p>{% endif %}
+{% if err %}<p class="flash err">{{ err }}</p>{% endif %}
+
+<p class="crumb"><a href="/products">← 返回产品管理</a> · <a href="/compare?p={{ product.id }}">在对比页查看</a></p>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>型号信息</h2>
+    <span class="hint">{{ entity.name if entity else '' }}</span>
+  </div>
+  <form method="post" action="/products/{{ product.id }}" class="userform">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="ds-field">
+      <span>型号</span>
+      <input type="text" name="model" class="ds-input" value="{{ product.model }}" required>
+    </label>
+    <label class="ds-field">
+      <span>名称</span>
+      <input type="text" name="name" class="ds-input" value="{{ product.name or '' }}">
+    </label>
+    <label class="ds-field">
+      <span>产品大类</span>
+      <select name="category" class="ds-select" required>
+        {% for code, label in categories %}
+        <option value="{{ code }}"{% if product.category == code %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>状态</span>
+      <select name="status" class="ds-select">
+        {% for code, label in statuses %}
+        <option value="{{ code }}"{% if product.status == code %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field grow">
+      <span>官方链接</span>
+      <input type="text" name="datasheet_url" class="ds-input" value="{{ product.datasheet_url or '' }}"
+             placeholder="https://…">
+    </label>
+    <button type="submit" class="btn">保存信息</button>
+  </form>
+  <p class="hint">已有参数时不允许改大类 —— 那会让历史参数落到错误的指标体系里。要改先清空参数。</p>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>参数值</h2>
+    <span class="hint">只列出本大类适用的 {{ rows|length }} 项；<b>清空数值即删除该项</b></span>
+  </div>
+
+  <form method="post" action="/products/{{ product.id }}/specs" id="specForm">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <div class="ds-toolbar">
+      <button type="button" class="link" id="checkAllOk">全部标记已复核</button>
+      <button type="button" class="link" id="checkNoneOk">全部取消复核</button>
+      <span class="hint" id="dirtyHint"></span>
+    </div>
+
+    <div class="table-wrap spec-wrap">
+      <table class="matrix usertable spectable">
+        <thead>
+          <tr>
+            <th style="width:170px">指标</th>
+            <th style="width:110px">数值 / 文本</th>
+            <th style="width:70px">单位</th>
+            <th style="width:170px">测试条件</th>
+            <th style="width:88px">已复核</th>
+            <th>来源</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          {% set m = r.metric %}
+          <tr>
+            <td>
+              <div class="spec-name">{{ m.name }}</div>
+              <div class="spec-meta">{{ m.category }} · {% if m.better == 'higher' %}越大越好{% elif m.better == 'lower' %}越小越好{% else %}不比较{% endif %}</div>
+            </td>
+            <td>
+              <input type="text" class="val-input wide" name="{{ m.id }}:v" value="{{ r.value }}"
+                     placeholder="{{ '未公开' if not r.value else '' }}"
+                     inputmode="{{ 'decimal' if m.value_type == 'number' else 'text' }}">
+            </td>
+            <td class="unit-cell">{{ m.unit }}</td>
+            <td>
+              <input type="text" class="cond-input wide" name="{{ m.id }}:c"
+                     value="{{ r.spec.condition or '' if r.spec else '' }}" placeholder="如 @15Vpp">
+            </td>
+            <td class="center">
+              <input type="checkbox" name="{{ m.id }}:ok"{% if r.spec and r.spec.verified %} checked{% endif %}>
+            </td>
+            <td class="ctx">
+              {% if r.source %}
+                <span class="src-kind">{{ r.source.kind }}</span>
+                {{ r.source.title or '' }}
+                {% if r.source.captured_at %}<span class="dim">· {{ r.source.captured_at.strftime('%Y-%m-%d') }}</span>{% endif %}
+                {% if r.source.url %}<a href="{{ r.source.url }}" target="_blank" rel="noopener">链接</a>{% endif %}
+              {% elif r.spec %}
+                <span class="dim">历史数据（无来源）</span>
+              {% else %}
+                <span class="dim">未录入</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="ds-actions">
+      <button type="submit" class="btn">保存参数</button>
+      <span class="hint">人工录入按 confidence=1.0 记录，来源记为 manual</span>
+    </div>
+  </form>
+</section>
+
+<section class="panel notes">
+  <div class="panel-head"><h2>危险操作</h2></div>
+  <form method="post" action="/products/{{ product.id }}/delete"
+        onsubmit="return confirm('删除 {{ product.model }} 及其全部参数？此操作不可撤销。');">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <button type="submit" class="btn danger">删除该型号</button>
+    <span class="hint">连同其全部参数一起删除，来源记录保留</span>
+  </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/product-edit.js?v={{ asset_v }}" defer></script>
+{% endblock %}

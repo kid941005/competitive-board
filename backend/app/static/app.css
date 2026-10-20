@@ -578,3 +578,62 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
   .metric-col { width: 150px; min-width: 150px; }
   .table-wrap { max-height: none; }
 }
+
+/* ── 批量导入 ── */
+.import-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.import-report { margin-top: 14px; }
+.report-grid { display: flex; gap: 10px; flex-wrap: wrap; }
+.rcell {
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 116px; padding: 10px 14px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2);
+}
+.rcell .rk { font-size: 11.5px; color: var(--text-3); }
+.rcell .rv { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.report-errors { margin-top: 12px; }
+.rerr-head { font-size: 12.5px; color: var(--warn); margin-bottom: 4px; }
+
+/* ── 产品管理 ── */
+.crumb { margin: 0 0 10px; font-size: 12.5px; }
+.crumb a { color: var(--accent); text-decoration: none; }
+.num-col { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.compbar {
+  display: inline-block; width: 54px; height: 6px; margin-right: 7px;
+  border-radius: 3px; background: var(--surface-3); overflow: hidden; vertical-align: middle;
+}
+.compbar i { display: block; height: 100%; background: var(--accent); }
+.ds-field.grow { flex: 1 1 220px; }
+.ds-field.grow .ds-input { width: 100%; min-width: 0; }
+.btn.danger { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+.btn.danger:hover { filter: brightness(1.06); }
+.warn-text { color: var(--warn); }
+.center { text-align: center; }
+
+/* 产品编辑 · 参数表 */
+.spec-wrap { max-height: calc(100vh - 420px); min-height: 280px; }
+.spectable td { vertical-align: middle; }
+.spectable .spec-name { font-size: 13px; }
+.spectable .spec-meta { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.spectable .val-input.wide, .spectable .cond-input.wide {
+  width: 100%; min-width: 90px; height: 30px; padding: 0 8px;
+  border: 1px solid var(--line-strong); border-radius: 7px;
+  background: var(--surface); color: var(--text);
+  font-size: 12.5px; font-family: var(--mono); outline: none;
+}
+.spectable .cond-input.wide { font-family: var(--font); }
+.spectable .val-input.wide:focus, .spectable .cond-input.wide:focus { border-color: var(--accent); }
+.src-kind {
+  display: inline-block; font-size: 10px; padding: 0 5px; margin-right: 4px;
+  border-radius: 4px; background: var(--surface-3); color: var(--text-2);
+}
+
+/* 对比页表头的编辑入口 */
+.edit-dot {
+  margin-left: 4px; font-size: 11px; color: var(--text-3);
+  text-decoration: none; opacity: .55;
+}
+.edit-dot:hover { color: var(--accent); opacity: 1; }
+
+@media (prefers-color-scheme: dark) {
+  .btn.danger { background: #7f1d1d; border-color: #7f1d1d; }
+}

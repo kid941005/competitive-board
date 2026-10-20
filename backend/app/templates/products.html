@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}产品管理 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if ok %}<p class="flash ok">{{ ok }}</p>{% endif %}
+{% if err %}<p class="flash err">{{ err }}</p>{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>新建型号</h2>
+    <span class="hint">先建档，再进去录参数；也可以直接用批量导入一次建好</span>
+  </div>
+  <form method="post" action="/products" class="userform">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="ds-field">
+      <span>公司</span>
+      <select name="entity_id" class="ds-select" required>
+        {% for e in companies %}
+        <option value="{{ e.id }}">{{ e.name }}{% if e.kind == 'self' %}（本方）{% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>型号</span>
+      <input type="text" name="model" class="ds-input" placeholder="如 MZB1001T02" required>
+    </label>
+    <label class="ds-field">
+      <span>产品大类</span>
+      <select name="category" class="ds-select" required>
+        {% for code, label in categories %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>名称（可选）</span>
+      <input type="text" name="name" class="ds-input" placeholder="如 微型气泵（流量型）">
+    </label>
+    <button type="submit" class="btn">创建</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>全部型号</h2>
+    <span class="hint">{{ rows|length }} 个型号 · 点击「编辑」改元信息与参数</span>
+  </div>
+  <div class="table-wrap">
+    <table class="matrix usertable">
+      <thead>
+        <tr>
+          <th>公司</th><th>型号</th><th>产品大类</th><th>状态</th>
+          <th class="num-col">参数</th><th class="num-col">完整度</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>
+            {{ r.entity.name if r.entity else '—' }}
+            {% if r.entity and r.entity.kind == 'self' %}<span class="tag-self">本方</span>{% endif %}
+          </td>
+          <td class="mono">{{ r.product.model }}</td>
+          <td>{{ cat_all.get(r.product.category, r.product.category or '未分类') }}</td>
+          <td>
+            {% if r.product.status == 'active' %}<span class="pill-ok">在售</span>
+            {% elif r.product.status == 'eol' %}<span class="pill-off">停产</span>
+            {% else %}<span class="pill-off">{{ r.product.status }}</span>{% endif %}
+          </td>
+          <td class="num-col">{{ r.filled }} / {{ r.total }}</td>
+          <td class="num-col">
+            <span class="compbar"><i style="width: {{ r.pct }}%"></i></span>{{ r.pct }}%
+          </td>
+          <td class="rowacts">
+            <a class="link" href="/products/{{ r.product.id }}">编辑</a>
+            <form method="post" action="/products/{{ r.product.id }}/delete" class="inlinerow"
+                  onsubmit="return confirm('删除 {{ r.product.model }} 及其全部参数？此操作不可撤销。');">
+              <input type="hidden" name="_csrf" value="{{ csrf }}">
+              <button type="submit" class="link danger">删除</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not rows %}
+        <tr><td colspan="7" class="dim">还没有型号。用上面的表单新建，或去<a href="/datasheet">导入规格书</a>。</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

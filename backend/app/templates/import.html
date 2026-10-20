@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}批量导入 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>下载模板</h2>
+    <span class="hint">Excel 模板带「填写说明」页，建议直接用</span>
+  </div>
+  <div class="import-actions">
+    <a class="btn" href="/api/import/template.xlsx">下载 Excel 模板（.xlsx）</a>
+    <a class="btn ghost" href="/api/import/template">下载 CSV 模板（.csv）</a>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>上传表格</h2>
+    <span class="hint">支持 .xlsx / .xlsm / .csv，表头顺序不限</span>
+  </div>
+
+  <form id="uploadForm" class="ds-form" method="post" action="/api/import" enctype="multipart/form-data">
+    <label class="file-drop" id="dropZone">
+      <input type="file" id="fileInput" accept=".xlsx,.xlsm,.csv" hidden>
+      <span id="fileName">点击选择 Excel / CSV 文件，或拖拽到此处</span>
+    </label>
+    <button type="submit" class="btn" id="uploadBtn">开始导入</button>
+  </form>
+
+  <p class="ds-status" id="importStatus"></p>
+  <p class="ds-msg" id="importMsg"></p>
+
+  <div id="report" class="import-report" hidden>
+    <div class="report-grid" id="reportGrid"></div>
+    <div id="reportErrors" class="report-errors"></div>
+  </div>
+</section>
+
+<section class="panel notes">
+  <div class="panel-head"><h2>列说明</h2></div>
+  <div class="table-wrap">
+    <table class="matrix usertable">
+      <thead>
+        <tr><th style="width:110px">列</th><th style="width:90px">是否必填</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        {% for name, need, desc in columns %}
+        <tr>
+          <td class="mono">{{ name }}</td>
+          <td>{% if need == '必填' %}<span class="pill-ok">必填</span>{% else %}<span class="dim">{{ need }}</span>{% endif %}</td>
+          <td>{{ desc }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel notes">
+  <div class="panel-head"><h2>四条规则</h2></div>
+  <ul class="plainlist">
+    <li><b>指标必须在字典里</b>：字典外的指标整行报错跳过，不会自动新建 —— 否则半年后每个友商一套字段，横向对比彻底失效。</li>
+    <li><b>型号与友商可自动建档</b>：型号已存在就更新参数，不存在就连同友商一起创建。友商名忽略空格、标点与大小写，避免同一家建两份。</li>
+    <li><b>型号不能跨大类</b>：已在「压电气泵」下的型号，表里写「压电风扇」会报错跳过。</li>
+    <li><b>数值留空 = 未公开</b>：跳过不写，也不会把已有值覆盖成空。导入的参数默认标记「未复核」，需在
+      <a href="/products">产品管理</a>里确认。</li>
+  </ul>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/import.js?v={{ asset_v }}" defer></script>
+{% endblock %}

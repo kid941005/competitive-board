@@ -46,10 +46,19 @@ from .auth import (
     User,
 )
 from .config import category_label
-from .compare import build_matrix, completeness, diff_count, metrics_for_categories
+from .compare import build_matrix, completeness, diff_count, format_number, metrics_for_categories
 from .datasheet import extract_candidates, read_document, summarize
 from .db import engine, get_session, init_db
-from .importer import CSV_TEMPLATE, import_csv
+from .exporters import matrix_xlsx
+from .importer import (
+    CSV_TEMPLATE,
+    import_csv,
+    import_rows,
+    import_xlsx,
+    rows_from_csv,
+    rows_from_xlsx,
+    xlsx_template,
+)
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 
 BASE = Path(__file__).resolve().parent
@@ -79,7 +88,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.5.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 # 静态资源版本号：前端改动后改 app.version 即可让浏览器重新拉取，
@@ -95,7 +104,7 @@ def _wants_html(request: Request) -> bool:
     排查问题时很难判断到底是被拦了还是路由不存在。
     """
     path = request.url.path
-    if path.startswith("/api/") or path == "/export.csv" or path.endswith("/file"):
+    if path.startswith("/api/") or path.startswith("/export.") or path.endswith("/file"):
         return False
     if path.startswith("/admin/") or path in ("/", "/compare", "/datasheet"):
         return True
@@ -944,20 +953,91 @@ def ds_file(doc_id: str, _pair=Depends(_perm(P_VIEW))):
 
 
 # ── 导入 / 导出 ────────────────────────────────────────────────────────────
-@app.post("/api/import")
+SHEET_EXT = {".xlsx", ".xlsm", ".csv", ".txt"}
+
+
+@app.get("/import", response_class=HTMLResponse)
+def import_page(
+    request: Request,
+    pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
+    session: Session = Depends(get_session),
+    ok: str | None = Query(default=None),
+    err: str | None = Query(default=None),
+):
+    user, auth_session = pair
+    sset = settings_store.all_values(session)
+    entities, products, metrics, _ = _load(session)
+    ent_by_id = {e.id: e for e in entities}
+    return templates.TemplateResponse(
+        request=request,
+        name="import.html",
+        context=_ctx(
+            user,
+            auth_session,
+            sset,
+            page_title="批量导入",
+            page_sub="用 Excel 或 CSV 批量写入参数；型号与友商不存在会自动建档",
+            active="import",
+            ok=ok,
+            err=err,
+            entities=entities,
+            ent_by_id=ent_by_id,
+            product_total=len(products),
+            metric_total=len(metrics),
+            categories=list(config.CATEGORY_LABEL.items()),
+            columns=list(_import_columns()),
+        ),
+    )
+
+
+def _import_columns() -> list[tuple[str, str, str]]:
+    return [
+        ("型号", "必填", "已存在则更新该型号参数；不存在则新建型号"),
+        ("友商", "建议填", "公司名称；已存在则复用（忽略空格/标点/大小写）"),
+        ("大类", "建议填", "只能填：" + "、".join(config.CATEGORY_LABEL.values())),
+        ("指标", "必填", "指标中文名或 key，必须在指标字典中存在，否则该行跳过"),
+        ("数值", "必填", "数值型填数字；文本型填原文；留空表示未公开，跳过"),
+        ("单位", "可空", "仅作说明，实际单位以指标字典为准"),
+        ("条件", "可空", "如 @15Vpp，会出现在溯源浮层"),
+        ("来源链接", "可空", "越具体越好，便于逐项复核"),
+        ("置信度", "可空", "0~1，缺省 1.0"),
+    ]
+
+
+@app.post("/api/import", response_model=None)
 async def api_import(
     file: UploadFile,
     _csrf: None = Depends(auth.verify_csrf),
     _user: User = Depends(_perm_user(P_WRITE)),
     session: Session = Depends(get_session),
 ):
+    """Excel 与 CSV 走同一套校验，只在「读文件」这一步分叉。"""
     raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("gbk", errors="replace")
-    report = import_csv(session, text)
+    if not raw:
+        raise HTTPException(400, "文件为空")
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in SHEET_EXT:
+        raise HTTPException(400, f"暂不支持 {ext or '未知'} 格式，请上传 .xlsx / .csv")
+
+    note = f"{file.filename or '表格导入'}"
+    if ext in (".xlsx", ".xlsm"):
+        report = import_xlsx(session, raw, batch_note=note)
+    else:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", errors="replace")
+        report = import_csv(session, text, batch_note=note)
     return report.as_dict()
+
+
+@app.get("/api/import/template.xlsx")
+def api_import_template_xlsx(_pair=Depends(_perm(P_WRITE))):
+    return StreamingResponse(
+        io.BytesIO(xlsx_template()),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=spec-import-template.xlsx"},
+    )
 
 
 @app.get("/api/import/template")
@@ -969,12 +1049,7 @@ def api_import_template(_pair=Depends(_perm(P_WRITE))):
     )
 
 
-@app.get("/export.csv")
-def export_csv(
-    p: str | None = Query(default=None),
-    _pair=Depends(_perm(P_EXPORT)),
-    session: Session = Depends(get_session),
-):
+def _export_dataset(p: str | None, session: Session) -> dict:
     sset = settings_store.all_values(session)
     entities, products, _, _ = _load(session)
     ids = _parse_ids(
@@ -984,7 +1059,31 @@ def export_csv(
         preferred_cat=sset["ui.default_category"],
         limit=sset["compare.max_products"],
     )
-    data = _matrix_payload(session, ids, sset)
+    return _matrix_payload(session, ids, sset)
+
+
+@app.get("/export.xlsx")
+def export_xlsx(
+    p: str | None = Query(default=None),
+    _pair=Depends(_perm(P_EXPORT)),
+    session: Session = Depends(get_session),
+):
+    data = _export_dataset(p, session)
+    stamp = datetime.now().strftime("%Y%m%d")
+    return StreamingResponse(
+        io.BytesIO(matrix_xlsx(data)),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=spec-compare-{stamp}.xlsx"},
+    )
+
+
+@app.get("/export.csv")
+def export_csv(
+    p: str | None = Query(default=None),
+    _pair=Depends(_perm(P_EXPORT)),
+    session: Session = Depends(get_session),
+):
+    data = _export_dataset(p, session)
 
     buf = io.StringIO()
     buf.write("\ufeff")  # BOM，Excel 打开不乱码
@@ -1004,6 +1103,311 @@ def export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=spec-compare.csv"},
     )
+
+
+# ── 产品管理：管理员直接改数据 ─────────────────────────────────────────────
+def _product_completeness(session: Session, product: Product, metrics: list[SpecMetric]) -> tuple[int, int]:
+    """返回 (已公开项, 该大类适用项)。缺失的指标不计入分子。"""
+    pool = metrics_for_categories(metrics, {product.category} if product.category else set())
+    ids = [m.id for m in pool if m.id is not None]
+    if not ids:
+        return 0, 0
+    specs = session.exec(
+        select(ProductSpec).where(
+            ProductSpec.product_id == product.id,
+            ProductSpec.metric_id.in_(ids),  # type: ignore[attr-defined]
+        )
+    ).all()
+    return len(specs), len(pool)
+
+
+@app.get("/products", response_class=HTMLResponse)
+def products_page(
+    request: Request,
+    pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
+    session: Session = Depends(get_session),
+    ok: str | None = Query(default=None),
+    err: str | None = Query(default=None),
+):
+    user, auth_session = pair
+    sset = settings_store.all_values(session)
+    entities, products, metrics, _ = _load(session)
+    ent_by_id = {e.id: e for e in entities}
+
+    table = []
+    for p in products:
+        filled, total = _product_completeness(session, p, metrics)
+        table.append({
+            "product": p,
+            "entity": ent_by_id.get(p.entity_id),
+            "filled": filled,
+            "total": total,
+            "pct": round(filled / total * 100) if total else 0,
+        })
+    table.sort(key=lambda r: ((r["entity"].name if r["entity"] else ""), r["product"].model))
+
+    return templates.TemplateResponse(
+        request=request,
+        name="products.html",
+        context=_ctx(
+            user,
+            auth_session,
+            sset,
+            page_title="产品管理",
+            page_sub="直接编辑型号与参数值；这里的改动按人工录入处理，来源记为 manual",
+            active="products",
+            ok=ok,
+            err=err,
+            rows=table,
+            companies=[e for e in entities if e.kind in ("self", "competitor")],
+            categories=list(config.CATEGORY_LABEL.items()),
+            cat_all=config.CATEGORY_LABEL,
+            product_total=len(products),
+        ),
+    )
+
+
+@app.post("/products")
+def product_create(
+    entity_id: int = Form(...),
+    model: str = Form(...),
+    category: str = Form(...),
+    name: str = Form(default=""),
+    status: str = Form(default="active"),
+    _csrf: None = Depends(auth.verify_csrf),
+    _user: User = Depends(_perm_user(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    entity = session.get(Entity, entity_id)
+    if not entity:
+        raise HTTPException(404, "公司不存在")
+    if entity.kind == "customer":
+        raise HTTPException(400, "客户不是竞品来源")
+    model = _validate_target(category, model)
+    if _find_product(session, entity_id, model):
+        return _redirect("/products", f"型号 {model} 已存在于该公司，未重复创建", "err")
+
+    product = Product(entity_id=entity_id, model=model, name=name.strip() or model,
+                      category=category, status=status or "active")
+    session.add(product)
+    session.commit()
+    return _redirect(f"/products/{product.id}", f"已创建型号 {model}，现在可以录入参数")
+
+
+@app.get("/products/{product_id}", response_class=HTMLResponse)
+def product_edit_page(
+    product_id: int,
+    request: Request,
+    pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
+    session: Session = Depends(get_session),
+    ok: str | None = Query(default=None),
+    err: str | None = Query(default=None),
+):
+    user, auth_session = pair
+    sset = settings_store.all_values(session)
+    product = session.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "型号不存在")
+
+    entities, _, metrics, src_by_id = _load(session)
+    ent_by_id = {e.id: e for e in entities}
+    pool = metrics_for_categories(metrics, {product.category} if product.category else set())
+    specs = {
+        s.metric_id: s
+        for s in session.exec(
+            select(ProductSpec).where(ProductSpec.product_id == product.id)
+        ).all()
+    }
+
+    rows = []
+    for m in pool:
+        spec = specs.get(m.id)
+        value = ""
+        if spec:
+            if m.value_type == "number" and spec.value_num is not None:
+                value = format_number(spec.value_num, m.precision)
+            else:
+                value = spec.value_text or ""
+        rows.append({
+            "metric": m,
+            "spec": spec,
+            "value": value,
+            "source": src_by_id.get(spec.source_id) if spec and spec.source_id else None,
+        })
+
+    return templates.TemplateResponse(
+        request=request,
+        name="product_edit.html",
+        context=_ctx(
+            user,
+            auth_session,
+            sset,
+            page_title=product.model,
+            page_sub=f"{ent_by_id[product.entity_id].name if product.entity_id in ent_by_id else ''}"
+                     f" · {category_label(product.category)} · 参数 {len(specs)}/{len(pool)}",
+            active="products",
+            ok=ok,
+            err=err,
+            product=product,
+            entity=ent_by_id.get(product.entity_id),
+            rows=rows,
+            categories=list(config.CATEGORY_LABEL.items()),
+            statuses=[("active", "在售"), ("eol", "停产"), ("rumored", "传闻")],
+        ),
+    )
+
+
+@app.post("/products/{product_id}")
+def product_save_meta(
+    product_id: int,
+    model: str = Form(...),
+    name: str = Form(default=""),
+    category: str = Form(...),
+    status: str = Form(default="active"),
+    datasheet_url: str = Form(default=""),
+    note: str = Form(default=""),
+    _csrf: None = Depends(auth.verify_csrf),
+    _user: User = Depends(_perm_user(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    product = session.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "型号不存在")
+    model = _validate_target(category, model)
+
+    other = _find_product(session, product.entity_id, model)
+    if other and other.id != product.id:
+        return _redirect(f"/products/{product_id}", f"型号 {model} 已被本公司另一条记录占用", "err")
+
+    if product.category and category != product.category:
+        # 换大类会让历史参数落到错误的指标体系里，必须先清空或另建型号
+        has_specs = session.exec(
+            select(ProductSpec).where(ProductSpec.product_id == product.id)
+        ).first()
+        if has_specs:
+            return _redirect(
+                f"/products/{product_id}",
+                f"该型号已有参数，不能从「{category_label(product.category)}」改成"
+                f"「{category_label(category)}」；请先清空参数或另建型号",
+                "err",
+            )
+
+    product.model = model
+    product.name = name.strip() or model
+    product.category = category
+    product.status = status or "active"
+    product.datasheet_url = datasheet_url.strip() or None
+    product.note = note.strip() or None
+    session.add(product)
+    session.commit()
+    return _redirect(f"/products/{product_id}", "型号信息已保存")
+
+
+@app.post("/products/{product_id}/specs")
+async def product_save_specs(
+    product_id: int,
+    request: Request,
+    _csrf: None = Depends(auth.verify_csrf),
+    user: User = Depends(_perm_user(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    product = session.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "型号不存在")
+
+    form = await request.form()
+    _, _, metrics, _ = _load(session)
+    pool = metrics_for_categories(metrics, {product.category} if product.category else set())
+    existing = {
+        s.metric_id: s
+        for s in session.exec(
+            select(ProductSpec).where(ProductSpec.product_id == product.id)
+        ).all()
+    }
+
+    source = SpecSource(
+        kind="manual",
+        title=f"{product.model} 手工编辑",
+        captured_at=datetime.now(timezone.utc),
+        note=f"录入人 {user.username}；人工录入视为已核对，可逐项改回未复核",
+    )
+    session.add(source)
+    session.flush()
+
+    written = updated = removed = 0
+    errors: list[str] = []
+    for m in pool:
+        if m.id is None:
+            continue
+        # 表单里根本没出现这个指标 = 本次没打算动它。
+        # 早期版本把「没提交」当成「清空」，只要页面漏渲染一项（或指标字典新增了一项）
+        # 就会把已有参数静默删掉 —— 必须区分「空值」与「未提交」。
+        field = f"{m.id}:v"
+        if field not in form:
+            continue
+        raw = str(form.get(field, "")).strip()
+        cond = str(form.get(f"{m.id}:c", "")).strip() or None
+        verified = form.get(f"{m.id}:ok") == "on"
+        cur = existing.get(m.id)
+
+        if not raw:
+            # 空值 = 未公开。已存在的行删掉，不留「有行无值」的脏数据
+            if cur:
+                session.delete(cur)
+                removed += 1
+            continue
+
+        if m.value_type == "number":
+            try:
+                num = float(raw.replace(",", ""))
+            except ValueError:
+                errors.append(f"{m.name}：要求数值，收到「{raw}」，未保存")
+                continue
+            value_text = None
+        else:
+            num, value_text = None, raw
+
+        if cur:
+            cur.value_num, cur.value_text = num, value_text
+            cur.condition, cur.source_id = cond, source.id
+            cur.confidence, cur.verified = 1.0, verified
+            cur.updated_at = datetime.now(timezone.utc)
+            session.add(cur)
+            updated += 1
+        else:
+            session.add(ProductSpec(
+                product_id=product.id, metric_id=m.id,
+                value_num=num, value_text=value_text, condition=cond,
+                source_id=source.id, confidence=1.0, verified=verified,
+            ))
+            written += 1
+
+    session.commit()
+    msg = f"已保存：新增 {written}、更新 {updated}、清除 {removed}"
+    if errors:
+        msg += "；" + "；".join(errors)
+        return _redirect(f"/products/{product_id}", msg, "err")
+    return _redirect(f"/products/{product_id}", msg)
+
+
+@app.post("/products/{product_id}/delete")
+def product_delete(
+    product_id: int,
+    _csrf: None = Depends(auth.verify_csrf),
+    _user: User = Depends(_perm_user(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    product = session.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "型号不存在")
+    model = product.model
+    for spec in session.exec(
+        select(ProductSpec).where(ProductSpec.product_id == product.id)
+    ).all():
+        session.delete(spec)
+    session.delete(product)
+    session.commit()
+    return _redirect("/products", f"已删除型号 {model}（含其全部参数）")
 
 
 # ── 管理员：账号管理 ───────────────────────────────────────────────────────
