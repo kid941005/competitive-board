@@ -134,14 +134,28 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 差异过滤 | 「只看有差异」按容差判定，1.50 与 1.5 不算差异 |
 | 缺失过滤 | 「只看有缺失」——谁在藏参数，本身即情报 |
 | 完整度 | 每个型号表头的进度条 = 已公开指标占比 |
+| 型号搜索 | 选择器顶部按 **公司名 / 型号 / 产品名** 过滤，空格分隔多个词按 AND；`/` 聚焦、`Esc` 清空 |
 | 指标搜索 | 支持中文指标名即时过滤 |
 | 溯源浮层 | 点击任意数值 → 取值 / 测试条件 / 置信度 / 是否复核 / 抓取时间 / 来源链接 |
 | 导出 | **Excel（带格式：最优加粗、缺失「—」、完整度行、说明页）**、CSV（带 BOM）、JSON |
 | 规格书导入 | 上传 PDF，自动识别参数，人工复核后入库（见下节） |
 | 批量导入 | Excel / CSV 一次写入多型号多参数，自动建档（见下节） |
-| 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号 |
+| 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号；列表支持关键词 + 公司 + 大类筛选 |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 | 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
+
+### 搜索与筛选
+
+两个入口，都是**本地过滤**（数据已经在页面里，不发请求、不丢勾选状态）：
+
+| 位置 | 搜什么 | 交互 |
+|---|---|---|
+| 对比页 · 选择对比型号 | 公司名 / 型号 / 产品名 | 输入即筛，公司行自动收起；`/` 聚焦，`Esc` 清空；顶部显示「匹配 N 个」 |
+| 产品管理 · 全部型号 | 公司名 / 型号 / 产品名 + 公司下拉 + 大类下拉 | 输入即筛，三个条件叠加；无结果时给一行提示 |
+
+AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` —— 语义与页面一致：
+大小写不敏感、空格分隔多个词按 AND、`%` 与 `_` 按字面量匹配（不会被当成通配符）。
+命中的字段会在结果里回 `matched`，例如 `["company","model"]`。
 
 ---
 
@@ -290,6 +304,17 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d 
 | 写入 | `POST/PATCH/DELETE products`、`specs/batch`、`POST entities` | `write` |
 | 摄取 | `POST import`（与 Excel 导入同一套校验） | `ingest` |
 | 发现 | `tools`（function-calling 清单）、令牌管理 | `read` / `admin` |
+
+### 检索（`q` 参数）
+
+| 接口 | `q` 匹配的字段 | 可与 `q` 叠加 |
+|---|---|---|
+| `GET /products` | 型号、产品名、公司中文名、公司英文名 | `entity_id` `category` `status` `cursor` |
+| `GET /entities` | 公司中文名、英文名 | `kind` |
+| `GET /metrics` | 指标 key、中文名、识别别名、指标组 | `category` |
+
+规则统一在 `app/search.py`：去空白、限长 64、`%`/`_` 转义、多词 AND。结果里带
+`matched` 说明命中了哪个字段，`meta.q` 回显实际生效的关键词（没传就是没有该字段）。
 
 ### 三个关键约定
 
@@ -486,7 +511,7 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 184 项测试，通过才推**。标签有 `0.8.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 205 项测试，通过才推**。标签有 `0.8.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
 版本由 `CIB_IMAGE_TAG` 决定，默认 `0.8.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
 
@@ -624,11 +649,13 @@ python tests/test_channel_parity.py   # 13 项：四条写入通道的规则一�
 python tests/test_schema.py           #  6 项：表结构迁移（新库 / 老库升级去重 / 版本过新拒启 / 唯一约束兜底）
 python tests/test_retention.py        #  4 项：规格书原文保留（被引用的不删、过期的删、未到期留着）
 python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
+python tests/test_search.py           # 13 项：检索（公司名/产品名/型号、多词 AND、通配符转义、matched）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
+node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与后端同一套语义）
 # 或 pytest tests/
 ```
 
-共 **184 项**（后端 173 + 前端 11）。覆盖内容：
+共 **205 项**（后端 186 + 前端 19）。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -643,6 +670,8 @@ node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器�
 - **表结构与迁移**：全新库补齐索引与版本号、0.7.x 老库带着重复数据升级（合并型号 / 去重参数 / 留审计）、库比代码新时拒绝启动、唯一索引在并发下回 409、同一批内重复项不炸
 - **规格书保留**：被参数引用的永不删、过期且无引用的连原文一起删、未到期保留、`keep_days=0` 关闭清理
 - **登录限速**：第 5 次失败后开始退避、第 6 次返回 429 + `Retry-After`、退避期内正确密码也不放行、成功登录清零、不影响其他账号
+- **检索**：`q` 命中公司中文名/英文名/型号/产品名、多词按 AND、`%` 与 `_` 按字面量、`matched` 字段、与 `category`/`kind` 叠加、空关键词不过滤
+- **前端过滤**（`test_filter.js`，无 DOM）：大小写、多词 AND、空串、`%` 不具通配含义
 - **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
 
 `test_auth.py` 与 `test_datasheet_import.py` 各用独立临时数据目录，不碰开发库。
@@ -671,6 +700,7 @@ backend/
 │   ├── datasheet.py      规格书识别引擎（PDF 解析 + 别名匹配 + 单位换算）
 │   ├── importer.py       Excel / CSV 导入（同一套校验）+ 模板生成
 │   ├── api_v1.py         机器调用接口面（信封 / 令牌 / 幂等 / dry-run / tools）
+│   ├── search.py         检索约定：归一 / LIKE 转义 / 多词 AND / 命中字段
 │   ├── tokens.py         API 令牌签发与校验（只存 sha256）
 │   ├── audit.py          变更日志：快照 / 差异 / 查询 / 保留期清理
 │   ├── exporters.py      Excel 导出（冻结窗格 / 最优高亮 / 缺失灰显 / 完整度 / 说明页）
@@ -689,7 +719,8 @@ backend/
 │   ├── timeutil.py       库里存 UTC、界面按 TZ 渲染
 │   ├── sanitize.py       出处链接协议白名单
 │   ├── templates/        登录 / 对比 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
-│   └── static/           app.css, compare.js, datasheet.js, import.js, product-edit.js（零依赖）
+│   └── static/           app.css, filter.js, compare.js, products.js, datasheet.js,
+│                         import.js, product-edit.js（零依赖）
 ├── tests/                test_compare / test_datasheet / test_datasheet_import
 │                         test_import_export / test_product_edit / test_api_v1
 │                         test_audit / test_labels / test_fixes / test_auth

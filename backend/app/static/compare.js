@@ -10,6 +10,7 @@
   // ── 滚动位置记忆 ─────────────────────────────────────────────
   var wrap = document.getElementById("tableWrap");
   var SCROLL_KEY = "cib-matrix-scroll";
+  var CHIP_Q_KEY = "cib-chip-q";
   if (wrap) {
     var saved = sessionStorage.getItem(SCROLL_KEY);
     if (saved) {
@@ -38,6 +39,11 @@
 
   function gotoSelection(ids) {
     if (wrap) sessionStorage.setItem(SCROLL_KEY, String(wrap.scrollTop));
+    // 勾选会整页刷新，把当前搜索词带上，否则每选一个型号都要重输。
+    // 这里按 id 取而不是用上面的变量：chipSearch 的赋值在这个函数之后，
+    // 只靠 var 提升能跑通但读起来是隐患。
+    var searchBox = document.getElementById("chipSearch");
+    if (searchBox) sessionStorage.setItem(CHIP_Q_KEY, searchBox.value);
     var url = new URL(window.location.href);
     url.searchParams.set("p", ids.join(","));
     url.searchParams.delete("only");
@@ -97,6 +103,61 @@
   }
 
   syncChipState();
+
+  // ── 型号搜索 ─────────────────────────────────────────────────
+  // 型号一多（几十个往上）靠肉眼在 chips 里找是不现实的。这里只做本地过滤：
+  // 数据已经渲染在页面上，不需要请求后端，也不会打断勾选状态。
+  var chipSearch = document.getElementById("chipSearch");
+  var pickerEmpty = document.getElementById("pickerEmpty");
+  var filter = window.CIBFilter || { matches: function () { return true; } };
+
+  function applyChipFilter() {
+    if (!chipSearch) return;
+    var q = chipSearch.value;
+    var entRows = Array.prototype.slice.call(document.querySelectorAll(".ent-row"));
+    var visible = 0;
+
+    entRows.forEach(function (row) {
+      var any = false;
+      Array.prototype.forEach.call(row.querySelectorAll(".chip"), function (chip) {
+        var hit = filter.matches(chip.getAttribute("data-haystack") || "", q);
+        chip.hidden = !hit;
+        if (hit) { any = true; visible += 1; }
+      });
+      row.hidden = !any;
+    });
+
+    if (pickerEmpty) pickerEmpty.hidden = !(q.trim() && visible === 0);
+    var hint = document.getElementById("pickHint");
+    if (hint) {
+      var sel = selectedIds().length;
+      hint.innerHTML = q.trim()
+        ? "匹配 <b>" + visible + "</b> 个 · 已选 <b>" + sel + "</b> / 最多 " + maxCompare
+        : "已选 <b>" + sel + "</b> / 最多 " + maxCompare;
+    }
+  }
+
+  if (chipSearch) {
+    var savedQ = sessionStorage.getItem(CHIP_Q_KEY);
+    if (savedQ) {
+      chipSearch.value = savedQ;
+      sessionStorage.removeItem(CHIP_Q_KEY);
+      applyChipFilter();
+    }
+    chipSearch.addEventListener("input", applyChipFilter);
+    chipSearch.addEventListener("search", applyChipFilter);   // 点 × 清空时也触发
+    document.addEventListener("keydown", function (e) {
+      var tag = (e.target && e.target.tagName) || "";
+      var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+      if (e.key === "/" && !typing) {
+        e.preventDefault();
+        chipSearch.focus();
+      } else if (e.key === "Escape" && document.activeElement === chipSearch) {
+        chipSearch.value = "";
+        applyChipFilter();
+      }
+    });
+  }
 
   // ── 行筛选 ───────────────────────────────────────────────────
   var tbody = document.querySelector("#matrix tbody");

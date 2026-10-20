@@ -132,7 +132,8 @@ def test_compare_picker_shows_plain_name():
 
         # 自家那一行：有 data-kind="self"，标签块里不应有类别徽标
         row = re.search(
-            r'<div class="ent-row" data-kind="self">(.*?)<div class="chips">',
+            # 行上还挂着 data-ent（搜索过滤用），所以不能要求属性到此结束
+            r'<div class="ent-row" data-kind="self"[^>]*>(.*?)<div class="chips">',
             html,
             re.S,
         )

@@ -6,15 +6,18 @@
 {% include "_header.html" %}
 
 <section class="panel picker">
-  <div class="panel-head">
+  <div class="panel-head with-search">
     <h2>选择对比型号</h2>
-    <span class="hint">已选 <b id="selCount">{{ selected|length }}</b> / 最多 {{ max_compare }}</span>
+    <input type="search" id="chipSearch" class="search picker-search"
+           placeholder="搜索公司 / 型号 / 名称…（按 / 聚焦）" autocomplete="off"
+           aria-label="搜索型号">
+    <span class="hint" id="pickHint">已选 <b id="selCount">{{ selected|length }}</b> / 最多 {{ max_compare }}</span>
   </div>
 
   {% for ent in entities %}
     {% set items = all_products | selectattr('entity_id', 'equalto', ent.id) | list %}
     {% if items %}
-    <div class="ent-row" data-kind="{{ ent.kind }}">
+    <div class="ent-row" data-kind="{{ ent.kind }}" data-ent="{{ ent.name }}">
       <div class="ent-label">
         {% if ent.kind != 'self' %}<span class="ent-kind {{ ent.kind }}">{{ kind_label[ent.kind] }}</span>{% endif %}
         <span class="ent-name">{{ ent.name }}</span>
@@ -27,6 +30,7 @@
                 data-pid="{{ pr.id }}"
                 data-model="{{ pr.model }}"
                 data-pcat="{{ pr.category or '' }}"
+                data-haystack="{{ ent.name }} {{ pr.model }} {{ pr.name or '' }}"
                 title="{{ pr.name or pr.model }}（{{ cat_all.get(pr.category, pr.category or '未分类') }}）">
           {{ pr.model }}
           {% if pr.status != 'active' %}<em>{{ pr.status }}</em>{% endif %}
@@ -36,6 +40,8 @@
     </div>
     {% endif %}
   {% endfor %}
+
+  <p class="hint picker-empty" id="pickerEmpty" hidden>没有匹配的型号。换个关键词，或清空搜索框。</p>
 
   <div class="picker-foot">
     {% if has_self %}<button type="button" class="link" id="pickSelf">只看{{ self_name }}</button>{% endif %}
@@ -172,5 +178,6 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/filter.js?v={{ asset_v }}" defer></script>
 <script src="/static/compare.js?v={{ asset_v }}" defer></script>
 {% endblock %}

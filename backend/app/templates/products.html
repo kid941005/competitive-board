@@ -43,8 +43,23 @@
 <section class="panel">
   <div class="panel-head">
     <h2>全部型号</h2>
-    <span class="hint">{{ rows|length }} 个型号 · 点击「编辑」改元信息与参数</span>
+    <span class="hint" id="prodCount">{{ rows|length }} 个型号 · 点击「编辑」改元信息与参数</span>
   </div>
+
+  <div class="filters prod-filters">
+    <input type="search" id="prodSearch" class="search" placeholder="搜索公司 / 型号 / 名称…"
+           autocomplete="off" aria-label="搜索型号">
+    <select id="prodCompany" class="ds-select" aria-label="按公司筛选">
+      <option value="">全部公司</option>
+      {% for e in companies %}<option value="{{ e.name }}">{{ e.name }}</option>{% endfor %}
+    </select>
+    <select id="prodCat" class="ds-select" aria-label="按大类筛选">
+      <option value="">全部大类</option>
+      {% for code, label in categories %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+    </select>
+    <span class="hint" id="prodFilterHint" hidden></span>
+  </div>
+
   <div class="table-wrap">
     <table class="matrix usertable">
       <thead>
@@ -55,7 +70,9 @@
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr>
+        <tr data-ent="{{ r.entity.name if r.entity else '' }}"
+            data-cat="{{ r.product.category or '' }}"
+            data-haystack="{{ r.entity.name if r.entity else '' }} {{ r.product.model }} {{ r.product.name or '' }}">
           <td>{{ r.entity.name if r.entity else '—' }}</td>
           <td class="mono">{{ r.product.model }}</td>
           <td>{{ cat_all.get(r.product.category, r.product.category or '未分类') }}</td>
@@ -81,8 +98,14 @@
         {% if not rows %}
         <tr><td colspan="7" class="dim">还没有型号。用上面的表单新建，或去<a href="/datasheet">导入规格书</a>。</td></tr>
         {% endif %}
+        <tr id="prodNoMatch" hidden><td colspan="7" class="dim">没有匹配的型号。换个关键词，或把筛选条件改回「全部」。</td></tr>
       </tbody>
     </table>
   </div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/filter.js?v={{ asset_v }}" defer></script>
+<script src="/static/products.js?v={{ asset_v }}" defer></script>
 {% endblock %}

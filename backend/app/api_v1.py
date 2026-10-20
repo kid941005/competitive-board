@@ -33,10 +33,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
-from . import audit, auth, config, settings_store, tokens
+from . import audit, auth, config, search, settings_store, tokens
 from .compare import format_number, metrics_for_categories
 from .db import get_session
 from .importer import import_rows
@@ -487,6 +487,10 @@ def get_context(
 @router.get("/metrics")
 def list_metrics(
     category: str | None = Query(default=None, description="只看某大类适用的指标"),
+    q: str | None = Query(
+        default=None,
+        description="关键词：指标 key / 中文名 / 识别别名（如「静压」「pressure」）",
+    ),
     _p: Principal = Depends(require_scope("read")),
     session: Session = Depends(get_session),
 ):
@@ -494,19 +498,41 @@ def list_metrics(
     if category:
         _check_category(category)
         metrics = metrics_for_categories(metrics, {category})
-    return ok([_metric_dict(m) for m in metrics], total=len(metrics))
+    keyword = search.normalize(q)
+    data = []
+    for m in metrics:
+        if keyword and not search.hits(m.key, m.name, m.aliases, m.category, keyword=keyword):
+            continue
+        item = _metric_dict(m)
+        if keyword:
+            item["matched"] = search.matched_fields(
+                keyword, key=m.key, name=m.name, aliases=m.aliases, group=m.category
+            )
+        data.append(item)
+    return ok(data, total=len(data), q=keyword)
 
 
 @router.get("/entities")
 def list_entities(
     kind: str | None = Query(default=None, description="self / competitor / customer"),
+    q: str | None = Query(default=None, description="公司名关键词（中英文都匹配，空格分隔多个词）"),
     _p: Principal = Depends(require_scope("read")),
     session: Session = Depends(get_session),
 ):
     rows = list(session.exec(select(Entity).order_by(Entity.id)).all())
     if kind:
         rows = [e for e in rows if e.kind == kind]
-    return ok([_entity_dict(e) for e in rows], total=len(rows))
+    keyword = search.normalize(q)
+    if keyword:
+        # 公司总量很小（几十条），在内存里筛比拼 SQL 条件更好读，也顺带支持多词
+        rows = [e for e in rows if search.hits(e.name, e.name_en, keyword=keyword)]
+    data = []
+    for e in rows:
+        item = _entity_dict(e)
+        if keyword:
+            item["matched"] = search.matched_fields(keyword, name=e.name, name_en=e.name_en)
+        data.append(item)
+    return ok(data, total=len(data), q=keyword)
 
 
 @router.get("/products")
@@ -514,12 +540,16 @@ def list_products(
     entity_id: int | None = None,
     category: str | None = None,
     status: str | None = None,
-    q: str | None = Query(default=None, description="型号模糊搜索"),
+    q: str | None = Query(
+        default=None,
+        description="关键词：型号 / 产品名 / 公司名（中英文），空格分隔多个词，按 AND 匹配",
+    ),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: int | None = Query(default=None, description="上一页最后一条的 id"),
     _p: Principal = Depends(require_scope("read")),
     session: Session = Depends(get_session),
 ):
+    keyword = search.normalize(q)
     stmt = select(Product)
     if entity_id is not None:
         stmt = stmt.where(Product.entity_id == entity_id)
@@ -527,8 +557,21 @@ def list_products(
         stmt = stmt.where(Product.category == _check_category(category))
     if status:
         stmt = stmt.where(Product.status == status)
-    if q:
-        stmt = stmt.where(Product.model.ilike(f"%{q}%"))  # type: ignore[attr-defined]
+    if keyword:
+        # 原来只匹配 model 字面量：搜「村田」或搜产品名都搜不到。
+        # 现在把公司名一起纳入，代价是一次 join（entity_id 上有索引）。
+        # 每个词一个 WHERE，词之间是 AND、字段之间是 OR —— 与 search.hits 的语义一致。
+        stmt = stmt.join(Entity, Entity.id == Product.entity_id)  # type: ignore[arg-type]
+        for word in search.tokens(keyword):
+            pat = search.pattern(word)
+            stmt = stmt.where(
+                or_(
+                    Product.model.ilike(pat, escape=search.ESCAPE),
+                    Product.name.ilike(pat, escape=search.ESCAPE),
+                    Entity.name.ilike(pat, escape=search.ESCAPE),
+                    Entity.name_en.ilike(pat, escape=search.ESCAPE),
+                )
+            )
     if cursor is not None:
         stmt = stmt.where(Product.id > cursor)  # type: ignore[operator]
 
@@ -542,7 +585,17 @@ def list_products(
     data = []
     for p in rows:
         pool = metrics_for_categories(metrics, {p.category} if p.category else set())
-        data.append(_product_dict(p, ents.get(p.entity_id), filled.get(p.id or 0, 0), len(pool)))
+        ent = ents.get(p.entity_id)
+        item = _product_dict(p, ent, filled.get(p.id or 0, 0), len(pool))
+        if keyword:
+            item["matched"] = search.matched_fields(
+                keyword,
+                model=p.model,
+                name=p.name,
+                company=ent.name if ent else None,
+                company_en=ent.name_en if ent else None,
+            )
+        data.append(item)
     # total 曾是「本页条数」，调用方据此以为库里只有 3 条。分开说清楚：
     # count = 本页条数，has_more + next_cursor = 还有没有下一页。
     return ok(
@@ -550,6 +603,7 @@ def list_products(
         count=len(data),
         has_more=has_more,
         next_cursor=rows[-1].id if has_more and rows else None,
+        q=keyword,
     )
 
 
@@ -1182,7 +1236,10 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
         {
             "name": "search_products",
             "method": "GET", "path": "/api/v1/products",
-            "description": "按公司/大类/状态/型号关键词筛选型号，分页用 cursor。",
+            "description": (
+                "检索型号：q 同时匹配型号、产品名、公司名（中英文），空格分隔多个词按 AND；"
+                "可再叠加 entity_id/category/status。每条结果带 matched 说明命中了哪个字段。"
+            ),
             "scope": "read",
             "parameters": {
                 "type": "object",
@@ -1190,9 +1247,39 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "entity_id": {"type": "integer"},
                     "category": {"type": "string", "enum": list(config.CATEGORY_LABEL)},
                     "status": {"type": "string", "enum": ["active", "eol", "rumored"]},
-                    "q": {"type": "string", "description": "型号模糊搜索"},
+                    "q": {"type": "string",
+                          "description": "型号 / 产品名 / 公司名关键词，空格分隔多个词"},
                     "limit": {"type": "integer", "maximum": 200, "default": 50},
                     "cursor": {"type": "integer", "description": "上一页最后一条 id"},
+                },
+            },
+        },
+        {
+            "name": "search_companies",
+            "method": "GET", "path": "/api/v1/entities",
+            "description": "按名称检索公司（中文名与英文名都匹配），可按 kind 过滤自研/友商/客户。",
+            "scope": "read",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "q": {"type": "string", "description": "公司名关键词"},
+                    "kind": {"type": "string", "enum": ["self", "competitor", "customer"]},
+                },
+            },
+        },
+        {
+            "name": "search_metrics",
+            "method": "GET", "path": "/api/v1/metrics",
+            "description": (
+                "检索指标字典：q 匹配 key / 中文名 / 识别别名 / 指标组；"
+                "写参数前用它确认 key 与适用范围。"
+            ),
+            "scope": "read",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "q": {"type": "string", "description": "如「静压」「pressure」「flow」"},
+                    "category": {"type": "string", "enum": list(config.CATEGORY_LABEL)},
                 },
             },
         },

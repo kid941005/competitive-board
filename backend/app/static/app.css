@@ -682,3 +682,20 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
   .act-delete { background: #3b1113; color: #fca5a5; }
   .act-import { background: #3a2c0a; color: #fbbf24; }
 }
+
+/* ── 搜索与筛选 ───────────────────────────────────────────────
+ * [hidden] 必须真的隐藏：作者样式里的 display 会盖掉 UA 的 [hidden]{display:none}，
+ * 于是 chip/表格行设了 hidden 却仍然可见。
+ */
+[hidden] { display: none !important; }
+
+.panel-head.with-search { align-items: center; }
+.picker-search { margin-left: auto; width: 220px; }
+
+.prod-filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 0 16px 12px;
+}
+.prod-filters .ds-select { height: 30px; }
+#prodFilterHint { color: var(--text-3); }
+.picker-empty { padding: 0 16px 8px; }
