@@ -185,3 +185,28 @@ class ApiIdempotency(SQLModel, table=True):
     status_code: int
     response_json: str
     created_at: datetime = Field(default_factory=utcnow)
+
+
+# ── 审计日志 ───────────────────────────────────────────────────────────────
+class AuditLog(SQLModel, table=True):
+    """数据变更日志：谁、什么时候、从哪个入口、把什么改成了什么。
+
+    刻意记「旧值 → 新值」而不是只记「改过了」：事后追查时，
+    「谁把它改成 0.7 的」和「它原来是 0.72」是两个必须答得上的问题。
+    删除操作同样留快照，否则删完就再也说不清丢了什么。
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: int | None = Field(default=None, primary_key=True)
+    at: datetime = Field(default_factory=utcnow, index=True)
+    actor: str = Field(index=True, description="操作者：用户名或令牌名")
+    actor_kind: str = Field(default="user", description="user / token / system")
+    action: str = Field(index=True, description="create / update / delete / import / login")
+    object_type: str = Field(index=True, description="product / spec / entity / token / setting")
+    object_id: int | None = Field(default=None, index=True)
+    object_label: str = Field(default="", description="便于阅读的标识，如「MZB1001T02 · 静压」")
+    origin: str = Field(default="web", description="web / api / datasheet / import")
+    request_id: str | None = Field(default=None, index=True, description="同一次请求的多行共享")
+    changes: str = Field(default="[]", description="JSON：[{field, old, new}]")
+    note: str | None = None

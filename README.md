@@ -115,6 +115,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 批量导入 | Excel / CSV 一次写入多型号多参数，自动建档（见下节） |
 | 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号 |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
+| 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
 
 ---
 
@@ -262,6 +263,39 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d 
 另有 `ETag`/`If-Match` 防覆盖、`/changes?since=` 做增量同步、`/tools` 供 function-calling 直接消费。
 
 > 令牌走 Bearer 头、不走 Cookie，所以**不校验 CSRF**——浏览器侧的防护一条都没放松。
+
+---
+
+## 变更日志
+
+入口：`/admin/logs`（导航「变更日志」）。看的是**数据层面的变化**，不是请求流水。
+
+### 记什么
+
+| 字段 | 说明 |
+|---|---|
+| 时间 / 操作者 | 用户名；AI 调用记为令牌名，并标「令牌」 |
+| 来源 | 页面 / 规格书 / 表格导入 / API |
+| 动作 | 新建 / 修改 / 删除 / 导入 |
+| 对象 | 型号 / 参数 / 公司 / 令牌 / 系统参数 |
+| 变更内容 | **`旧值 → 新值`**，逐字段展开，最多 200 项 |
+
+覆盖的写入点：改型号元信息、改参数值/条件/复核、批量写参数、导入（逐项）、规格书提交、建/删型号、建公司、签发/吊销令牌、改系统参数。
+
+### 四条设计取舍
+
+1. **记旧值，不只记动作**。「admin 更新了 MZB1001T02」在追查时没有用；要能回答「改成多少、原来多少、谁改的」。
+2. **值与条件分开记**。只改 `@15Vpp → @18Vdc` 时，不应表现为「值从 0.7 变成 0.72」。
+3. **删除留快照**。删之前把型号元信息和全部参数值写进日志 —— 否则删完就再也说不清丢了什么。
+4. **没变化就不写**。重复提交同一份数据不产生日志，避免把真正的变更淹掉。
+
+### 几条使用建议
+
+- 按「导入」筛 + 关键词搜型号，可以看清一次导入具体改了哪些格；
+- 发现某个数值可疑，按型号搜，能看到它被谁改过几次、每次从多少到多少；
+- 日志本身也会增长，默认保留 180 天（`audit.retention_days` 可调），启动时自动清一次，页面也有手动清理按钮。
+
+> 日志要求**管理员**权限：它包含所有人的操作记录，属于敏感数据。AI 侧对应 `/api/v1/audit`，需要 `admin` scope。
 
 ---
 
@@ -490,12 +524,13 @@ python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公�
 python tests/test_import_export.py    # 10 项：Excel/CSV 导入与 Excel 导出
 python tests/test_product_edit.py     # 10 项：产品编辑与三类防护
 python tests/test_api_v1.py           # 21 项：令牌鉴权、幂等、dry-run、ETag、批量回执
+python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
 python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 # 或 pytest tests/
 ```
 
-共 **127 项**。覆盖内容：
+共 **140 项**。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -503,6 +538,7 @@ node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器�
 - **权限体系**：密码哈希与策略、角色→权限位边界、匿名访问的页面跳转与接口 401、普通用户在页面与接口层被 403 拦截、导航项隐藏、CSRF 缺失被拒、停用账号会话立即失效、最后一个管理员不可降级/停用、系统参数改完即时生效
 - **表格导入 / 导出**：Excel 与 CSV 必须拦住同样的坏行（指标不在字典、大类无法识别、跨大类冲突），空值算未公开；导出 xlsx 可被 openpyxl 解析，最优加粗、缺失为「—」、完整度行存在、`E2` 冻结
 - **产品编辑**：改值并标记复核、清空即删除、非法数字不覆盖旧值、新增缺失项、换大类被拒（已有参数时）、建号与删除、viewer 一律 403
+- **变更日志**：改参数记「旧值 → 新值」、只改条件不误报值变更、清空记为空、没变化不写日志、删除留快照、导入逐项且共享 request_id、viewer 看不到、`/api/v1/audit` 需 admin scope、保留期只清过期
 - **AI 接口**：无凭证 401 / scope 不足 403 的统一信封、令牌 secret 含下划线仍可校验、dry_run 真不落库（连公司都不建）、幂等重放只写一条、批量写参数逐项回执、`If-Match` 过期 409、JSON 原生数字不崩、`/tools` 清单可被 function-calling 消费、旧页面路由未被影响
 - **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
 
@@ -534,13 +570,15 @@ backend/
 │   ├── importer.py       Excel / CSV 导入（同一套校验）+ 模板生成
 │   ├── api_v1.py         机器调用接口面（信封 / 令牌 / 幂等 / dry-run / tools）
 │   ├── tokens.py         API 令牌签发与校验（只存 sha256）
+│   ├── audit.py          变更日志：快照 / 差异 / 查询 / 保留期清理
 │   ├── exporters.py      Excel 导出（冻结窗格 / 最优高亮 / 缺失灰显 / 完整度 / 说明页）
 │   ├── seed.py           示例数据
 │   ├── main.py           路由 + 鉴权异常处置
 │   ├── templates/        登录 / 对比 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
 │   └── static/           app.css, compare.js, datasheet.js, import.js, product-edit.js（零依赖）
 ├── tests/                test_compare / test_datasheet / test_datasheet_import
-│                         test_import_export / test_product_edit / test_api_v1 / test_auth
+│                         test_import_export / test_product_edit / test_api_v1
+│                         test_audit / test_auth
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt

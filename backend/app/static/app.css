@@ -656,3 +656,29 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 .scope-item b { font-size: 12.5px; font-weight: 600; }
 .scope-item i { font-style: normal; font-size: 10.5px; color: var(--text-3); font-family: var(--mono); }
 .revoked-row { opacity: .55; }
+
+
+/* ── 变更日志 ── */
+.logfilters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+.logfilters .ds-select { min-width: 130px; }
+.log-wrap { max-height: calc(100vh - 380px); min-height: 260px; }
+.logtable td { vertical-align: top; font-size: 12.5px; }
+.logtable tbody tr:hover { background: var(--surface-2); }
+.act { font-size: 11px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.act-create { background: var(--best-bg); color: var(--best-fg); }
+.act-update { background: var(--accent-soft); color: var(--accent); }
+.act-delete { background: #fee2e2; color: #991b1b; }
+.act-import { background: #fef3c7; color: #92400e; }
+.chgcell { max-width: 720px; }
+.chg { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; }
+.chg .cf { color: var(--text-2); min-width: 96px; }
+.chg .cv { font-family: var(--mono); font-size: 12px; }
+.chg .cv.old { color: var(--text-3); text-decoration: line-through; }
+.chg .cv.new { color: var(--best-fg); font-weight: 600; }
+.chg .arrow { color: var(--text-3); font-size: 11px; }
+.lognote { margin-top: 3px; font-size: 11.5px; color: var(--text-3); }
+.pager { display: flex; gap: 14px; align-items: center; margin-top: 12px; font-size: 12.5px; }
+@media (prefers-color-scheme: dark) {
+  .act-delete { background: #3b1113; color: #fca5a5; }
+  .act-import { background: #3a2c0a; color: #fbbf24; }
+}

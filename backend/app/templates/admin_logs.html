@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}变更日志 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if ok %}<p class="flash ok">{{ ok }}</p>{% endif %}
+{% if err %}<p class="flash err">{{ err }}</p>{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>筛选</h2>
+    <span class="hint">近 {{ days }} 天共 {{ total }} 条 · 保留期 {{ retention }} 天</span>
+  </div>
+  <form method="get" action="/admin/logs" class="logfilters">
+    <label class="ds-field">
+      <span>时间范围</span>
+      <select name="days" class="ds-select">
+        {% for d, label in [(1, '今天'), (7, '近 7 天'), (30, '近 30 天'), (90, '近 90 天'), (365, '近一年')] %}
+        <option value="{{ d }}"{% if days == d %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>操作者</span>
+      <select name="actor" class="ds-select">
+        <option value="">全部</option>
+        {% for a in actors %}
+        <option value="{{ a }}"{% if filters.actor == a %} selected{% endif %}>{{ a }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>动作</span>
+      <select name="action" class="ds-select">
+        <option value="">全部</option>
+        {% for code, label in action_options %}
+        <option value="{{ code }}"{% if filters.action == code %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>对象</span>
+      <select name="object_type" class="ds-select">
+        <option value="">全部</option>
+        {% for code, label in object_options %}
+        <option value="{{ code }}"{% if filters.object_type == code %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>来源</span>
+      <select name="origin" class="ds-select">
+        <option value="">全部</option>
+        {% for code, label in origin_options %}
+        <option value="{{ code }}"{% if filters.origin == code %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field grow">
+      <span>关键词（型号 / 指标 / 值 / 备注）</span>
+      <input type="search" name="q" class="ds-input" value="{{ filters.q }}" placeholder="如 MZB1001T02 或 静压">
+    </label>
+    <button type="submit" class="btn">筛选</button>
+    <a class="btn ghost" href="/admin/logs">重置</a>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>变更记录</h2>
+    <span class="hint">第 {{ page }} / {{ pages }} 页</span>
+  </div>
+
+  <div class="table-wrap log-wrap">
+    <table class="matrix usertable logtable">
+      <thead>
+        <tr>
+          <th style="width:128px">时间</th>
+          <th style="width:110px">操作者</th>
+          <th style="width:64px">来源</th>
+          <th style="width:60px">动作</th>
+          <th style="width:78px">对象</th>
+          <th style="width:190px">标识</th>
+          <th>变更内容</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for it in items %}
+        {% set r = it.row %}
+        <tr>
+          <td class="mono dim">{{ r.at.strftime('%m-%d %H:%M:%S') if r.at else '—' }}</td>
+          <td>
+            {{ r.actor }}
+            {% if r.actor_kind == 'token' %}<span class="tag-self">令牌</span>{% endif %}
+          </td>
+          <td class="dim">
+            {% if r.origin == 'web' %}页面
+            {% elif r.origin == 'datasheet' %}规格书
+            {% elif r.origin == 'import' %}表格导入
+            {% elif r.origin == 'api' %}API
+            {% else %}{{ r.origin }}{% endif %}
+          </td>
+          <td>
+            <span class="act act-{{ r.action }}">
+              {% if r.action == 'create' %}新建{% elif r.action == 'update' %}修改{% elif r.action == 'delete' %}删除{% elif r.action == 'import' %}导入{% else %}{{ r.action }}{% endif %}
+            </span>
+          </td>
+          <td class="dim">
+            {% if r.object_type == 'product' %}型号{% elif r.object_type == 'spec' %}参数
+            {% elif r.object_type == 'entity' %}公司{% elif r.object_type == 'token' %}令牌
+            {% elif r.object_type == 'setting' %}系统参数{% else %}{{ r.object_type }}{% endif %}
+          </td>
+          <td class="mono">{{ r.object_label or '—' }}</td>
+          <td class="chgcell">
+            {% if it.changes %}
+              {% for c in it.changes %}
+              <div class="chg">
+                <span class="cf">{{ c.field }}</span>
+                <span class="cv old">{{ c.old if c.old is not none else '—' }}</span>
+                <span class="arrow">→</span>
+                <span class="cv new">{{ c.new if c.new is not none else '（清空）' }}</span>
+              </div>
+              {% endfor %}
+            {% else %}
+              <span class="dim">{{ r.note or '—' }}</span>
+            {% endif %}
+            {% if r.note and it.changes %}<div class="lognote">{{ r.note }}</div>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not items %}
+        <tr><td colspan="7" class="dim">这段时间没有变更记录。</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pages > 1 %}
+  <div class="pager">
+    {% set base = '/admin/logs?days=' ~ days ~ '&actor=' ~ filters.actor ~ '&action=' ~ filters.action ~ '&object_type=' ~ filters.object_type ~ '&origin=' ~ filters.origin ~ '&q=' ~ filters.q %}
+    {% if page > 1 %}<a class="link" href="{{ base }}&page={{ page - 1 }}">← 上一页</a>{% endif %}
+    <span class="dim">{{ (page - 1) * 50 + 1 }}–{{ [(page * 50), total]|min }} / {{ total }}</span>
+    {% if page < pages %}<a class="link" href="{{ base }}&page={{ page + 1 }}">下一页 →</a>{% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel notes">
+  <div class="panel-head"><h2>维护</h2></div>
+  <form method="post" action="/admin/logs/purge"
+        onsubmit="return confirm('按保留期 {{ retention }} 天清理旧日志？此操作不可撤销。');">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <button type="submit" class="btn ghost">清理超过 {{ retention }} 天的日志</button>
+    <span class="hint">保留期可在「系统设置」里调整；启动时也会自动清一次</span>
+  </form>
+</section>
+{% endblock %}

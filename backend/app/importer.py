@@ -57,6 +57,8 @@ class ImportReport:
     written_specs: int = 0
     skipped_missing: int = 0
     errors: list[str] = field(default_factory=list)
+    # 逐项变更明细（供审计日志使用）：{model, metric, old, new}
+    details: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -311,6 +313,11 @@ def import_rows(
                 ProductSpec.metric_id == metric.id,
             )
         ).first()
+        old_value = None
+        if existing:
+            old_value = existing.value_num if existing.value_num is not None else existing.value_text
+        new_value = num if is_number else value_raw
+
         if existing:
             existing.value_num = num if is_number else None
             existing.value_text = None if is_number else value_raw
@@ -333,6 +340,12 @@ def import_rows(
                 )
             )
         report.written_specs += 1
+        report.details.append({
+            "model": model,
+            "metric": metric.name,
+            "old": None if old_value is None else str(old_value),
+            "new": None if new_value is None else str(new_value),
+        })
 
     # 全程用 flush 而不是 commit：一次导入要么整批可见，要么整批回滚。
     # 早期版本每建一个实体就 commit，中途报错会留下半成品数据。

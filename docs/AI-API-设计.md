@@ -36,6 +36,7 @@
 | GET | `/api/v1/products/{id}/specs` | 只取参数 |
 | GET | `/api/v1/matrix?p=1,2,3` | 横向对比（复用页面同一套计算） |
 | GET | `/api/v1/changes?since=` | 增量变更流，供定期同步 |
+| GET | `/api/v1/audit` | 变更日志（谁把什么改成了什么），需 `admin` scope |
 
 ### 写入面 `write`
 | 方法 | 路径 | 用途 |
@@ -183,6 +184,7 @@ Authorization: Bearer cib_<prefix>_<secret>
 | `/context` | 一次拿骨架 | 模型冷启动，省掉十几轮探查 |
 | `/changes?since=` | 增量变更流 | 定时同步、触发下游（周报 / 告警） |
 | 统一 `code` 枚举 | 程序分支 | 失败重试策略、可观测性统计 |
+| `audit` 变更日志 | 追查历史改动 | 让 Agent 在写之前先看「这项参数之前被谁改过」 |
 | `metric_key` 稳定标识 | 写参数只认 key | 指标改名不影响历史调用 |
 
 ### 接 MCP 的方式（已预留，未实现）

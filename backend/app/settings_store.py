@@ -106,6 +106,16 @@ SPECS: tuple[SettingSpec, ...] = (
         help="低于该值的识别结果默认不勾选，需人工确认。",
     ),
     SettingSpec(
+        key="audit.retention_days",
+        label="变更日志保留天数",
+        group="安全",
+        kind="int",
+        default=int(os.getenv("CIB_AUDIT_DAYS", "180")),
+        minimum=7,
+        maximum=3650,
+        help="启动时清理超期日志；0 不设为禁用，最小值 7 天以免误清。",
+    ),
+    SettingSpec(
         key="security.session_hours",
         label="登录会话有效期 (小时)",
         group="安全",

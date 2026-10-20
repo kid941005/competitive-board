@@ -18,7 +18,7 @@ import os
 import re
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -37,7 +37,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from . import api_v1, auth, config, settings_store, tokens
+from . import api_v1, audit, auth, config, settings_store, tokens
 from .auth import (
     COOKIE_NAME,
     P_EXPORT,
@@ -81,6 +81,9 @@ async def lifespan(_app: FastAPI):
     with Session(engine) as session:
         auth.purge_expired(session)
         generated = auth.ensure_bootstrap_admin(session)
+        # 日志会无限增长，按保留期在启动时清一次
+        d = settings_store.all_values(session)
+        audit.purge(session, int(d.get("audit.retention_days", audit.RETENTION_DEFAULT_DAYS)))
     if generated:
         # 只在此打印一次。请立即登录后修改密码。
         print("=" * 62, flush=True)
@@ -91,7 +94,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.7.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -245,6 +248,11 @@ def _perm_user(perm: str):
         return pair[0]
 
     return dependency
+
+
+def _rid() -> str:
+    """一次请求的关联 id：批量操作会产生多行日志，靠它折叠成一组。"""
+    return uuid.uuid4().hex[:12]
 
 
 def _ctx(user: User, auth_session: AuthSession, sset: dict, **extra) -> dict:
@@ -940,6 +948,8 @@ def api_ds_commit(
     session.flush()
 
     metrics = {m.key: m for m in session.exec(select(SpecMetric)).all()}
+    metric_by_id = {m.id: m for m in metrics.values()}
+    before_specs = audit.spec_snapshot(session, product.id, metric_by_id)
     written = updated = skipped = 0
     errors: list[str] = []
 
@@ -990,6 +1000,28 @@ def api_ds_commit(
             )
             written += 1
 
+    rid = _rid()
+    if entity_created:
+        audit.record(
+            session, actor=user.username, action="create", object_type="entity",
+            object_id=entity.id, label=entity.name, origin="datasheet",
+            changes=[{"field": "公司", "old": None, "new": entity.name}],
+            note="由规格书导入自动建档", request_id=rid,
+        )
+    if product_created:
+        audit.record(
+            session, actor=user.username, action="create", object_type="product",
+            object_id=product.id, label=product.model, origin="datasheet",
+            changes=audit.diff({}, audit.product_snapshot(product), audit.PRODUCT_LABELS),
+            note="由规格书导入自动建档", request_id=rid,
+        )
+    audit.record(
+        session, actor=user.username, action="update", object_type="spec",
+        object_id=product.id, label=product.model, origin="datasheet",
+        changes=audit.diff(before_specs, audit.spec_snapshot(session, product.id, metric_by_id)),
+        note=f"规格书 {meta.get('filename') or payload.doc_id}：写入 {written}、更新 {updated}、跳过 {skipped}",
+        request_id=rid,
+    )
     session.commit()
     return {
         "written": written,
@@ -1090,6 +1122,8 @@ async def api_import(
         except UnicodeDecodeError:
             text = raw.decode("gbk", errors="replace")
         report = import_csv(session, text, batch_note=note)
+    audit.log_import(session, report, actor=_user.username, origin="import",
+                     request_id=_rid())
     return report.as_dict()
 
 
@@ -1252,6 +1286,13 @@ def product_create(
     product = Product(entity_id=entity_id, model=model, name=name.strip() or model,
                       category=category, status=status or "active")
     session.add(product)
+    session.flush()
+    audit.record(
+        session, actor=_user.username, action="create", object_type="product",
+        object_id=product.id, label=product.model, origin="web",
+        changes=audit.diff({}, audit.product_snapshot(product), audit.PRODUCT_LABELS),
+        request_id=_rid(),
+    )
     session.commit()
     return _redirect(f"/products/{product.id}", f"已创建型号 {model}，现在可以录入参数")
 
@@ -1354,6 +1395,7 @@ def product_save_meta(
                 "err",
             )
 
+    before = audit.product_snapshot(product)
     product.model = model
     product.name = name.strip() or model
     product.category = category
@@ -1361,6 +1403,12 @@ def product_save_meta(
     product.datasheet_url = datasheet_url.strip() or None
     product.note = note.strip() or None
     session.add(product)
+    audit.record(
+        session, actor=_user.username, action="update", object_type="product",
+        object_id=product.id, label=product.model, origin="web",
+        changes=audit.diff(before, audit.product_snapshot(product), audit.PRODUCT_LABELS),
+        request_id=_rid(),
+    )
     session.commit()
     return _redirect(f"/products/{product_id}", "型号信息已保存")
 
@@ -1386,6 +1434,8 @@ async def product_save_specs(
             select(ProductSpec).where(ProductSpec.product_id == product.id)
         ).all()
     }
+
+    before_specs = audit.spec_snapshot(session, product.id, {m.id: m for m in metrics})
 
     source = SpecSource(
         kind="manual",
@@ -1444,6 +1494,13 @@ async def product_save_specs(
             ))
             written += 1
 
+    audit.record(
+        session, actor=user.username, action="update", object_type="spec",
+        object_id=product.id, label=product.model, origin="web",
+        changes=audit.diff(before_specs, audit.spec_snapshot(session, product.id, {m.id: m for m in metrics})),
+        note=f"新增 {written}、更新 {updated}、清除 {removed}",
+        request_id=_rid(),
+    )
     session.commit()
     msg = f"已保存：新增 {written}、更新 {updated}、清除 {removed}"
     if errors:
@@ -1463,10 +1520,26 @@ def product_delete(
     if not product:
         raise HTTPException(404, "型号不存在")
     model = product.model
+    # 删除是唯一「不记就永远查不到」的操作：先把即将消失的数据写成快照
+    snapshot = audit.spec_snapshot(session, product.id)
+    changes = [
+        {"field": f"型号 · {audit.PRODUCT_LABELS.get(k, k)}", "old": audit._s(v), "new": None}
+        for k, v in audit.product_snapshot(product).items() if v not in (None, "")
+    ]
+    changes += [{"field": k, "old": v, "new": None} for k, v in snapshot.items()]
+    audit.record(
+        session, actor=_user.username, action="delete", object_type="product",
+        object_id=product.id, label=model, origin="web", changes=changes,
+        note=f"删除型号及其 {len(snapshot)} 项参数", request_id=_rid(),
+    )
+
     for spec in session.exec(
         select(ProductSpec).where(ProductSpec.product_id == product.id)
     ).all():
         session.delete(spec)
+    # 先 flush：ProductSpec 与 Product 之间没有 ORM relationship，
+    # 同一批提交时 SQLAlchemy 不保证先删子表，SQLite 外键会直接报错
+    session.flush()
     session.delete(product)
     session.commit()
     return _redirect("/products", f"已删除型号 {model}（含其全部参数）")
@@ -1687,10 +1760,18 @@ async def admin_tokens_create(
         return _render_tokens(request, user, auth_session, session, err="至少选择一个 scope")
 
     # 明文只在这里出现一次：不写日志、不进 URL（避免被访问日志收集）
-    raw, _row = tokens.create_token(
+    raw, row = tokens.create_token(
         session, name=name, scopes=scopes,
         created_by=user.username, expires_days=days or None,
     )
+    audit.record(
+        session, actor=user.username, action="create", object_type="token",
+        object_id=row.id, label=name,
+        changes=[{"field": "scope", "old": None, "new": row.scopes},
+                 {"field": "有效期（天）", "old": None, "new": str(days or "长期")}],
+        note="签发 API 令牌", request_id=_rid(),
+    )
+    session.commit()
     return _render_tokens(
         request, user, auth_session, session,
         new_token=raw, new_token_name=name,
@@ -1705,9 +1786,90 @@ def admin_tokens_revoke(
     _pair: tuple[User, AuthSession] = Depends(_perm(P_USERS)),
     session: Session = Depends(get_session),
 ):
+    operator, _ = _pair
     if not tokens.revoke(session, token_id):
         return _redirect("/admin/tokens", "令牌不存在或已撤销", "err")
+    audit.record(
+        session, actor=operator.username, action="delete", object_type="token",
+        object_id=token_id, label=f"令牌 #{token_id}",
+        changes=[{"field": "状态", "old": "有效", "new": "已吊销"}],
+        note="吊销 API 令牌", request_id=_rid(),
+    )
+    session.commit()
     return _redirect("/admin/tokens", "令牌已吊销，立即失效")
+
+
+# ── 管理员：变更日志 ───────────────────────────────────────────────────────
+LOG_ACTIONS = (("create", "新建"), ("update", "修改"), ("delete", "删除"), ("import", "导入"))
+LOG_OBJECTS = (("product", "型号"), ("spec", "参数"), ("entity", "公司"), ("token", "令牌"), ("setting", "系统参数"))
+
+
+@app.get("/admin/logs", response_class=HTMLResponse)
+def admin_logs_page(
+    request: Request,
+    pair: tuple[User, AuthSession] = Depends(_perm(P_USERS)),
+    session: Session = Depends(get_session),
+    days: int = Query(default=7, ge=1, le=3650),
+    actor: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    object_type: str | None = Query(default=None),
+    origin: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+):
+    user, auth_session = pair
+    sset = settings_store.all_values(session)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    limit = 50
+    rows, total = audit.query(
+        session, since=since, actor=actor or None, action=action or None,
+        object_type=object_type or None, origin=origin or None, q=q or None,
+        limit=limit, offset=(page - 1) * limit,
+    )
+    items = [{"row": r, "changes": audit.parse_changes(r)} for r in rows]
+    pages = max(1, (total + limit - 1) // limit)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_logs.html",
+        context=_ctx(
+            user, auth_session, sset,
+            page_title="变更日志",
+            page_sub="谁、什么时候、从哪个入口，把什么改成了什么",
+            active="logs",
+            items=items,
+            total=total,
+            page=page,
+            pages=pages,
+            days=days,
+            filters={"actor": actor or "", "action": action or "",
+                     "object_type": object_type or "", "origin": origin or "", "q": q or ""},
+            actors=audit.distinct_actors(session),
+            action_options=LOG_ACTIONS,
+            object_options=LOG_OBJECTS,
+            origin_options=(("web", "页面"), ("datasheet", "规格书"), ("import", "表格导入"), ("api", "API")),
+            retention=sset.get("audit.retention_days"),
+        ),
+    )
+
+
+@app.post("/admin/logs/purge")
+def admin_logs_purge(
+    _csrf: None = Depends(auth.verify_csrf),
+    pair: tuple[User, AuthSession] = Depends(_perm(P_USERS)),
+    session: Session = Depends(get_session),
+):
+    user, _ = pair
+    days = int(settings_store.all_values(session).get("audit.retention_days", audit.RETENTION_DEFAULT_DAYS))
+    removed = audit.purge(session, days)
+    if removed:
+        audit.record(
+            session, actor=user.username, action="delete", object_type="setting",
+            label="变更日志", changes=[{"field": "清理条数", "old": str(removed), "new": "0"}],
+            note=f"按保留期 {days} 天清理", request_id=_rid(),
+        )
+        session.commit()
+    return _redirect("/admin/logs", f"已清理 {removed} 条超过 {days} 天的日志")
 
 
 # ── 管理员：系统参数 ───────────────────────────────────────────────────────
@@ -1751,9 +1913,23 @@ async def admin_settings_save(
     if not values:
         return _redirect("/admin/settings", "没有提交任何配置项", "err")
 
+    before = settings_store.all_values(session)
     changed, errors = settings_store.update_many(session, values, actor.username)
     if errors:
         return _redirect("/admin/settings", "；".join(errors), "err")
+
+    after = settings_store.all_values(session)
+    diff = [
+        {"field": k, "old": audit._s(before.get(k)), "new": audit._s(after.get(k))}
+        for k in values
+        if audit._s(before.get(k)) != audit._s(after.get(k))
+    ]
+    if diff:
+        audit.record(
+            session, actor=actor.username, action="update", object_type="setting",
+            label="系统参数", changes=diff, origin="web", request_id=_rid(),
+        )
+        session.commit()
     return _redirect("/admin/settings", f"已保存 {changed} 项配置")
 
 

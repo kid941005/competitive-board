@@ -36,7 +36,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from . import auth, config, settings_store, tokens
+from . import audit, auth, config, settings_store, tokens
 from .compare import build_matrix, completeness, format_number, metrics_for_categories
 from .db import get_session
 from .importer import import_rows
@@ -218,6 +218,10 @@ def _spec_dict(s: ProductSpec, m: SpecMetric) -> dict:
         "source_id": s.source_id,
         "updated_at": s.updated_at.isoformat() if s.updated_at else None,
     }
+
+
+def _actor(principal: Principal) -> tuple[str, str]:
+    return principal.name, ("token" if principal.kind == "token" else "user")
 
 
 def _etag(p: Product, specs: list[ProductSpec]) -> str:
@@ -659,6 +663,13 @@ def create_entity(
         session.rollback()
         resp = ok(data, dry_run=True, hint="预演：未落库")
     else:
+        actor, kind = _actor(principal)
+        audit.record(
+            session, actor=actor, actor_kind=kind, action="create", object_type="entity",
+            object_id=ent.id, label=ent.name, origin="api",
+            changes=[{"field": "公司", "old": None, "new": ent.name}],
+            request_id=uuid.uuid4().hex[:12],
+        )
         session.commit()
         resp = ok(data, status=201)
     _remember(session, key, "POST", "/api/v1/entities", resp)
@@ -706,6 +717,13 @@ def create_product(
         session.rollback()
         resp = ok(data, dry_run=True, hint="预演：未落库")
     else:
+        actor, kind = _actor(principal)
+        audit.record(
+            session, actor=actor, actor_kind=kind, action="create", object_type="product",
+            object_id=product.id, label=product.model, origin="api",
+            changes=audit.diff({}, audit.product_snapshot(product), audit.PRODUCT_LABELS),
+            request_id=uuid.uuid4().hex[:12],
+        )
         session.commit()
         resp = ok(data, status=201)
     _remember(session, key, "POST", "/api/v1/products", resp)
@@ -724,6 +742,7 @@ def patch_product(
     product = session.get(Product, product_id)
     if product is None:
         raise ApiError("NOT_FOUND", f"型号 id={product_id} 不存在")
+    before_meta = audit.product_snapshot(product)
 
     specs = _specs_of(session, product_id)
     current_etag = _etag(product, specs)
@@ -766,6 +785,13 @@ def patch_product(
     if dry:
         session.rollback()
         return ok(data, dry_run=True, hint="预演：未落库")
+    actor, kind = _actor(_p)
+    audit.record(
+        session, actor=actor, actor_kind=kind, action="update", object_type="product",
+        object_id=product.id, label=product.model, origin="api",
+        changes=audit.diff(before_meta, audit.product_snapshot(product), audit.PRODUCT_LABELS),
+        request_id=uuid.uuid4().hex[:12],
+    )
     session.commit()
     return ok(data, headers={"ETag": _etag(product, _specs_of(session, product_id))})
 
@@ -786,8 +812,17 @@ def delete_product(
             hint=f"将删除型号 {product.model} 及其全部参数",
         )
     specs = _specs_of(session, product_id)
+    snapshot = audit.spec_snapshot(session, product_id)
+    actor, kind = _actor(_p)
+    audit.record(
+        session, actor=actor, actor_kind=kind, action="delete", object_type="product",
+        object_id=product_id, label=product.model, origin="api",
+        changes=[{"field": k, "old": v, "new": None} for k, v in snapshot.items()],
+        note=f"删除型号及其 {len(specs)} 项参数", request_id=uuid.uuid4().hex[:12],
+    )
     for s in specs:
         session.delete(s)
+    session.flush()  # 无 relationship 时，先删子表再删父表，避免外键报错
     session.delete(product)
     session.commit()
     return ok({"deleted_product_id": product_id, "deleted_specs": len(specs)})
@@ -809,6 +844,9 @@ def batch_specs(
         raise ApiError("VALIDATION_FAILED", "items 不能为空", field="items")
 
     metrics = {m.key: m for m in session.exec(select(SpecMetric)).all()}
+    metric_by_id = {m.id: m for m in metrics.values()}
+    touched = {item.product_id for item in body.items}
+    before_by_pid = {pid: audit.spec_snapshot(session, pid, metric_by_id) for pid in touched}
     results: list[dict] = []
     applied = 0
     dry = _is_dry(request, body)
@@ -900,6 +938,19 @@ def batch_specs(
         resp = ok({"results": results, "applied": applied}, dry_run=True,
                   hint="预演：未落库，results 为「将会发生」的结果")
     else:
+        actor, kind = _actor(principal)
+        rid = uuid.uuid4().hex[:12]
+        for pid in touched:
+            product = session.get(Product, pid)
+            if product is None:
+                continue
+            changes = audit.diff(before_by_pid.get(pid, {}),
+                                 audit.spec_snapshot(session, pid, metric_by_id))
+            audit.record(
+                session, actor=actor, actor_kind=kind, action="update", object_type="spec",
+                object_id=pid, label=product.model, origin="api",
+                changes=changes, note=f"批量写入 {applied} 项", request_id=rid,
+            )
         session.commit()
         resp = ok({"results": results, "applied": applied},
                   failed=sum(1 for r in results if not r.get("ok")))
@@ -928,6 +979,10 @@ def api_import_rows(
         batch_note=body.note or "API 导入",
         commit=not dry,
     )
+    if not dry:
+        actor, kind = _actor(_p)
+        audit.log_import(session, report, actor=actor, actor_kind=kind, origin="api",
+                         request_id=uuid.uuid4().hex[:12])
     return ok(report.as_dict(), dry_run=dry)
 
 
@@ -975,6 +1030,63 @@ def revoke_token(
     if not tokens.revoke(session, token_id):
         raise ApiError("NOT_FOUND", "令牌不存在或已撤销")
     return ok({"id": token_id, "revoked": True})
+
+
+# ── 审计日志（只读）────────────────────────────────────────────────────────
+@router.get("/audit")
+def get_audit_log(
+    since: str | None = Query(default=None, description="ISO 时间，含"),
+    until: str | None = Query(default=None, description="ISO 时间，含"),
+    actor: str | None = None,
+    action: str | None = None,
+    object_type: str | None = None,
+    origin: str | None = None,
+    q: str | None = Query(default=None, description="型号 / 指标 / 值 / 备注 关键词"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    _p: Principal = Depends(require_scope("admin")),
+    session: Session = Depends(get_session),
+):
+    """「谁改了什么」的机器可读版本。要求 admin scope —— 日志本身是敏感数据。"""
+
+    def _ts(value: str | None, field: str) -> datetime | None:
+        if not value:
+            return None
+        try:
+            ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise ApiError("VALIDATION_FAILED", f"{field} 不是合法 ISO 时间", field=field) from None
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+    rows, total = audit.query(
+        session,
+        since=_ts(since, "since"),
+        until=_ts(until, "until"),
+        actor=actor, action=action, object_type=object_type, origin=origin, q=q,
+        limit=limit, offset=offset,
+    )
+    return ok(
+        [
+            {
+                "id": r.id,
+                "at": r.at.isoformat() if r.at else None,
+                "actor": r.actor,
+                "actor_kind": r.actor_kind,
+                "action": r.action,
+                "object_type": r.object_type,
+                "object_id": r.object_id,
+                "object_label": r.object_label,
+                "origin": r.origin,
+                "request_id": r.request_id,
+                "changes": audit.parse_changes(r),
+                "note": r.note,
+            }
+            for r in rows
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # ── 发现面：给 AI 的工具清单 ───────────────────────────────────────────────
@@ -1094,6 +1206,25 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
             "method": "POST", "path": "/api/v1/import",
             "description": "按行导入参数（与 Excel 导入同规则），支持 dry_run。",
             "scope": "ingest",
+        },
+        {
+            "name": "get_change_log",
+            "method": "GET", "path": "/api/v1/audit",
+            "description": "查变更日志：谁在什么时候把哪个型号的哪项参数从多少改成了多少。需 admin scope。",
+            "scope": "admin",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "since": {"type": "string", "format": "date-time"},
+                    "until": {"type": "string", "format": "date-time"},
+                    "actor": {"type": "string"},
+                    "action": {"type": "string", "enum": ["create", "update", "delete", "import"]},
+                    "object_type": {"type": "string", "enum": ["product", "spec", "entity", "token", "setting"]},
+                    "q": {"type": "string", "description": "型号 / 指标 / 值关键词"},
+                    "limit": {"type": "integer", "maximum": 500},
+                    "offset": {"type": "integer"},
+                },
+            },
         },
         {
             "name": "delete_product",

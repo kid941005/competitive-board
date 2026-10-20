@@ -11,6 +11,7 @@ from . import config
 from .models import (  # noqa: F401  确保建表时模型已注册
     ApiIdempotency,
     ApiToken,
+    AuditLog,
     Entity,
     Product,
     ProductSpec,
