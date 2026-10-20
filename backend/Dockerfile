@@ -3,9 +3,12 @@
 # 展示层是服务端渲染（Jinja2 + 原生 JS），因此不需要 Node 构建阶段，也不需要第二个镜像。
 FROM python:3.12-slim
 
+# 版本由 CI 传入（--build-arg APP_VERSION=0.7.1），避免 LABEL 与代码里的 app.version 脱节
+ARG APP_VERSION=dev
+
 LABEL org.opencontainers.image.title="competitive-board" \
       org.opencontainers.image.description="压电领域友商竞品参数对比看板" \
-      org.opencontainers.image.version="0.2.0"
+      org.opencontainers.image.version="${APP_VERSION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
