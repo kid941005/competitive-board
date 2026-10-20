@@ -27,6 +27,7 @@ from sqlmodel import Session, select
 
 from . import config
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
+from .numeric import parse_number
 
 # 规范列名 → 可接受的写法（中英文都收，避免用户改表头就导入失败）
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -87,13 +88,20 @@ def normalize_header(raw: str) -> str | None:
 
 
 def _to_float(raw: str) -> float | None:
-    s = (raw or "").strip().replace(",", "")
-    if not s:
-        return None
-    try:
-        return float(s)
-    except ValueError:
-        return None
+    """统一走 numeric.parse_number：逗号既可能是千分位也可能是小数点。"""
+    return parse_number(raw)
+
+
+def _confidence(raw: str) -> float:
+    """置信度缺省 1.0，且必须钳在 0~1。
+
+    这里不能用 `x or 1.0`：0.0 是「完全不可信」的合法取值，
+    用 or 会把最差的置信度翻成最高。实测传 0 曾经落库成 1.0。
+    """
+    value = parse_number(raw)
+    if value is None:
+        return 1.0
+    return min(max(value, 0.0), 1.0)
 
 
 def resolve_category(raw: str) -> str | None:
@@ -217,16 +225,47 @@ def import_rows(
         return report
 
     metrics = session.exec(select(SpecMetric)).all()
-    metric_index: dict[str, SpecMetric] = {}
+    by_key: dict[str, SpecMetric] = {m.key.strip().lower(): m for m in metrics}
+    by_name: dict[str, list[SpecMetric]] = {}
     for m in metrics:
-        metric_index[m.key.strip().lower()] = m
-        metric_index[m.name.strip().lower()] = m
+        by_name.setdefault(m.name.strip().lower(), []).append(m)
+
+    def pick_metric(raw: str, category: str | None) -> tuple[SpecMetric | None, str | None]:
+        """返回 (指标, 错误说明)。
+
+        中文名可能跨大类重名（气泵与风扇都叫「静压」）。原实现用 dict 直接覆盖，
+        结果同一行会被认成另一个大类的指标，名称对、口径错。
+        这里按「key → 唯一名 → 用大类消歧」的顺序解析，消歧不了就明确报错。
+        """
+        low = raw.strip().lower()
+        if low in by_key:
+            return by_key[low], None
+        candidates = by_name.get(low, [])
+        if len(candidates) == 1:
+            return candidates[0], None
+        if not candidates:
+            return None, f"指标「{raw}」不在指标字典中，已跳过（请先在字典里定义）"
+        if category:
+            scoped = [
+                m for m in candidates
+                if category in {s.strip() for s in (m.applies_to or "").split(",") if s.strip()}
+            ]
+            if len(scoped) == 1:
+                return scoped[0], None
+        names = "、".join(f"{m.key}" for m in candidates)
+        return None, (
+            f"指标名「{raw}」在多个大类下都存在（{names}），"
+            "请填「大类」列消歧，或直接把指标写成 key"
+        )
 
     entity_cache: dict[str, Entity] = {
         _norm_key(e.name): e for e in session.exec(select(Entity)).all()
     }
-    product_cache: dict[str, Product] = {
-        p.model.strip().lower(): p for p in session.exec(select(Product)).all()
+    # 键必须带 entity_id：两家友商都有 MP6 时，只按型号做键会让第二行
+    # 拿到第一家的产品，把值写到别人名下（且数据库没有唯一约束兜底，不会报错）。
+    product_cache: dict[tuple[int, str], Product] = {
+        (p.entity_id, p.model.strip().lower()): p
+        for p in session.exec(select(Product)).all()
     }
     source_for = _source_cache(session, batch_note)
 
@@ -245,13 +284,6 @@ def import_rows(
             report.errors.append(f"第 {lineno} 行：型号或指标为空，已跳过")
             continue
 
-        metric = metric_index.get(metric_raw.lower())
-        if metric is None:
-            report.errors.append(
-                f"第 {lineno} 行：指标「{metric_raw}」不在指标字典中，已跳过（请先在字典里定义）"
-            )
-            continue
-
         # 大类：填了就必须认得出，认不出不猜
         category_raw = row.get("大类", "")
         category = None
@@ -263,6 +295,12 @@ def import_rows(
                     f"第 {lineno} 行：大类「{category_raw}」不可识别，已跳过。可选：{options}"
                 )
                 continue
+
+        # 指标：先按 key，再按唯一名，重名时用大类消歧
+        metric, problem = pick_metric(metric_raw, category)
+        if metric is None:
+            report.errors.append(f"第 {lineno} 行：{problem}")
+            continue
 
         if not value_raw:
             report.skipped_missing += 1
@@ -278,12 +316,13 @@ def import_rows(
             entity_cache[_norm_key(ent_name)] = entity
             report.created_entities += 1
 
-        product = product_cache.get(model.lower())
+        cache_key = (entity.id, model.lower())
+        product = product_cache.get(cache_key)
         if product is None:
             product = Product(entity_id=entity.id, model=model, category=category)
             session.add(product)
             session.flush()
-            product_cache[model.lower()] = product
+            product_cache[cache_key] = product
             report.created_products += 1
         elif category:
             # 已有型号不能改换大类：那会让历史参数落到错误的指标体系里
@@ -323,7 +362,9 @@ def import_rows(
             existing.value_text = None if is_number else value_raw
             existing.condition = row.get("条件") or None
             existing.source_id = source.id
-            existing.confidence = _to_float(row.get("置信度", "")) or 1.0
+            existing.confidence = _confidence(row.get("置信度", ""))
+            # 机器又写了一遍值，人工复核就不再成立 —— 否则页面会一直显示「已复核」
+            existing.verified = False
             existing.updated_at = datetime.now(timezone.utc)
             session.add(existing)
         else:
@@ -335,7 +376,7 @@ def import_rows(
                     value_text=None if is_number else value_raw,
                     condition=row.get("条件") or None,
                     source_id=source.id,
-                    confidence=_to_float(row.get("置信度", "")) or 1.0,
+                    confidence=_confidence(row.get("置信度", "")),
                     verified=False,
                 )
             )

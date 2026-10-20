@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ status }} · 竞品情报看板{% endblock %}
+
+{% block body %}
+<main class="empty-state">
+  <div class="empty-mark">{{ status }}</div>
+  <h1>这个操作没有完成</h1>
+  <p class="empty-sub">{{ message }}</p>
+  <p class="foot-note">
+    <a class="btn" href="{{ back }}">返回上一页</a>
+    <a class="btn ghost" href="/compare">回到对比页</a>
+  </p>
+</main>
+{% endblock %}

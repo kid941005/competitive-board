@@ -63,6 +63,7 @@ from .importer import (
     xlsx_template,
 )
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
+from .numeric import parse_number
 
 BASE = Path(__file__).resolve().parent
 DATASHEET_DIR = config.DATA_DIR / "datasheets"
@@ -96,7 +97,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.7.1", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.7.2", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -139,8 +140,24 @@ _V1_CODE_BY_STATUS = {
 
 @app.exception_handler(HTTPException)
 async def _on_http_error(request: Request, exc: HTTPException):
-    """默认行为原样保留；只有 /api/v1 走统一信封。"""
+    """页面错误渲染成页面，接口错误保持 JSON；/api/v1 走统一信封。
+
+    原实现对页面路由也返回 {"detail": ...}：用户在表单里点保存，
+    结果浏览器跳到一屏裸 JSON，既没有导航也没有返回按钮。
+    """
     if not request.url.path.startswith("/api/v1"):
+        if _wants_html(request):
+            back = request.headers.get("referer") or "/compare"
+            return templates.TemplateResponse(
+                request=request,
+                name="error.html",
+                context={
+                    "status": exc.status_code,
+                    "message": exc.detail,
+                    "back": back,
+                },
+                status_code=exc.status_code,
+            )
         return JSONResponse(
             {"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers
         )
@@ -260,9 +277,10 @@ def _rename_legacy_self(session: Session) -> None:
     """
     for ent in session.exec(select(Entity).where(Entity.kind == "self")).all():
         if ent.name in config.SELF_LEGACY_NAMES:
+            old = ent.name           # 先存旧名：原实现先赋值再打印，输出成了「左蓝微 → 左蓝微」
             ent.name = config.SELF_COMPANY_NAME
             session.add(ent)
-            print(f"[startup] 自家公司名 {ent.name} → {config.SELF_COMPANY_NAME}", flush=True)
+            print(f"[startup] 自家公司名 {old} → {config.SELF_COMPANY_NAME}", flush=True)
     session.commit()
 
 
@@ -280,7 +298,12 @@ def _ctx(user: User, auth_session: AuthSession, sset: dict, **extra) -> dict:
 
 def _safe_next(target: str | None) -> str:
     """只允许站内相对路径，防开放重定向。"""
-    if not target or not target.startswith("/") or target.startswith("//"):
+    if (
+        not target
+        or not target.startswith("/")
+        or target.startswith("//")
+        or chr(92) in target        # 反斜杠：部分浏览器把 /\host 当 //host
+    ):
         return "/compare"
     return target
 
@@ -357,8 +380,10 @@ def _parse_ids(
     return out[:limit] or _default_selection(products, entities, preferred_cat, limit)
 
 
-def _matrix_payload(session: Session, ids: list[int], sset: dict) -> dict:
-    entities, products, metrics, sources = _load(session)
+def _matrix_payload(session: Session, ids: list[int], sset: dict, loaded=None) -> dict:
+    # loaded：页面/接口已经 _load 过一次时直接传进来。原来这里无条件再查一遍，
+    # /compare 因此产生 13 次 SELECT，其中 4 次是重复的全表读取。
+    entities, products, metrics, sources = loaded or _load(session)
     chosen = [p for p in products if p.id in ids]
     order = {pid: i for i, pid in enumerate(ids)}
     chosen.sort(key=lambda p: order.get(p.id or -1, 99))
@@ -478,7 +503,8 @@ def compare_page(
 ):
     user, auth_session = pair
     sset = settings_store.all_values(session)
-    entities, products, metrics, _ = _load(session)
+    loaded = _load(session)
+    entities, products, metrics, _ = loaded
     if not products:
         return templates.TemplateResponse(
             request=request,
@@ -501,7 +527,7 @@ def compare_page(
         preferred_cat=sset["ui.default_category"],
         limit=sset["compare.max_products"],
     )
-    data = _matrix_payload(session, ids, sset)
+    data = _matrix_payload(session, ids, sset, loaded=loaded)
     data.update(
         _ctx(
             user,
@@ -528,7 +554,8 @@ def api_matrix(
     session: Session = Depends(get_session),
 ):
     sset = settings_store.all_values(session)
-    entities, products, _, _ = _load(session)
+    loaded = _load(session)
+    entities, products, _, _ = loaded
     ids = _parse_ids(
         p,
         products,
@@ -536,7 +563,7 @@ def api_matrix(
         preferred_cat=sset["ui.default_category"],
         limit=sset["compare.max_products"],
     )
-    data = _matrix_payload(session, ids, sset)
+    data = _matrix_payload(session, ids, sset, loaded=loaded)
     payload = {
         "selected": ids,
         "products": [
@@ -722,6 +749,16 @@ def _find_product(session: Session, entity_id: int, model: str) -> Product | Non
     return None
 
 
+PRODUCT_STATUSES: tuple[str, ...] = ("active", "eol", "rumored")
+
+
+def _validate_status(status: str | None) -> str:
+    value = (status or "active").strip()
+    if value not in PRODUCT_STATUSES:
+        raise HTTPException(400, f"状态只能是 {' / '.join(PRODUCT_STATUSES)}")
+    return value
+
+
 def _validate_target(category: str, model: str) -> str:
     if category not in config.CATEGORY_LABEL:
         raise HTTPException(400, f"未知产品大类「{category}」，可选：{'、'.join(config.CATEGORY_LABEL.values())}")
@@ -762,7 +799,7 @@ def datasheet_page(
 ):
     user, auth_session = pair
     sset = settings_store.all_values(session)
-    entities, products, _, _ = _load(session)
+    entities, products, metrics, _ = _load(session)
 
     # 只列本方与友商：客户不会提供竞品规格书，列出来只会选错
     companies = [e for e in entities if e.kind in ("self", "competitor")]
@@ -789,7 +826,7 @@ def datasheet_page(
             ).replace("</", "<\\/"),
             categories=list(config.CATEGORY_LABEL.items()),
             entity_id=entity_id,
-            metric_total=len(products),
+            metric_total=len(metrics),
             product_total=len(products),
             min_confidence=sset["datasheet.min_confidence"],
             max_upload_mb=sset["datasheet.max_upload_mb"],
@@ -1133,9 +1170,13 @@ async def api_import(
     session: Session = Depends(get_session),
 ):
     """Excel 与 CSV 走同一套校验，只在「读文件」这一步分叉。"""
+    sset = settings_store.all_values(session)
+    max_bytes = int(sset["datasheet.max_upload_mb"]) * 1024 * 1024
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "文件为空")
+    if len(raw) > max_bytes:
+        raise HTTPException(413, f"文件超过 {sset['datasheet.max_upload_mb']} MB")
     ext = Path(file.filename or "").suffix.lower()
     if ext not in SHEET_EXT:
         raise HTTPException(400, f"暂不支持 {ext or '未知'} 格式，请上传 .xlsx / .csv")
@@ -1174,7 +1215,8 @@ def api_import_template(_pair=Depends(_perm(P_WRITE))):
 
 def _export_dataset(p: str | None, session: Session) -> dict:
     sset = settings_store.all_values(session)
-    entities, products, _, _ = _load(session)
+    loaded = _load(session)
+    entities, products, _, _ = loaded
     ids = _parse_ids(
         p,
         products,
@@ -1182,7 +1224,7 @@ def _export_dataset(p: str | None, session: Session) -> dict:
         preferred_cat=sset["ui.default_category"],
         limit=sset["compare.max_products"],
     )
-    return _matrix_payload(session, ids, sset)
+    return _matrix_payload(session, ids, sset, loaded=loaded)
 
 
 @app.get("/export.xlsx")
@@ -1229,19 +1271,25 @@ def export_csv(
 
 
 # ── 产品管理：管理员直接改数据 ─────────────────────────────────────────────
-def _product_completeness(session: Session, product: Product, metrics: list[SpecMetric]) -> tuple[int, int]:
+def _spec_metric_map(session: Session) -> dict[int, set[int]]:
+    """产品 id → 已填写的指标 id 集合。一次查询覆盖整页，避免逐型号查库。"""
+    out: dict[int, set[int]] = {}
+    for pid, mid in session.exec(
+        select(ProductSpec.product_id, ProductSpec.metric_id)  # type: ignore[misc]
+    ).all():
+        out.setdefault(int(pid), set()).add(int(mid))
+    return out
+
+
+def _product_completeness(
+    product: Product, metrics: list[SpecMetric], filled: dict[int, set[int]]
+) -> tuple[int, int]:
     """返回 (已公开项, 该大类适用项)。缺失的指标不计入分子。"""
     pool = metrics_for_categories(metrics, {product.category} if product.category else set())
-    ids = [m.id for m in pool if m.id is not None]
+    ids = {m.id for m in pool if m.id is not None}
     if not ids:
         return 0, 0
-    specs = session.exec(
-        select(ProductSpec).where(
-            ProductSpec.product_id == product.id,
-            ProductSpec.metric_id.in_(ids),  # type: ignore[attr-defined]
-        )
-    ).all()
-    return len(specs), len(pool)
+    return len(ids & filled.get(product.id or 0, set())), len(pool)
 
 
 @app.get("/products", response_class=HTMLResponse)
@@ -1257,9 +1305,10 @@ def products_page(
     entities, products, metrics, _ = _load(session)
     ent_by_id = {e.id: e for e in entities}
 
+    filled_map = _spec_metric_map(session)
     table = []
     for p in products:
-        filled, total = _product_completeness(session, p, metrics)
+        filled, total = _product_completeness(p, metrics, filled_map)
         table.append({
             "product": p,
             "entity": ent_by_id.get(p.entity_id),
@@ -1307,11 +1356,12 @@ def product_create(
     if entity.kind == "customer":
         raise HTTPException(400, "客户不是竞品来源")
     model = _validate_target(category, model)
+    status = _validate_status(status)
     if _find_product(session, entity_id, model):
         return _redirect("/products", f"型号 {model} 已存在于该公司，未重复创建", "err")
 
     product = Product(entity_id=entity_id, model=model, name=name.strip() or model,
-                      category=category, status=status or "active")
+                      category=category, status=status)
     session.add(product)
     session.flush()
     audit.record(
@@ -1404,6 +1454,7 @@ def product_save_meta(
     if not product:
         raise HTTPException(404, "型号不存在")
     model = _validate_target(category, model)
+    status = _validate_status(status)
 
     other = _find_product(session, product.entity_id, model)
     if other and other.id != product.id:
@@ -1431,7 +1482,7 @@ def product_save_meta(
     product.model = model
     product.name = name.strip() or model
     product.category = category
-    product.status = status or "active"
+    product.status = status
     product.datasheet_url = datasheet_url.strip() or None
     product.note = note.strip() or None
     session.add(product)
@@ -1469,14 +1520,21 @@ async def product_save_specs(
 
     before_specs = audit.spec_snapshot(session, product.id, {m.id: m for m in metrics})
 
-    source = SpecSource(
-        kind="manual",
-        title=f"{product.model} 手工编辑",
-        captured_at=datetime.now(timezone.utc),
-        note=f"录入人 {user.username}；人工录入视为已核对，可逐项改回未复核",
-    )
-    session.add(source)
-    session.flush()
+    # 懒建出处：只是打开页面随手保存一次、什么都没改时，不该多出一条 manual 来源
+    _source_holder: list[SpecSource] = []
+
+    def _source() -> SpecSource:
+        if not _source_holder:
+            src = SpecSource(
+                kind="manual",
+                title=f"{product.model} 手工编辑",
+                captured_at=datetime.now(timezone.utc),
+                note=f"录入人 {user.username}；人工录入视为已核对，可逐项改回未复核",
+            )
+            session.add(src)
+            session.flush()
+            _source_holder.append(src)
+        return _source_holder[0]
 
     written = updated = removed = 0
     errors: list[str] = []
@@ -1502,9 +1560,8 @@ async def product_save_specs(
             continue
 
         if m.value_type == "number":
-            try:
-                num = float(raw.replace(",", ""))
-            except ValueError:
+            num = parse_number(raw)
+            if num is None:
                 errors.append(f"{m.name}：要求数值，收到「{raw}」，未保存")
                 continue
             value_text = None
@@ -1513,7 +1570,7 @@ async def product_save_specs(
 
         if cur:
             cur.value_num, cur.value_text = num, value_text
-            cur.condition, cur.source_id = cond, source.id
+            cur.condition, cur.source_id = cond, _source().id
             cur.confidence, cur.verified = 1.0, verified
             cur.updated_at = datetime.now(timezone.utc)
             session.add(cur)
@@ -1522,7 +1579,7 @@ async def product_save_specs(
             session.add(ProductSpec(
                 product_id=product.id, metric_id=m.id,
                 value_num=num, value_text=value_text, condition=cond,
-                source_id=source.id, confidence=1.0, verified=verified,
+                source_id=_source().id, confidence=1.0, verified=verified,
             ))
             written += 1
 
@@ -1647,14 +1704,20 @@ def admin_create_user(
     if session.exec(select(User).where(User.username == name)).first() is not None:
         return _redirect("/admin/users", f"用户名 {name} 已存在", "err")
 
-    session.add(
-        User(
-            username=name,
-            display_name=display_name.strip() or None,
-            password_hash=auth.hash_password(password),
-            role=role,
-            created_by=actor.username,
-        )
+    target = User(
+        username=name,
+        display_name=display_name.strip() or None,
+        password_hash=auth.hash_password(password),
+        role=role,
+        created_by=actor.username,
+    )
+    session.add(target)
+    session.flush()
+    audit.record(
+        session, actor=actor.username, action="create", object_type="user",
+        object_id=target.id, label=name,
+        changes=[{"field": "角色", "old": None, "new": auth.ROLE_LABEL[role]}],
+        note="新建账号", request_id=_rid(),
     )
     session.commit()
     return _redirect("/admin/users", f"已创建 {name}（{auth.ROLE_LABEL[role]}）")
@@ -1678,8 +1741,19 @@ def admin_set_role(
     if target.role == "admin" and role != "admin" and _active_admin_count(session) <= 1:
         return _redirect("/admin/users", "系统至少需要保留一名启用状态的管理员", "err")
 
+    old_role = target.role
     target.role = role
     session.add(target)
+    audit.record(
+        session, actor=actor.username, action="update", object_type="user",
+        object_id=target.id, label=target.username,
+        changes=[{
+            "field": "角色",
+            "old": auth.ROLE_LABEL.get(old_role, old_role),
+            "new": auth.ROLE_LABEL[role],
+        }],
+        note="调整角色，非管理员会话已失效", request_id=_rid(),
+    )
     session.commit()
     if role != "admin":
         auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
@@ -1701,8 +1775,19 @@ def admin_toggle_user(
     if target.role == "admin" and target.is_active and _active_admin_count(session) <= 1:
         return _redirect("/admin/users", "系统至少需要保留一名启用状态的管理员", "err")
 
+    was_active = target.is_active
     target.is_active = not target.is_active
     session.add(target)
+    audit.record(
+        session, actor=actor.username, action="update", object_type="user",
+        object_id=target.id, label=target.username,
+        changes=[{
+            "field": "状态",
+            "old": "启用" if was_active else "停用",
+            "new": "停用" if was_active else "启用",
+        }],
+        note="停用后其会话立即失效" if was_active else "重新启用账号", request_id=_rid(),
+    )
     session.commit()
     if not target.is_active:
         auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
@@ -1727,6 +1812,12 @@ def admin_reset_password(
 
     target.password_hash = auth.hash_password(password)
     session.add(target)
+    audit.record(
+        session, actor=actor.username, action="update", object_type="user",
+        object_id=target.id, label=target.username,
+        changes=[{"field": "密码", "old": "（已设置）", "new": "（已重置）"}],
+        note="重置密码，该账号全部会话已失效", request_id=_rid(),
+    )
     session.commit()
     auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
     return _redirect("/admin/users", f"{target.username} 的密码已重置，其会话已全部失效")
@@ -1833,7 +1924,10 @@ def admin_tokens_revoke(
 
 # ── 管理员：变更日志 ───────────────────────────────────────────────────────
 LOG_ACTIONS = (("create", "新建"), ("update", "修改"), ("delete", "删除"), ("import", "导入"))
-LOG_OBJECTS = (("product", "型号"), ("spec", "参数"), ("entity", "公司"), ("token", "令牌"), ("setting", "系统参数"))
+LOG_OBJECTS = (
+    ("product", "型号"), ("spec", "参数"), ("entity", "公司"),
+    ("user", "账号"), ("token", "令牌"), ("setting", "系统参数"),
+)
 
 
 @app.get("/admin/logs", response_class=HTMLResponse)

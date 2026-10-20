@@ -77,7 +77,7 @@
           <td>
             {% if not t.revoked_at %}
             <form method="post" action="/admin/tokens/{{ t.id }}/revoke" class="inlinerow"
-                  onsubmit="return confirm('吊销「{{ t.name }}」？调用方将立刻收到 401。');">
+                  data-confirm="吊销「{{ t.name }}」？调用方将立刻收到 401。">
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <button type="submit" class="link danger">吊销</button>
             </form>

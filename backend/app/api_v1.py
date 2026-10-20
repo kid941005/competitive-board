@@ -227,6 +227,7 @@ def _actor(principal: Principal) -> tuple[str, str]:
 def _etag(p: Product, specs: list[ProductSpec]) -> str:
     raw = "|".join([
         str(p.id), p.model or "", p.name or "", p.category or "", p.status or "",
+        p.datasheet_url or "", p.note or "", p.launch_date.isoformat() if p.launch_date else "",
         *[
             f"{s.metric_id}:{s.value_num}:{s.value_text}:{s.condition}:{s.verified}"
             for s in sorted(specs, key=lambda x: x.metric_id or 0)
@@ -258,6 +259,20 @@ def _check_category(category: str | None) -> str:
             hint="可选：" + "、".join(f"{c}（{l}）" for c, l in config.CATEGORY_LABEL.items()),
         )
     return category
+
+
+PRODUCT_STATUSES = ("active", "eol", "rumored")
+
+
+def _check_status(status: str | None) -> str:
+    value = (status or "active").strip()
+    if value not in PRODUCT_STATUSES:
+        raise ApiError(
+            "VALIDATION_FAILED",
+            f"status 只能是 {' / '.join(PRODUCT_STATUSES)}",
+            field="status",
+        )
+    return value
 
 
 def _clean_model(model: str | None) -> str:
@@ -436,6 +451,7 @@ def get_context(
     products = session.exec(select(Product)).all()
     metrics = session.exec(select(SpecMetric).order_by(SpecMetric.display_order)).all()
     spec_count = session.exec(select(func.count()).select_from(ProductSpec)).one()
+    name_by_id = {e.id: e.name for e in entities}
     return ok({
         "counts": {
             "entities": len(entities), "products": len(products),
@@ -445,7 +461,7 @@ def get_context(
         "entities": [_entity_dict(e) for e in entities],
         "products": [
             {"id": p.id, "model": p.model, "category": p.category,
-             "entity": next((e.name for e in entities if e.id == p.entity_id), None)}
+             "entity": name_by_id.get(p.entity_id)}
             for p in products
         ],
         "metric_keys": [
@@ -537,15 +553,14 @@ def get_product(
                                   {product.category} if product.category else set())
     ent = session.get(Entity, product.entity_id)
 
+    present = {metrics[s.metric_id].key for s in specs if s.metric_id in metrics}
     payload = _product_dict(product, ent, len(specs), len(pool))
     payload["specs"] = [
         _spec_dict(s, metrics[s.metric_id]) for s in specs if s.metric_id in metrics
     ]
-    payload["missing_metrics"] = [
-        m.key for m in pool
-        if m.key not in {metrics[s.metric_id].key for s in specs if s.metric_id in metrics}
-    ]
-    return ok(payload, etag=_etag(product, specs), headers={"ETag": _etag(product, specs)})
+    payload["missing_metrics"] = [m.key for m in pool if m.key not in present]
+    etag = _etag(product, specs)          # 原来算了两遍
+    return ok(payload, etag=etag, headers={"ETag": etag})
 
 
 @router.get("/products/{product_id}/specs")
@@ -624,8 +639,11 @@ def get_changes(
         ts = ts.replace(tzinfo=timezone.utc)
 
     specs = list(session.exec(
-        select(ProductSpec).where(ProductSpec.updated_at >= ts).order_by(ProductSpec.updated_at)
-    ).all())[:limit]
+        select(ProductSpec)
+        .where(ProductSpec.updated_at >= ts)
+        .order_by(ProductSpec.updated_at, ProductSpec.id)
+        .limit(limit)          # 下推：原来先全量 .all() 再切片，数据一多就是白读
+    ).all())
     metrics = {m.id: m for m in session.exec(select(SpecMetric)).all()}
     products = {p.id: p for p in session.exec(select(Product)).all()}
 
@@ -672,7 +690,8 @@ def create_entity(
         )
         session.commit()
         resp = ok(data, status=201)
-    _remember(session, key, "POST", "/api/v1/entities", resp)
+    if not dry:
+        _remember(session, key, "POST", "/api/v1/entities", resp)
     return resp
 
 
@@ -690,6 +709,7 @@ def create_product(
 
     category = _check_category(body.category)
     model = _clean_model(body.model)
+    status = _check_status(body.status)
     ent = _resolve_entity_for_create(session, body.entity_id, body.entity_name, body.force)
 
     existing = _find_product_ci(session, ent.id, model)  # type: ignore[arg-type]
@@ -705,7 +725,7 @@ def create_product(
     product = Product(
         entity_id=ent.id,  # type: ignore[arg-type]
         model=model, name=(body.name or model).strip(), category=category,
-        status=body.status or "active",
+        status=status,
     )
     session.add(product)
     session.flush()
@@ -726,7 +746,8 @@ def create_product(
         )
         session.commit()
         resp = ok(data, status=201)
-    _remember(session, key, "POST", "/api/v1/products", resp)
+    if not dry:
+        _remember(session, key, "POST", "/api/v1/products", resp)
     return resp
 
 
@@ -763,7 +784,7 @@ def patch_product(
     if body.name is not None:
         product.name = body.name.strip() or product.model
     if body.status is not None:
-        product.status = body.status
+        product.status = _check_status(body.status)
     if body.datasheet_url is not None:
         product.datasheet_url = body.datasheet_url.strip() or None
     if body.note is not None:
@@ -846,14 +867,32 @@ def batch_specs(
     metrics = {m.key: m for m in session.exec(select(SpecMetric)).all()}
     metric_by_id = {m.id: m for m in metrics.values()}
     touched = {item.product_id for item in body.items}
-    before_by_pid = {pid: audit.spec_snapshot(session, pid, metric_by_id) for pid in touched}
+
+    # 一次性取齐，别在循环里逐项查：50 项原本要 174 条 SQL（实测）
+    products_by_id: dict[int, Product] = {
+        p.id: p for p in session.exec(
+            select(Product).where(Product.id.in_(touched))  # type: ignore[attr-defined]
+        ).all()
+    }
+    specs_by_key: dict[tuple[int, int], ProductSpec] = {
+        (s.product_id, s.metric_id): s for s in session.exec(
+            select(ProductSpec).where(ProductSpec.product_id.in_(touched))  # type: ignore[attr-defined]
+        ).all()
+    }
+    specs_by_pid: dict[int, list[ProductSpec]] = {}
+    for s in specs_by_key.values():
+        specs_by_pid.setdefault(s.product_id, []).append(s)
+    before_by_pid = {
+        pid: audit.spec_snapshot(session, pid, metric_by_id, specs_by_pid.get(pid, []))
+        for pid in touched
+    }
     results: list[dict] = []
     applied = 0
     dry = _is_dry(request, body)
 
     for idx, item in enumerate(body.items):
         base = {"index": idx, "product_id": item.product_id, "metric_key": item.metric_key}
-        product = session.get(Product, item.product_id)
+        product = products_by_id.get(item.product_id)
         if product is None:
             results.append({**base, "ok": False, "code": "NOT_FOUND", "message": "型号不存在"})
             continue
@@ -873,18 +912,14 @@ def batch_specs(
             })
             continue
 
-        existing = session.exec(
-            select(ProductSpec).where(
-                ProductSpec.product_id == product.id,
-                ProductSpec.metric_id == metric.id,
-            )
-        ).first()
+        existing = specs_by_key.get((product.id, metric.id))  # type: ignore[arg-type]
 
         if item.action == "delete":
             if existing is None:
                 results.append({**base, "ok": True, "action": "noop", "message": "原本就没有该项"})
             else:
                 session.delete(existing)
+                specs_by_key.pop((product.id, metric.id), None)  # type: ignore[arg-type]
                 applied += 1
                 results.append({**base, "ok": True, "action": "deleted"})
             continue
@@ -940,8 +975,9 @@ def batch_specs(
     else:
         actor, kind = _actor(principal)
         rid = uuid.uuid4().hex[:12]
+        session.flush()   # 新增项要先落库，否则「改后」快照看不到它们
         for pid in touched:
-            product = session.get(Product, pid)
+            product = products_by_id.get(pid)
             if product is None:
                 continue
             changes = audit.diff(before_by_pid.get(pid, {}),
@@ -954,7 +990,8 @@ def batch_specs(
         session.commit()
         resp = ok({"results": results, "applied": applied},
                   failed=sum(1 for r in results if not r.get("ok")))
-    _remember(session, key, "POST", "/api/v1/specs/batch", resp)
+    if not dry:
+        _remember(session, key, "POST", "/api/v1/specs/batch", resp)
     return resp
 
 
@@ -1014,6 +1051,13 @@ def create_token(
         session, name=body.name, scopes=body.scopes,
         created_by=principal.name, expires_days=body.expires_days,
     )
+    audit.record(
+        session, actor=principal.name, actor_kind="token" if principal.kind == "token" else "user",
+        action="create", object_type="token", object_id=row.id, label=row.name,
+        changes=[{"field": "scope", "old": None, "new": row.scopes}],
+        note="通过 API 签发令牌", request_id=uuid.uuid4().hex[:12],
+    )
+    session.commit()
     return ok({
         "id": row.id, "name": row.name, "scopes": row.scopes,
         "token": raw,
@@ -1029,6 +1073,13 @@ def revoke_token(
 ):
     if not tokens.revoke(session, token_id):
         raise ApiError("NOT_FOUND", "令牌不存在或已撤销")
+    audit.record(
+        session, actor=_p.name, actor_kind="token" if _p.kind == "token" else "user",
+        action="delete", object_type="token", object_id=token_id, label=f"令牌 #{token_id}",
+        changes=[{"field": "状态", "old": "有效", "new": "已吊销"}],
+        note="通过 API 吊销令牌", request_id=uuid.uuid4().hex[:12],
+    )
+    session.commit()
     return ok({"id": token_id, "revoked": True})
 
 
@@ -1219,7 +1270,7 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "until": {"type": "string", "format": "date-time"},
                     "actor": {"type": "string"},
                     "action": {"type": "string", "enum": ["create", "update", "delete", "import"]},
-                    "object_type": {"type": "string", "enum": ["product", "spec", "entity", "token", "setting"]},
+                    "object_type": {"type": "string", "enum": ["product", "spec", "entity", "user", "token", "setting"]},
                     "q": {"type": "string", "description": "型号 / 指标 / 值关键词"},
                     "limit": {"type": "integer", "maximum": 500},
                     "offset": {"type": "integer"},

@@ -71,7 +71,7 @@
           <td class="rowacts">
             <a class="link" href="/products/{{ r.product.id }}">编辑</a>
             <form method="post" action="/products/{{ r.product.id }}/delete" class="inlinerow"
-                  onsubmit="return confirm('删除 {{ r.product.model }} 及其全部参数？此操作不可撤销。');">
+                  data-confirm="删除 {{ r.product.model }} 及其全部参数？此操作不可撤销。">
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <button type="submit" class="link danger">删除</button>
             </form>

@@ -26,13 +26,6 @@ def _hash(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
-def has_scope(token: ApiToken, scope: str) -> bool:
-    owned = {s.strip() for s in (token.scopes or "").split(",") if s.strip()}
-    if "admin" in owned:  # admin 隐含全部
-        return True
-    return scope in owned
-
-
 def scopes_of(token: ApiToken) -> frozenset[str]:
     return frozenset(s.strip() for s in (token.scopes or "").split(",") if s.strip())
 
@@ -99,8 +92,20 @@ def verify(session: Session, raw: str) -> ApiToken | None:
     return row
 
 
-def touch(session: Session, row: ApiToken) -> None:
-    row.last_used_at = datetime.now(timezone.utc)
+def touch(session: Session, row: ApiToken, min_interval_seconds: int = 60) -> None:
+    """记录最近使用时间。
+
+    AI 会高频轮询读接口，每个请求都 UPDATE + COMMIT 在 SQLite 下就是「读被写放大」
+    （每次 commit 一次 fsync）。一分钟内只落库一次，精度对「最近使用」这个用途足够。
+    """
+    now = datetime.now(timezone.utc)
+    last = row.last_used_at
+    if last is not None:
+        if last.tzinfo is None:      # SQLite 读回来可能没有时区
+            last = last.replace(tzinfo=timezone.utc)
+        if (now - last).total_seconds() < min_interval_seconds:
+            return
+    row.last_used_at = now
     session.add(row)
     session.commit()
 

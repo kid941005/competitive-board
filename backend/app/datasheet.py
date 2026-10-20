@@ -439,8 +439,4 @@ def extract_candidates(
 
 def summarize(text_pages: list[tuple[int, str]]) -> dict:
     chars = sum(len(t) for _, t in text_pages)
-    return {
-        "pages": len(text_pages),
-        "chars": chars,
-        "starts_with_empty": bool(text_pages and not text_pages[0][1].strip()),
-    }
+    return {"pages": len(text_pages), "chars": chars}

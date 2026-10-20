@@ -149,7 +149,7 @@
 <section class="panel notes">
   <div class="panel-head"><h2>维护</h2></div>
   <form method="post" action="/admin/logs/purge"
-        onsubmit="return confirm('按保留期 {{ retention }} 天清理旧日志？此操作不可撤销。');">
+        data-confirm="按保留期 {{ retention }} 天清理旧日志？此操作不可撤销。">
     <input type="hidden" name="_csrf" value="{{ csrf }}">
     <button type="submit" class="btn ghost">清理超过 {{ retention }} 天的日志</button>
     <span class="hint">保留期可在「系统设置」里调整；启动时也会自动清一次</span>

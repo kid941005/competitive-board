@@ -31,7 +31,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:0.7.1
+  ghcr.io/kid941005/competitive-board:0.7.2
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -449,9 +449,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑完 146 项测试，通过才推**。标签有 `0.7.1`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑完 156 项测试，通过才推**。标签有 `0.7.2`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本由 `CIB_IMAGE_TAG` 决定，默认 `0.7.1` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
+版本由 `CIB_IMAGE_TAG` 决定，默认 `0.7.2` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -490,27 +490,27 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:0.7.1
+  ghcr.io/kid941005/competitive-board:0.7.2
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=0.7.1 -t competitive-board:0.7.1 ./backend
+docker build --build-arg APP_VERSION=0.7.2 -t competitive-board:0.7.2 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.7.1
+  competitive-board:0.7.2
 ```
 
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `CIB_IMAGE_TAG` | `0.7.1` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
+| `CIB_IMAGE_TAG` | `0.7.2` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
 | `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
 | `CIB_SEED_DEMO` | `1` | 首次启动写入示例数据；库里已有数据自动跳过 |
@@ -519,7 +519,6 @@ docker run -d --name competitive-board \
 | `CIB_SESSION_HOURS` | `12` | 会话有效期（小时），运行时可在系统设置里改 |
 | `CIB_COOKIE_SECURE` | `0` | HTTPS 部署必须置 `1`，否则 Cookie 会明文传输 |
 | `CIB_MAX_COMPARE` | `8` | 单页最多对比型号数的初始默认 |
-| `CIB_FLOAT_EPS` | `1e-9` | 数值相等判定容差 |
 | `APP_PORT` | `8000` | 宿主端口（只绑 127.0.0.1） |
 | `POSTGRES_PASSWORD` | — | 启用 PG 时必填 |
 
@@ -562,7 +561,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.7.1` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.7.2` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
@@ -579,12 +578,13 @@ python tests/test_product_edit.py     # 10 项：产品编辑与三类防护
 python tests/test_api_v1.py           # 21 项：令牌鉴权、幂等、dry-run、ETag、批量回执
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
 python tests/test_labels.py           #  6 项：自家公司用公司名，不出现「本方 / 我方」
+python tests/test_fixes.py            # 10 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS）
 python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 # 或 pytest tests/
 ```
 
-共 **146 项**。覆盖内容：
+共 **156 项**。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -633,7 +633,7 @@ backend/
 │   └── static/           app.css, compare.js, datasheet.js, import.js, product-edit.js（零依赖）
 ├── tests/                test_compare / test_datasheet / test_datasheet_import
 │                         test_import_export / test_product_edit / test_api_v1
-│                         test_audit / test_labels / test_auth
+│                         test_audit / test_labels / test_fixes / test_auth
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt

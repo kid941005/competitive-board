@@ -131,10 +131,6 @@ SPEC_INDEX: dict[str, SettingSpec] = {spec.key: spec for spec in SPECS}
 GROUPS: tuple[str, ...] = tuple(dict.fromkeys(spec.group for spec in SPECS))
 
 
-def defaults() -> dict[str, Any]:
-    return {spec.key: spec.default for spec in SPECS}
-
-
 def all_values(session: Session) -> dict[str, Any]:
     stored = {row.key: row.value for row in session.exec(select(AppSetting)).all()}
     out: dict[str, Any] = {}

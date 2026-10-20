@@ -23,9 +23,6 @@ def database_url() -> str:
 # 单个对比页最多可勾选的产品数，避免表格横向失控
 MAX_COMPARE = int(os.getenv("CIB_MAX_COMPARE", "8"))
 
-# 数值比较的相对容差：差值小于 max(|a|,|b|) * EPS 视为相等
-FLOAT_EPS = float(os.getenv("CIB_FLOAT_EPS", "1e-9"))
-
 # HTTPS 部署时必须置 1，否则会话 Cookie 会在明文链路上传输
 COOKIE_SECURE = os.getenv("CIB_COOKIE_SECURE", "0").strip().lower() in ("1", "true", "on", "yes")
 
@@ -42,10 +39,6 @@ CATEGORY_LABEL: dict[str, str] = {
 SELF_COMPANY_NAME = "左蓝微"
 # 历史版本用过的占位名，启动时会被替换成 SELF_COMPANY_NAME（老数据卷兼容）
 SELF_LEGACY_NAMES: tuple[str, ...] = ("本公司", "本方", "我方")
-
-# 允许自动导入规格书的大类（当前与 CATEGORY_LABEL 一致，留出扩展位）
-IMPORTABLE_CATEGORIES: tuple[str, ...] = tuple(CATEGORY_LABEL)
-
 
 def category_label(code: str | None) -> str:
     if not code:

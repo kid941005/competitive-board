@@ -67,12 +67,24 @@ PRODUCT_LABELS = {
 }
 
 
-def spec_snapshot(session: Session, product_id: int, metrics: dict[int, SpecMetric] | None = None) -> dict[str, str]:
-    """按「指标名」而不是 id 做键：日志是给人看的，id 对不上号。"""
+def spec_snapshot(
+    session: Session,
+    product_id: int,
+    metrics: dict[int, SpecMetric] | None = None,
+    specs: list[ProductSpec] | None = None,
+) -> dict[str, str]:
+    """按「指标名」而不是 id 做键：日志是给人看的，id 对不上号。
+
+    specs 可传入：批量写参数时已经一次性取好了，不必每个型号再查一遍。
+    """
     if metrics is None:
         metrics = {m.id: m for m in session.exec(select(SpecMetric)).all()}
+    if specs is None:
+        specs = list(session.exec(
+            select(ProductSpec).where(ProductSpec.product_id == product_id)
+        ).all())
     out: dict[str, str] = {}
-    for s in session.exec(select(ProductSpec).where(ProductSpec.product_id == product_id)).all():
+    for s in specs:
         m = metrics.get(s.metric_id)
         if m is None:
             continue

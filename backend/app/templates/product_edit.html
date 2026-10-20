@@ -125,7 +125,7 @@
 <section class="panel notes">
   <div class="panel-head"><h2>危险操作</h2></div>
   <form method="post" action="/products/{{ product.id }}/delete"
-        onsubmit="return confirm('删除 {{ product.model }} 及其全部参数？此操作不可撤销。');">
+        data-confirm="删除 {{ product.model }} 及其全部参数？此操作不可撤销。">
     <input type="hidden" name="_csrf" value="{{ csrf }}">
     <button type="submit" class="btn danger">删除该型号</button>
     <span class="hint">连同其全部参数一起删除，来源记录保留</span>
