@@ -1,11 +1,16 @@
 # 竞品情报看板 —— 单容器默认编排（SQLite，零外部依赖）
 #
-#   docker compose up -d --build          # 启动
-#   docker compose logs -f app            # 看日志
-#   docker compose down                   # 停止（数据保留在命名卷里）
+# 默认直接用已发布镜像，一条命令拉起（首次会先拉镜像）：
+#   docker compose up -d
+#
+# 改了代码、要从源码重新构建（构建结果沿用同一个镜像名，不会出现两套标签）：
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# 换版本（默认固定在 CIB_IMAGE_TAG，不跟随 latest）：
+#   CIB_IMAGE_TAG=latest docker compose up -d
 #
 # 需要 PostgreSQL 时叠加 override：
-#   docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
 #
 # 端口默认只绑 127.0.0.1，不直接暴露公网。对外访问请在前面加反向代理并启用认证。
 
@@ -19,10 +24,8 @@ x-logging: &default-logging
 
 services:
   app:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    image: competitive-board:0.2.0
+    # 镜像由 GitHub Actions 构建并发布（见 .github/workflows/build-image.yml）
+    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.7.1}
     container_name: competitive-board
     restart: unless-stopped
     logging: *default-logging

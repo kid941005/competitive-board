@@ -1,7 +1,8 @@
 # PostgreSQL override —— 叠加在 docker-compose.yml 之上使用：
 #
 #   cp .env.example .env      # 填 POSTGRES_PASSWORD
-#   docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
+# 要用本地源码构建，再叠加 docker-compose.build.yml。
 #
 # 与 deploy/docker-compose.yml 的区别：这里只跑本应用（对比 + 规格书导入），
 # 不包含 RSSHub / changedetection 等尚未启用的采集组件。

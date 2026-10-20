@@ -1,0 +1,16 @@
+# 从源码构建的叠加文件 —— 只在需要改代码、或要构建尚未发布的版本时使用。
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# 构建结果沿用 docker-compose.yml 里的同一个镜像名（ghcr.io/<owner>/<repo>:<tag>），
+# 因此本地构建与拉取不会产生两套标签，也不会出现「明明改了代码却在跑旧镜像」的错觉。
+# 需要更明确的本地标识时，覆盖 CIB_IMAGE_TAG，例如 CIB_IMAGE_TAG=local。
+
+services:
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        # 与镜像标签保持一致，避免镜像内 LABEL 与 app.version 脱节
+        APP_VERSION: "${CIB_IMAGE_TAG:-0.7.1}"

@@ -37,6 +37,20 @@ jobs:
         with:
           python-version: "3.13"
 
+      # 版本号散落在三处（app.version / compose 默认标签 / README 示例），
+      # 已经因此漏过一次（Dockerfile 里曾停留在 0.2.0），这里直接卡住
+      - name: 版本一致性
+        run: |
+          set -euo pipefail
+          V=$(python3 -c "import re,pathlib;print(re.search(r'version=\"([0-9.]+)\"',pathlib.Path('backend/app/main.py').read_text()).group(1))")
+          C=$(grep -oP 'CIB_IMAGE_TAG:-\K[0-9]+\.[0-9]+\.[0-9]+' docker-compose.yml | head -1)
+          echo "app.version=$V  compose=$C"
+          [ "$V" = "$C" ] || { echo "::error::docker-compose.yml 默认标签($C) 与 app.version($V) 不一致"; exit 1; }
+          while read -r tag; do
+            [ -z "$tag" ] && continue
+            [ "$tag" = "$V" ] || { echo "::error::README 里的镜像标签($tag) 与 app.version($V) 不一致"; exit 1; }
+          done < <(grep -oP 'ghcr\.io/kid941005/competitive-board:\K[0-9]+\.[0-9]+\.[0-9]+' README.md | sort -u)
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip

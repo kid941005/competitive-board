@@ -166,6 +166,9 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${CIB_IMAGE_TAG:-0.7.1}
+    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.7.1}
     profiles: ["app"]
     restart: unless-stopped
     logging: *default-logging

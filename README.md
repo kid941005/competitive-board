@@ -19,16 +19,22 @@
 
 ## 快速开始
 
-不想装 Python，一条命令起服务：
+有仓库，一条命令拉镜像起服务：
+
+```bash
+docker compose up -d
+```
+
+没有仓库、只想跑起来：
 
 ```bash
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:latest
+  ghcr.io/kid941005/competitive-board:0.7.1
 ```
 
-镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker logs competitive-board` 里。
+镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
 更多部署方式见 [Docker 部署](#docker-部署)。
 
 从源码跑：
@@ -443,7 +449,39 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
 
-### 方式零：直接拉现成镜像（免构建）
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑完 146 项测试，通过才推**。标签有 `0.7.1`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+
+版本由 `CIB_IMAGE_TAG` 决定，默认 `0.7.1` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
+
+### 方式一：compose 拉镜像（推荐）
+
+```bash
+docker compose up -d
+docker compose logs -f app      # 首次启动的初始管理员密码在这里
+```
+
+打开 <http://127.0.0.1:8000/compare>。数据落在命名卷 `competitive-board-data`（SQLite + 上传的规格书）。
+
+### 方式二：compose 从源码构建
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+默认编排里**故意不写 `build`**：这样 `up` 只会拉镜像，不会出现「以为在跑自己改的代码，其实跑的是 Registry 上的」。要构建时显式叠加 `docker-compose.build.yml`，构建结果仍打同一个镜像名，不产生两套标签。
+
+### 方式三：compose + PostgreSQL（团队共用 / 数据量上来后）
+
+```bash
+cp .env.example .env        # 填 POSTGRES_PASSWORD：openssl rand -base64 24
+docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
+```
+
+叠加关系：`docker-compose.pg.yml` 只追加 `db` 服务并把 `DATABASE_URL` 注入 `app`。切换数据库不改一行业务代码。要和本地构建一起用，三个文件按顺序叠加即可。
+
+### 方式四：不用 compose 的裸镜像
+
+拉现成的：
 
 ```bash
 docker run -d --name competitive-board \
@@ -455,35 +493,14 @@ docker run -d --name competitive-board \
   ghcr.io/kid941005/competitive-board:0.7.1
 ```
 
-镜像由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑完 146 项测试，通过才推**。
-标签为 `0.7.1`（版本号）、`latest`（最新）、`sha-<7位>`（对应提交），仅 amd64。
-
-### 方式一：从源码构建 + SQLite（零配置，改代码时用）
+自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker compose up -d --build
-```
-
-打开 <http://127.0.0.1:8000/compare>。数据落在命名卷 `competitive-board-data`（SQLite 数据库 + 上传的规格书）。
-
-### 方式二：加 PostgreSQL（团队共用 / 数据量上来后）
-
-```bash
-cp .env.example .env        # 填 POSTGRES_PASSWORD：openssl rand -base64 24
-docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d --build
-```
-
-两个文件是叠加关系：`docker-compose.pg.yml` 只负责追加 `db` 服务并把 `DATABASE_URL` 注入 `app`。切换数据库不改一行业务代码。
-
-### 方式三：不用 compose 的裸镜像
-
-```bash
-docker build -t competitive-board:0.7.1 ./backend
+docker build --build-arg APP_VERSION=0.7.1 -t competitive-board:0.7.1 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 \
-  -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
   competitive-board:0.7.1
@@ -493,6 +510,7 @@ docker run -d --name competitive-board \
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
+| `CIB_IMAGE_TAG` | `0.7.1` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
 | `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
 | `CIB_SEED_DEMO` | `1` | 首次启动写入示例数据；库里已有数据自动跳过 |
@@ -537,13 +555,14 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 | 目录/文件 | 内容 | 何时用 |
 |---|---|---|
-| `docker-compose.yml` | 仅本应用（SQLite） | 日常开发、单机试用 |
+| `docker-compose.yml` | 仅本应用（SQLite），默认拉 `ghcr.io/kid941005/competitive-board` | 单机试用、正式部署 |
+| `docker-compose.build.yml` | 叠加：改为本地源码构建（同名镜像标签） | 改了代码要重建 |
 | `docker-compose.pg.yml` | 叠加 PostgreSQL | 团队共用 |
 | `deploy/docker-compose.yml` | 完整采集栈（RSSHub / changedetection / Redis / PG） | 启用新闻动态流之后 |
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> ⚠️ 本机没有 Docker CLI，以上编排只做了静态校验（YAML 结构、引用文件存在性、入口脚本 `bash -n` 与三场景实跑）。**镜像构建未在本机执行**，首次 `docker compose up --build` 若有报错请贴给我。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.7.1` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
@@ -619,6 +638,10 @@ backend/
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt
 └── Dockerfile
+docker-compose.yml        默认编排：拉 ghcr 镜像 + SQLite
+docker-compose.build.yml  叠加：改为本地源码构建（同名镜像标签）
+docker-compose.pg.yml     叠加：换成 PostgreSQL
+.github/workflows/        build-image.yml（先测试，通过才构建并推 GHCR）
 docs/                     AI-API-设计.md（接口划分、I/O、扩展点）
 deploy/                   Docker 编排（infra + app 双 profile）
 ```
