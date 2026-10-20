@@ -52,14 +52,20 @@ UNIT_SYNONYMS: dict[str, tuple[str, ...]] = {
     "g": ("g", "mg"),
     "℃": ("℃", "°c", "degc", "摄氏度"),
     "h": ("h", "hrs", "hr", "hours", "小时"),
-    "pC/N": ("pc/n", "pcn", "pc·n-1"),
-    "g/cm³": ("g/cm3", "g/cm³", "g·cm-3"),
     "%": ("%",),
     "": (),
 }
 
-# 找到的单位 → (该指标的标准单位, 换算系数)。只在两者确认匹配时换算。
-UNIT_CONVERT: dict[tuple[str, str], float] = {
+# 所有已知单位写法，长的优先。用于识别「紧贴数值的却是不相干单位」——
+# 例：指标为 µL/min 而原文写 0.7 kPa，不能因为「找不到本指标单位」就退而取值。
+_ALL_UNIT_SYNS: tuple[str, ...] = tuple(
+    sorted({syn for syns in UNIT_SYNONYMS.values() for syn in syns}, key=len, reverse=True)
+)
+
+# 找到的单位 → 该指标的标准单位，对应的换算系数。
+# ⚠️ 键必须统一小写：_convert() 查找前会把两侧都 lower()，此前这里写了 "µL/min"
+# 这类首字母大写的键，导致 l/min → µL/min 的换算静默失效（值原样落库，差 10⁶ 倍）。
+_CONVERT_RAW: dict[tuple[str, str], float] = {
     ("ml/min", "µL/min"): 1000.0,
     ("l/min", "µL/min"): 1_000_000.0,
     ("ml/min", "l/min"): 0.001,
@@ -78,6 +84,9 @@ UNIT_CONVERT: dict[tuple[str, str], float] = {
     ("hz", "khz"): 0.001,
     ("mv", "v"): 0.001,
     ("mg", "g"): 0.001,
+}
+UNIT_CONVERT: dict[tuple[str, str], float] = {
+    (a.strip().lower(), b.strip().lower()): f for (a, b), f in _CONVERT_RAW.items()
 }
 
 
@@ -189,6 +198,27 @@ def _unit_at_start(text: str, unit: str) -> str | None:
     return None
 
 
+def _foreign_unit_at_start(text: str, unit: str) -> str | None:
+    """紧贴数值的是「别的单位」时返回它（如指标 µL/min、原文 0.7 kPa）。
+
+    存在的意义：_unit_at_start 找不到本指标单位时，旧逻辑会退化成「随便取一个数」，
+    于是压力值被当成流量落库。宁可这一处不取，也不能取错。
+    """
+    low = text.lower()
+    own = set(UNIT_SYNONYMS.get(unit, ()))
+    for syn in _ALL_UNIT_SYNS:
+        # 单字符单位（v / w / g / %）容易撞上单词首字母，只认同长度 ≥ 2 的写法
+        if len(syn) < 2 or not low.startswith(syn):
+            continue
+        nxt = low[len(syn): len(syn) + 1]
+        if nxt.isalpha():
+            continue  # "watts" 不算 W
+        if syn in own:
+            return None
+        return syn
+    return None
+
+
 def _is_footnote(window: str, m: re.Match) -> bool:
     """(1) 这类脚注标记不是取值。"""
     before = window[m.start() - 1: m.start()] if m.start() > 0 else ""
@@ -272,12 +302,16 @@ def _find_value(window: str, metric: SpecMetric) -> tuple | None:
         if head.isascii() and (head.isalpha() or head.isdigit()):
             continue
 
-        tail = window[m.end(): m.end() + 10]
+        tail = window[m.end(): m.end() + 12]
         gap = len(tail) - len(tail.lstrip(" "))
         # 单位必须紧跟数值（最多隔两个空格），否则会把后面别的数字的单位误挂上来
-        unit_found = _unit_at_start(tail[gap:], metric.unit) if gap <= 2 else None
+        adjacent = tail[gap:] if gap <= 2 else ""
+        unit_found = _unit_at_start(adjacent, metric.unit) if adjacent else None
 
         if unit_found is None:
+            if adjacent and _foreign_unit_at_start(adjacent, metric.unit):
+                # 紧贴的是别的单位（如指标要 µL/min，原文写 kPa）：这不是本指标的取值
+                continue
             if fallback is None:
                 fallback = m
             continue
@@ -305,6 +339,23 @@ def _score(
 
 
 # ── 主流程 ─────────────────────────────────────────────────────────────────
+def _alias_boundary_ok(low: str, idx: int, alias: str) -> bool:
+    """短 ASCII 别名必须落在词边界上。
+
+    长度 ≤ 4 的英文别名（kp / tc / size / flow）容易命中别的词内部：
+    "kp" 会命中 "kPa"、"tc" 会命中 "tcm"。中文别名不受此限制——
+    汉字没有词边界概念，卡了反而会漏。
+    """
+    if len(alias) > 4 or not alias.isascii():
+        return True
+    before = low[idx - 1] if idx > 0 else ""
+    after = low[idx + len(alias): idx + len(alias) + 1]
+    for ch in (before, after):
+        if ch and (ch.isalnum() or ch == "_"):
+            return False
+    return True
+
+
 def extract_candidates(
     pages: list[tuple[int, str]], metrics: list[SpecMetric]
 ) -> list[Candidate]:
@@ -333,6 +384,9 @@ def extract_candidates(
                 start = idx + len(alias)
 
                 span = (idx, idx + len(alias))
+                if not _alias_boundary_ok(low, idx, alias):
+                    # 短 ASCII 别名命中单词内部（旧例：kp 命中 kPa），跳过
+                    continue
                 used = spans.setdefault(metric.key, [])
                 if any(s < span[1] and span[0] < e for s, e in used):
                     continue

@@ -1,13 +1,15 @@
 # 竞品情报看板
 
-压电领域友商竞品情报看板。当前已实现**第二部分：性能参数横向对比**（P0），覆盖四条产品线：
+压电领域友商竞品情报看板。当前已实现**第二部分：性能参数横向对比**（P0），覆盖三类器件：
 
 | 产品大类 | 代码 | 型号数 | 友商 |
 |---|---|---|---|
-| 压电陶瓷 | `ceramic` | 3 | 摩根先进材料（PZT-4 / 5H / 8） |
 | 压电气泵 | `pump_air` | 6 | 村田 MZB 系列 4 型、巴特尔斯 mp6-gas / gas+ |
 | 压电风扇 | `fan` | 2 | xMEMS XMC-2400、Frore AirJet Mini G2 |
 | 压电液泵 | `pump_liquid` | 3 | 巴特尔斯 mp6-liq / pi / pp |
+
+压电陶瓷（材料牌号 PZT-4 / 5H / 8，d33/Qm 那套典型值表）**不在本看板范围内**——
+它是材料，不是器件，规格书形态与器件 datasheet 不同，混进来只会让指标池变成大片空白。
 
 第一部分「友商 / 客户关联新闻动态」尚未开始，规划见 `../竞品情报看板-开源调研与技术方案.md`。
 
@@ -18,7 +20,7 @@
 ```bash
 cd backend
 
-# 1) 写入示例数据（28 个指标 / 10 家公司 / 14 个型号 / 105 条参数）
+# 1) 写入示例数据（20 个指标 / 10 家公司 / 11 个型号 / 81 条参数）
 python -m app.seed
 
 # 2) 启动
@@ -117,7 +119,30 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 
 入口：<http://127.0.0.1:8000/datasheet>（对比页右上角「导入规格书」）
 
-流程三步：**选型号 → 上传 PDF → 复核后写入**。识别结果**不会直接入库**，必须由人勾选确认。
+流程三步：**公司 / 大类 / 型号 → 上传 PDF → 复核后写入**。识别结果**不会直接入库**，必须由人勾选确认。
+
+### 为什么是「公司 + 大类 + 型号」而不是「先选已有型号」
+
+这个入口的定位是**扩充数据库**：新发现的友商、新型号，都是从规格书进来的。所以公司和型号都允许不存在，提交时就地建档。
+
+三格信息各有分工，缺一不可：
+
+| 选择 | 约束什么 | 能否省 |
+|---|---|---|
+| 产品大类 | **指标池**（20 项 → 8~11 项） | 不能省，它是准确率的前提 |
+| 公司 | 型号候选范围 | 可省（能自动推断），但省掉后型号选择面变大 |
+| 型号 | 落库位置 `(product_id, metric_key)` | 不能省，但可新建 |
+
+**只选公司是不够的**：公司是组织维度，指标适用性是大类维度，两者不正交。例如巴特尔斯既做气泵（mp6-gas）又做液泵（mp6-liq），按公司取指标池会同时纳入 `flow_air` 与 `flow_liquid`，而这两者的别名都是「流量」——一处文本会产出两条互斥候选，且都带 0.9 置信度。
+
+**逐项提示**：填表时实时显示「将新建公司 / 已有型号，将更新」以及「该型号属于其他大类，提交会被拒绝」，不必等到提交才发现建错。
+
+### 建档规则
+
+- **公司同名直接归入**：「村田制作所」已存在时再填一次，不会建第二份档案。
+- **公司近名要确认**：填「村田」会命中已有「村田制作所」，返回 409 并提示；确认是另一家时勾选「确认这是另一家公司」再提交。名称归一的前提是先别造出重复。
+- **型号忽略大小写复用**：`mzB1001t02` 与 `MZB1001T02` 视为同一款，走更新。
+- **同一型号不能跨大类**：`mp6-liq` 是液泵，按气泵导入会被 409 拒绝。
 
 ### 识别引擎怎么工作
 
@@ -150,7 +175,7 @@ Entity（公司：本方 / 友商 / 客户）
                                └──► SpecSource（来源 + 抓取时间）
 ```
 
-**指标字典是全项目的核心资产**，28 个字段中最关键的三个：
+**指标字典是全项目的核心资产**，其中最关键的三个字段：
 
 - `better`：`higher` / `lower` / `target` / `na`，决定最优值方向。`target` 与 `na` 不参与最优判定。
 - `precision`：显示精度，同时作为差异判定的量化粒度。
@@ -158,9 +183,11 @@ Entity（公司：本方 / 友商 / 客户）
 
 ### 为什么要 `applies_to`
 
-压电陶瓷看 d33 / kp / Qm，压电泵看流量 / 静压 / 谐振频率——**两套参数体系完全不通用**。若不按产品大类裁剪指标行，跨类对比会退化成一张大面积空白的表。
+气泵看流量（L/min）/ 静压（kPa），风扇看风量 / 厚度，液泵看 µL 级流量 / 背压——**三套口径完全不通用**。不按大类裁剪，跨类对比会退化成一张大面积空白的表。
 
-页面按所选型号的产品大类取指标并集：只选气泵就只看到气泵的 11 项；同时选陶瓷与气泵，则两类指标都出现（各自另一列为「—」）。这是刻意的——它把「这两个东西不可直接比较」可视化出来，而不是悄悄给出一个错误结论。
+更关键的是别名会串味：「流量」同时是 `flow_air`（L/min）和 `flow_liquid`（µL/min）的识别别名，「压力」同时属于 `pressure_air` 和 `pressure_liquid`。池子混在一起时，一处文本会产出多条互斥候选，还都带 0.9 置信度。**按大类裁剪是识别准确率的前提，不是界面优化。**
+
+页面按所选型号的产品大类取指标并集：只选气泵就只看到气泵的 11 项。
 
 ### 已知的数据口径
 
@@ -232,8 +259,8 @@ python -m app.seed --force
 | GET | `/api/trace/{spec_id}` | 单条参数溯源 | `data:view` |
 | GET | `/export.csv?p=...` | 导出对比表 | `data:export` |
 | GET | `/datasheet` | 规格书导入页 | `data:write` |
-| POST | `/api/datasheet/analyze` | 上传规格书，返回识别候选（**不落库**） | `data:write` |
-| POST | `/api/datasheet/commit` | 提交复核后的参数，写入并标记未复核 | `data:write` |
+| POST | `/api/datasheet/analyze` | 上传规格书，返回识别候选与目标归属（**不落库**）。表单字段：`entity_id` 或 `entity_name`、`category`、`model` | `data:write` |
+| POST | `/api/datasheet/commit` | 提交复核后的参数；公司/型号不存在时**就地建档**，返回 `entity_created` / `product_created` | `data:write` |
 | GET | `/datasheet/{doc_id}/file` | 下载原始规格书（溯源链接指向这里） | `data:view` |
 | POST | `/api/import` | CSV 导入 | `data:write` |
 | GET | `/api/import/template` | CSV 模板 | `data:write` |
@@ -349,21 +376,23 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 ```bash
 cd backend
 pip install -r requirements-dev.txt   # 额外装 httpx，生产镜像不需要
-python tests/test_compare.py       # 20 项：对比逻辑与 CSV 导入
-python tests/test_datasheet.py     # 18 项：规格书识别
-python tests/test_auth.py          # 25 项：权限体系（含接口层拦截与 CSRF）
-node tests/js/test_datasheet_ui.js # 7 项：导入页交互（无浏览器依赖）
+python tests/test_compare.py          # 20 项：对比逻辑与 CSV 导入
+python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨界与别名边界）
+python tests/test_datasheet_import.py #  9 项：导入建档（新公司/新型号/三类拦截）
+python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
+node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 # 或 pytest tests/
 ```
 
-覆盖内容：
+共 **86 项**。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
-- **规格书识别**：脚注防护、单位换算、区间取上限、修饰语降权、别名不重复计数、多页页码
+- **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
+- **导入建档**：新公司+新型号一次建成并落参数、同型号忽略大小写走更新且不重复建档、近名公司被 409 拦住、显式确认后可放行、型号跨大类被拒、客户实体不可作为导入来源
 - **权限体系**：密码哈希与策略、角色→权限位边界、匿名访问的页面跳转与接口 401、普通用户在页面与接口层被 403 拦截、导航项隐藏、CSRF 缺失被拒、停用账号会话立即失效、最后一个管理员不可降级/停用、系统参数改完即时生效
-- **导入页交互**（Node + 最小 DOM 桩）：按钮未就绪时点击必须给出「缺什么」的提示而不是静默无反应、条件齐备后进入就绪态并发出带 CSRF 头的请求、超大文件被拦截、无产品时给前置提示
+- **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
 
-`test_auth.py` 使用独立临时数据目录，不碰开发库。
+`test_auth.py` 与 `test_datasheet_import.py` 各用独立临时数据目录，不碰开发库。
 
 ---
 
@@ -393,7 +422,8 @@ backend/
 │   ├── main.py           路由 + 鉴权异常处置
 │   ├── templates/        登录 / 对比 / 规格书 / 账号管理 / 系统设置 / 403 / 空状态
 │   └── static/           app.css, compare.js, datasheet.js（零依赖）
-├── tests/                test_compare.py, test_datasheet.py, test_auth.py
+├── tests/                test_compare.py, test_datasheet.py, test_datasheet_import.py, test_auth.py
+│                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt
 └── Dockerfile

@@ -240,7 +240,14 @@ def test_viewer_403_on_admin_api():
 
     # 1) 纯接口：JSON 403
     for path, payload in (
-        ("/api/datasheet/commit", {"doc_id": "0" * 12, "product_id": 1, "rows": []}),
+        (
+            "/api/datasheet/commit",
+            {
+                "doc_id": "0" * 12,
+                "target": {"category": "pump_air", "model": "X-1"},
+                "rows": [],
+            },
+        ),
     ):
         r = viewer.post(path, json=payload, headers={"X-CSRF-Token": csrf})
         assert r.status_code == 403, f"{path} 应 403，实际 {r.status_code}"

@@ -67,7 +67,8 @@ class SpecMetric(SQLModel, table=True):
     display_order: int = Field(default=100)
     is_key_metric: bool = Field(default=False, description="关键指标，对比页默认置顶")
     # 该指标适用于哪些产品大类（逗号分隔，如 "pump_air,pump_liquid"）。留空 = 全类别通用。
-    # 压电陶瓷与压电泵的参数体系完全不同，不按类别过滤会出现大量无意义的空格。
+    # 气泵看流量/静压、风扇看风量/厚度、液泵看 µL 级流量/背压，三套口径不通用，
+    # 不按类别过滤会出现大量无意义的空格，更会让同类别名（流量/压力）互相串味。
     applies_to: str = Field(default="", description="适用产品大类，逗号分隔；空=通用")
     # 规格书里可能出现的其他写法，供自动识别用（逗号分隔）
     aliases: str = Field(default="", description="识别别名，逗号分隔")

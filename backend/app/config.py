@@ -30,12 +30,16 @@ FLOAT_EPS = float(os.getenv("CIB_FLOAT_EPS", "1e-9"))
 COOKIE_SECURE = os.getenv("CIB_COOKIE_SECURE", "0").strip().lower() in ("1", "true", "on", "yes")
 
 # 产品大类代码 → 中文名。指标字典的 applies_to 用的就是这些代码。
+# 只收「器件」类：规格书是某款器件的参数页，导入流程按型号入库。
+# 压电陶瓷属于材料牌号（典型值表），与器件 datasheet 形态不同，故不在此列。
 CATEGORY_LABEL: dict[str, str] = {
-    "ceramic": "压电陶瓷",
     "pump_air": "压电气泵",
     "fan": "压电风扇",
     "pump_liquid": "压电液泵",
 }
+
+# 允许自动导入规格书的大类（当前与 CATEGORY_LABEL 一致，留出扩展位）
+IMPORTABLE_CATEGORIES: tuple[str, ...] = tuple(CATEGORY_LABEL)
 
 
 def category_label(code: str | None) -> str:

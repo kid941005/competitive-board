@@ -79,7 +79,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.3.1", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.4.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 # 静态资源版本号：前端改动后改 app.version 即可让浏览器重新拉取，
@@ -561,10 +561,70 @@ class CommitRow(BaseModel):
     confidence: float = 1.0
 
 
+class CommitTarget(BaseModel):
+    """导入目标：公司 + 大类 + 型号。
+
+    导入的用途是**扩充数据库**，所以型号允许不存在 —— 提交时就地建档。
+    公司同理：entity_id 为空时按 entity_name 新建（近名会被拦一次，防重复档案）。
+    """
+
+    entity_id: int | None = None
+    entity_name: str | None = None
+    category: str
+    model: str
+    force_new_entity: bool = False
+
+
 class CommitPayload(BaseModel):
     doc_id: str
-    product_id: int
+    target: CommitTarget
     rows: list[CommitRow]
+
+
+def _norm_company(name: str) -> str:
+    """公司名归一：去掉空白与标点、统一大小写，用于判断是否同一家。"""
+    return re.sub(r"[\s\-_.·/\\()（）&]+", "", name or "").casefold()
+
+
+def _find_company(session: Session, name: str) -> tuple[Entity | None, list[Entity]]:
+    """返回 (完全同名, 近名列表)。
+
+    近名用于拦「村田」与「村田制作所」建成两份档案 —— 名称归一的前提是先别造出重复。
+    """
+    key = _norm_company(name)
+    exact: Entity | None = None
+    similar: list[Entity] = []
+    if not key:
+        return None, []
+    for e in session.exec(select(Entity)).all():
+        other = _norm_company(e.name)
+        if not other:
+            continue
+        if other == key:
+            exact = e
+        elif len(key) >= 2 and (key in other or other in key):
+            similar.append(e)
+    return exact, similar
+
+
+def _find_product(session: Session, entity_id: int, model: str) -> Product | None:
+    """同公司内按型号查（忽略大小写与首尾空白）。"""
+    target = (model or "").strip().casefold()
+    for p in session.exec(select(Product).where(Product.entity_id == entity_id)).all():
+        if (p.model or "").strip().casefold() == target:
+            return p
+    return None
+
+
+def _validate_target(category: str, model: str) -> str:
+    if category not in config.CATEGORY_LABEL:
+        raise HTTPException(400, f"未知产品大类「{category}」，可选：{'、'.join(config.CATEGORY_LABEL.values())}")
+    model = (model or "").strip()
+    if not model:
+        raise HTTPException(400, "请填写规格书对应的型号")
+    if len(model) > 64:
+        raise HTTPException(400, "型号过长（≤ 64 字符）")
+    return model
 
 
 def _ds_meta(doc_id: str) -> dict:
@@ -590,19 +650,18 @@ def _check_doc_id(doc_id: str) -> None:
 @app.get("/datasheet", response_class=HTMLResponse)
 def datasheet_page(
     request: Request,
-    product_id: int | None = Query(default=None),
+    entity_id: int | None = Query(default=None),
     pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
     session: Session = Depends(get_session),
 ):
     user, auth_session = pair
     sset = settings_store.all_values(session)
     entities, products, _, _ = _load(session)
-    ent_by_id = {e.id: e for e in entities}
-    groups = []
-    for code, label in config.CATEGORY_LABEL.items():
-        items = [p for p in products if p.category == code]
-        if items:
-            groups.append({"code": code, "label": label, "items": items})
+
+    # 只列本方与友商：客户不会提供竞品规格书，列出来只会选错
+    companies = [e for e in entities if e.kind in ("self", "competitor")]
+    companies.sort(key=lambda e: (0 if e.kind == "self" else 1, e.name))
+
     return templates.TemplateResponse(
         request=request,
         name="datasheet.html",
@@ -611,11 +670,19 @@ def datasheet_page(
             auth_session,
             sset,
             page_title="导入规格书",
-            page_sub="上传 PDF / 文本，自动识别参数 → 人工复核 → 入库（标记未复核）",
+            page_sub="上传 PDF / 文本 → 自动识别参数 → 人工复核 → 入库（标记未复核）",
             active="datasheet",
-            groups=groups,
-            ent_by_id=ent_by_id,
-            product_id=product_id,
+            companies=companies,
+            products=products,
+            product_index=json.dumps(
+                [
+                    {"entity_id": p.entity_id, "model": p.model, "category": p.category or ""}
+                    for p in products
+                ],
+                ensure_ascii=False,
+            ).replace("</", "<\\/"),
+            categories=list(config.CATEGORY_LABEL.items()),
+            entity_id=entity_id,
             metric_total=len(products),
             product_total=len(products),
             min_confidence=sset["datasheet.min_confidence"],
@@ -627,14 +694,31 @@ def datasheet_page(
 @app.post("/api/datasheet/analyze")
 async def api_ds_analyze(
     file: UploadFile,
-    product_id: int = Form(...),
+    entity_id: int | None = Form(default=None),
+    entity_name: str | None = Form(default=None),
+    category: str = Form(...),
+    model: str = Form(...),
     _csrf: None = Depends(auth.verify_csrf),
     _user: User = Depends(_perm_user(P_WRITE)),
     session: Session = Depends(get_session),
 ):
-    product = session.get(Product, product_id)
-    if not product:
-        raise HTTPException(404, "产品不存在")
+    model = _validate_target(category, model)
+
+    entity: Entity | None = None
+    if entity_id is not None:
+        entity = session.get(Entity, entity_id)
+        if not entity:
+            raise HTTPException(404, "公司不存在，请刷新页面重选")
+        if entity.kind == "customer":
+            raise HTTPException(400, "客户不是竞品来源，请选择友商或本方")
+    else:
+        name = (entity_name or "").strip()
+        if not name:
+            raise HTTPException(400, "请选择公司，或填写新公司名称")
+        # 同名直接复用；近名在提交时才拦，此处只做归属判断，不落库
+        entity, _ = _find_company(session, name)
+
+    product = _find_product(session, entity.id, model) if entity and entity.id else None
 
     sset = settings_store.all_values(session)
     max_bytes = int(sset["datasheet.max_upload_mb"]) * 1024 * 1024
@@ -666,22 +750,32 @@ async def api_ds_analyze(
     )
 
     pages = read_document(DATASHEET_DIR / f"{doc_id}{ext}")
-    _, _, metrics, _ = _load(session)
-    applicable = (
-        metrics_for_categories(metrics, {product.category}) if product.category else metrics
-    )
+    _, _, all_metrics, _ = _load(session)
+    applicable = metrics_for_categories(all_metrics, {category})
     candidates = extract_candidates(pages, applicable)
     stats = summarize(pages)
+
+    warning = None
+    if product and product.category and product.category != category:
+        warning = (
+            f"型号 {product.model} 已存在且属于「{category_label(product.category)}」，"
+            "与所选大类不一致，提交会被拒绝。请改选大类或换一个型号名。"
+        )
 
     return {
         "doc_id": doc_id,
         "filename": file.filename,
-        "product": {
-            "id": product.id,
-            "model": product.model,
-            "category": product.category,
-            "category_label": category_label(product.category),
+        "target": {
+            "entity_id": entity.id if entity else None,
+            "entity_name": entity.name if entity else (entity_name or "").strip(),
+            "entity_is_new": entity is None,
+            "category": category,
+            "category_label": category_label(category),
+            "model": model,
+            "product_id": product.id if product else None,
+            "product_is_new": product is None,
         },
+        "warning": warning,
         "pages": stats["pages"],
         "chars": stats["chars"],
         "metric_total": len(applicable),
@@ -702,12 +796,68 @@ def api_ds_commit(
 ):
     _check_doc_id(payload.doc_id)
     meta = _ds_meta(payload.doc_id)
-    product = session.get(Product, payload.product_id)
-    if not product:
-        raise HTTPException(404, "产品不存在")
+    target = payload.target
+    model = _validate_target(target.category, target.model)
     if not payload.rows:
         raise HTTPException(400, "没有要写入的参数")
 
+    # ── 1) 定位公司，必要时就地建档 ──────────────────────────────────
+    entity: Entity | None = None
+    entity_created = False
+    if target.entity_id is not None:
+        entity = session.get(Entity, target.entity_id)
+        if not entity:
+            raise HTTPException(404, "公司不存在，请刷新页面重选")
+        if entity.kind == "customer":
+            raise HTTPException(400, "客户不是竞品来源，请选择友商或本方")
+    else:
+        name = (target.entity_name or "").strip()
+        if not name:
+            raise HTTPException(400, "请选择公司，或填写新公司名称")
+        exact, similar = _find_company(session, name)
+        if exact:
+            entity = exact
+        elif similar and not target.force_new_entity:
+            names = "、".join(f"「{e.name}」" for e in similar[:3])
+            raise HTTPException(
+                409,
+                f"已存在相似公司{names}。同一家因写法不同建出两份档案后，"
+                "参数会分散在两处、对比时也聚合不到一起。"
+                "请返回选择已有公司；若确认是另一家，勾选「确认新建独立档案」后重试。",
+            )
+        else:
+            entity = Entity(kind="competitor", name=name, tier="C")
+            session.add(entity)
+            session.flush()
+            entity_created = True
+
+    # ── 2) 定位型号，必要时就地建档 ──────────────────────────────────
+    product = _find_product(session, entity.id, model)
+    product_created = False
+    if product:
+        if product.category and product.category != target.category:
+            raise HTTPException(
+                409,
+                f"型号 {product.model} 已存在且属于「{category_label(product.category)}」，"
+                f"与所选「{category_label(target.category)}」不一致。"
+                "同一型号不能跨大类，请改选大类或换一个型号名。",
+            )
+        if not product.category:
+            product.category = target.category
+            session.add(product)
+    else:
+        product = Product(
+            entity_id=entity.id,  # type: ignore[arg-type]
+            model=model,
+            name=model,
+            category=target.category,
+            status="active",
+        )
+        session.add(product)
+        session.flush()
+        product_created = True
+
+    # ── 3) 出处 ──────────────────────────────────────────────────────
     source = SpecSource(
         kind="datasheet",
         url=f"/datasheet/{payload.doc_id}/file",
@@ -716,8 +866,7 @@ def api_ds_commit(
         note=f"规格书自动识别，{len(payload.rows)} 项待复核；录入人 {user.username}",
     )
     session.add(source)
-    session.commit()
-    session.refresh(source)
+    session.flush()
 
     metrics = {m.key: m for m in session.exec(select(SpecMetric)).all()}
     written = updated = skipped = 0
@@ -776,7 +925,11 @@ def api_ds_commit(
         "updated": updated,
         "skipped": skipped,
         "source_id": source.id,
+        "entity": entity.name,
+        "entity_created": entity_created,
         "product": product.model,
+        "product_created": product_created,
+        "category_label": category_label(product.category),
         "errors": errors,
     }
 

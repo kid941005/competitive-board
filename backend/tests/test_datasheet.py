@@ -173,6 +173,34 @@ def test_page_number_recorded():
     assert cands[0].page == 2
 
 
+# ── 单位与别名的边界 ───────────────────────────────────────────────────────
+LIQ = _m("flow_liquid", "液体流量", "µL/min", applies_to="pump_liquid",
+         aliases="流量, 液体流量, flow rate")
+KP = _m("kp", "平面机电耦合系数 kp", "", aliases="kp, 机电耦合系数")
+
+
+def test_litre_per_minute_converts_into_microlitre_metric():
+    """L/min 与 µL/min 相差 10⁶：必须换算，绝不能把 0.7 原样存成 0.7 µL/min。
+
+    曾经的真实缺陷：UNIT_CONVERT 的键写成 "µL/min"（首字母大写），而 _convert()
+    查找前会把两侧小写化，于是换算表查不到、静默返回原值，错值还带着 0.90 置信度。
+    """
+    cand = _one("流量 0.7 L/min", [LIQ], key="flow_liquid")
+    assert cand.value_num == 700000.0, cand.value_num
+    assert cand.converted is True, "必须标记为已换算"
+
+
+def test_foreign_unit_next_to_number_is_rejected():
+    """指标要流量，原文紧贴的却是 kPa —— 宁可不取，也不能把压力当流量。"""
+    assert _one("流量 0.7 kPa", [LIQ], key="flow_liquid") is None
+
+
+def test_short_ascii_alias_does_not_match_inside_word():
+    """"kp" 不能命中 "kPa" 内部；中文别名不受词边界限制。"""
+    assert _one("最大压力 1.42 kPa", [KP], key="kp") is None
+    assert _one("kp 0.58", [KP], key="kp").value_num == 0.58
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
