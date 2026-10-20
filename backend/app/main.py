@@ -16,12 +16,15 @@ import io
 import json
 import os
 import re
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -34,7 +37,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from . import auth, config, settings_store
+from . import api_v1, auth, config, settings_store, tokens
 from .auth import (
     COOKIE_NAME,
     P_EXPORT,
@@ -88,8 +91,10 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.6.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+# 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
+app.include_router(api_v1.router)
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 # 静态资源版本号：前端改动后改 app.version 即可让浏览器重新拉取，
 # 避免「代码已修复但用户还跑着缓存里的旧脚本」这种假象。
@@ -109,6 +114,63 @@ def _wants_html(request: Request) -> bool:
     if path.startswith("/admin/") or path in ("/", "/compare", "/datasheet"):
         return True
     return "text/html" in request.headers.get("accept", "")
+
+
+@app.exception_handler(api_v1.ApiError)
+async def _on_api_error(_request: Request, exc: api_v1.ApiError):
+    return api_v1.fail(exc)
+
+
+_V1_CODE_BY_STATUS = {
+    400: "VALIDATION_FAILED",
+    401: "UNAUTHENTICATED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "VALIDATION_FAILED",
+    409: "CONFLICT_VERSION",
+    422: "VALIDATION_FAILED",
+}
+
+
+@app.exception_handler(HTTPException)
+async def _on_http_error(request: Request, exc: HTTPException):
+    """默认行为原样保留；只有 /api/v1 走统一信封。"""
+    if not request.url.path.startswith("/api/v1"):
+        return JSONResponse(
+            {"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers
+        )
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": {
+                "code": _V1_CODE_BY_STATUS.get(exc.status_code, "VALIDATION_FAILED"),
+                "message": str(exc.detail),
+            },
+            "meta": {"request_id": uuid.uuid4().hex[:12]},
+        },
+        status_code=exc.status_code,
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _on_validation_error(request: Request, exc: RequestValidationError):
+    errors = jsonable_encoder(exc.errors())
+    if not request.url.path.startswith("/api/v1"):
+        return JSONResponse({"detail": errors}, status_code=422)
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": {
+                "code": "VALIDATION_FAILED",
+                "message": "请求参数校验未通过",
+                "hint": "details 里逐项给出字段与原因",
+                "details": errors,
+            },
+            "meta": {"request_id": uuid.uuid4().hex[:12]},
+        },
+        status_code=422,
+    )
 
 
 @app.exception_handler(auth.NotAuthenticated)
@@ -1563,6 +1625,89 @@ def admin_reset_password(
     session.commit()
     auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
     return _redirect("/admin/users", f"{target.username} 的密码已重置，其会话已全部失效")
+
+
+# ── 管理员：API 令牌（给 AI / 脚本）──────────────────────────────────────
+def _render_tokens(request, user, auth_session, session, *, ok=None, err=None,
+                   new_token: str | None = None, new_token_name: str | None = None):
+    sset = settings_store.all_values(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_tokens.html",
+        context=_ctx(
+            user, auth_session, sset,
+            page_title="API 令牌",
+            page_sub="给 AI / 脚本用的机器凭证；每个令牌只显示一次",
+            active="tokens",
+            ok=ok, err=err,
+            tokens=tokens.list_tokens(session),
+            new_token=new_token,
+            new_token_name=new_token_name,
+            scope_options=[
+                ("read", "读取", "查公司、型号、参数、对比矩阵、变更流"),
+                ("write", "写入", "新建/修改型号、批量写参数、删除型号"),
+                ("ingest", "批量摄取", "按行导入（与 Excel 导入同规则）"),
+                ("admin", "管理", "签发/吊销令牌（隐含全部权限）"),
+            ],
+            api_base="/api/v1",
+        ),
+    )
+
+
+@app.get("/admin/tokens", response_class=HTMLResponse)
+def admin_tokens_page(
+    request: Request,
+    pair: tuple[User, AuthSession] = Depends(_perm(P_USERS)),
+    session: Session = Depends(get_session),
+    ok: str | None = Query(default=None),
+    err: str | None = Query(default=None),
+):
+    user, auth_session = pair
+    return _render_tokens(request, user, auth_session, session, ok=ok, err=err)
+
+
+@app.post("/admin/tokens/create", response_class=HTMLResponse)
+async def admin_tokens_create(
+    request: Request,
+    pair: tuple[User, AuthSession] = Depends(_perm(P_USERS)),
+    session: Session = Depends(get_session),
+    _csrf: None = Depends(auth.verify_csrf),
+):
+    user, auth_session = pair
+    form = await request.form()
+    name = str(form.get("name", "")).strip()
+    scopes = [str(s) for s in form.getlist("scopes")]
+    try:
+        days = int(str(form.get("expires_days", "0")) or 0)
+    except ValueError:
+        days = 0
+    if not name:
+        return _render_tokens(request, user, auth_session, session, err="请填写令牌用途名称")
+    if not scopes:
+        return _render_tokens(request, user, auth_session, session, err="至少选择一个 scope")
+
+    # 明文只在这里出现一次：不写日志、不进 URL（避免被访问日志收集）
+    raw, _row = tokens.create_token(
+        session, name=name, scopes=scopes,
+        created_by=user.username, expires_days=days or None,
+    )
+    return _render_tokens(
+        request, user, auth_session, session,
+        new_token=raw, new_token_name=name,
+        ok=f"已签发「{name}」，请立刻复制保存",
+    )
+
+
+@app.post("/admin/tokens/{token_id}/revoke")
+def admin_tokens_revoke(
+    token_id: int,
+    _csrf: None = Depends(auth.verify_csrf),
+    _pair: tuple[User, AuthSession] = Depends(_perm(P_USERS)),
+    session: Session = Depends(get_session),
+):
+    if not tokens.revoke(session, token_id):
+        return _redirect("/admin/tokens", "令牌不存在或已撤销", "err")
+    return _redirect("/admin/tokens", "令牌已吊销，立即失效")
 
 
 # ── 管理员：系统参数 ───────────────────────────────────────────────────────

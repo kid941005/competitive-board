@@ -9,6 +9,8 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from . import config
 from .models import (  # noqa: F401  确保建表时模型已注册
+    ApiIdempotency,
+    ApiToken,
     Entity,
     Product,
     ProductSpec,

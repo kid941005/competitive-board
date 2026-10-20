@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}API 令牌 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if ok %}<p class="flash ok">{{ ok }}</p>{% endif %}
+{% if err %}<p class="flash err">{{ err }}</p>{% endif %}
+
+{% if new_token %}
+<section class="panel token-new">
+  <div class="panel-head">
+    <h2>令牌已生成：{{ new_token_name }}</h2>
+    <span class="hint">只显示这一次，刷新后无法再取回</span>
+  </div>
+  <pre class="token-box">{{ new_token }}</pre>
+  <p class="hint">
+    调用方式：<code>Authorization: Bearer {{ new_token }}</code><br>
+    先试一下：<code>curl -H "Authorization: Bearer {{ new_token }}" {{ api_base }}/context</code>
+  </p>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>签发新令牌</h2>
+    <span class="hint">按用途各签一个，便于单独吊销</span>
+  </div>
+  <form method="post" action="/admin/tokens/create" class="userform">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="ds-field">
+      <span>用途名称</span>
+      <input type="text" name="name" class="ds-input" placeholder="如 情报助手" required>
+    </label>
+    <label class="ds-field">
+      <span>有效期（天，0 = 长期）</span>
+      <input type="number" name="expires_days" class="ds-input" value="90" min="0" max="3650">
+    </label>
+    <div class="scope-pick">
+      {% for code, label, desc in scope_options %}
+      <label class="scope-item" title="{{ desc }}">
+        <input type="checkbox" name="scopes" value="{{ code }}"{% if code == 'read' %} checked{% endif %}>
+        <span><b>{{ label }}</b><i>{{ code }}</i></span>
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn">签发</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>已有令牌</h2>
+    <span class="hint">{{ tokens|length }} 个</span>
+  </div>
+  <div class="table-wrap">
+    <table class="matrix usertable">
+      <thead>
+        <tr>
+          <th>用途</th><th>前缀</th><th>Scope</th>
+          <th>创建</th><th>最近使用</th><th>过期</th><th>状态</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr class="{% if t.revoked_at %}revoked-row{% endif %}">
+          <td>{{ t.name }}</td>
+          <td class="mono">{{ t.prefix }}…</td>
+          <td class="mono">{{ t.scopes }}</td>
+          <td class="dim">{{ t.created_at.strftime('%Y-%m-%d %H:%M') if t.created_at else '—' }}</td>
+          <td class="dim">{{ t.last_used_at.strftime('%Y-%m-%d %H:%M') if t.last_used_at else '从未' }}</td>
+          <td class="dim">{{ t.expires_at.strftime('%Y-%m-%d') if t.expires_at else '长期' }}</td>
+          <td>
+            {% if t.revoked_at %}<span class="pill-off">已吊销</span>
+            {% else %}<span class="pill-ok">有效</span>{% endif %}
+          </td>
+          <td>
+            {% if not t.revoked_at %}
+            <form method="post" action="/admin/tokens/{{ t.id }}/revoke" class="inlinerow"
+                  onsubmit="return confirm('吊销「{{ t.name }}」？调用方将立刻收到 401。');">
+              <input type="hidden" name="_csrf" value="{{ csrf }}">
+              <button type="submit" class="link danger">吊销</button>
+            </form>
+            {% else %}<span class="dim">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not tokens %}
+        <tr><td colspan="8" class="dim">还没有令牌。上面签一个即可。</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel notes">
+  <div class="panel-head"><h2>四个约定</h2></div>
+  <ul class="plainlist">
+    <li><b>令牌不走 Cookie</b>，所以不校验 CSRF —— 浏览器那套防护一条都没放松。</li>
+    <li><b>明文只显示一次</b>，库里只存 sha256；丢了就吊销重签。</li>
+    <li><b>scope 最小化</b>：只读的助手别给 write。admin 隐含全部权限，慎用。</li>
+    <li><b>写完可吊销</b>：调用方立刻 401，无需重启服务。</li>
+  </ul>
+</section>
+{% endblock %}

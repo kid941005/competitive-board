@@ -191,8 +191,7 @@ def _source_cache(session: Session, batch_note: str) -> dict[str, SpecSource]:
             note=batch_note or None,
         )
         session.add(src)
-        session.commit()
-        session.refresh(src)
+        session.flush()
         cache[url] = src
         return src
 
@@ -200,7 +199,12 @@ def _source_cache(session: Session, batch_note: str) -> dict[str, SpecSource]:
 
 
 def import_rows(
-    session: Session, rows: list[dict], headers: list[str], *, batch_note: str = ""
+    session: Session,
+    rows: list[dict],
+    headers: list[str],
+    *,
+    batch_note: str = "",
+    commit: bool = True,
 ) -> ImportReport:
     report = ImportReport(rows_read=len(rows))
     missing = [c for c in REQUIRED_COLS if c not in headers]
@@ -225,6 +229,12 @@ def import_rows(
     source_for = _source_cache(session, batch_note)
 
     for lineno, row in enumerate(rows, start=2):
+        # 单元格统一成字符串：CSV 读出来本来就是 str，但 JSON 调用方会直接传数字/布尔/null。
+        # 不归一的话 "0.7" 与 0.7 会走两条不同分支，甚至 AttributeError。
+        row = {
+            str(k).strip(): ("" if v is None else str(v).strip())
+            for k, v in row.items()
+        }
         model = row.get("型号", "")
         metric_raw = row.get("指标", "")
         value_raw = row.get("数值", "")
@@ -262,8 +272,7 @@ def import_rows(
         if entity is None:
             entity = Entity(kind="competitor", name=ent_name)
             session.add(entity)
-            session.commit()
-            session.refresh(entity)
+            session.flush()
             entity_cache[_norm_key(ent_name)] = entity
             report.created_entities += 1
 
@@ -271,8 +280,7 @@ def import_rows(
         if product is None:
             product = Product(entity_id=entity.id, model=model, category=category)
             session.add(product)
-            session.commit()
-            session.refresh(product)
+            session.flush()
             product_cache[model.lower()] = product
             report.created_products += 1
         elif category:
@@ -286,8 +294,7 @@ def import_rows(
             if not product.category:
                 product.category = category
                 session.add(product)
-                session.commit()
-                session.refresh(product)
+                session.flush()
 
         num = _to_float(value_raw)
         is_number = metric.value_type == "number"
@@ -327,7 +334,12 @@ def import_rows(
             )
         report.written_specs += 1
 
-    session.commit()
+    # 全程用 flush 而不是 commit：一次导入要么整批可见，要么整批回滚。
+    # 早期版本每建一个实体就 commit，中途报错会留下半成品数据。
+    if commit:
+        session.commit()
+    else:
+        session.rollback()
     return report
 
 

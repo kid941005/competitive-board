@@ -114,6 +114,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 规格书导入 | 上传 PDF，自动识别参数，人工复核后入库（见下节） |
 | 批量导入 | Excel / CSV 一次写入多型号多参数，自动建档（见下节） |
 | 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号 |
+| AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 
 ---
 
@@ -218,6 +219,49 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 - **数值型填了非数字**：不覆盖旧值，明确报错返回。
 - **已有参数的型号不能换大类**，要改先清空参数。
 - 人工改动记 `confidence=1.0`、来源 `manual`、`verified` 按勾选；普通用户访问一律 403。
+
+---
+
+## AI / 脚本调用（`/api/v1`）
+
+完整设计见 **[docs/AI-API-设计.md](docs/AI-API-设计.md)**。这里只说要紧的几条。
+
+### 为什么不复用页面路由
+
+页面路由是**表单 + 303 跳转 + CSRF 双重提交**：程序拿不到结构化结果，也过不了 CSRF。所以另开一层 JSON 接口，页面一条未动。
+
+### 上手
+
+1. 管理员进「API 令牌」页签发一个令牌（明文只显示一次）；
+2. 带 `Authorization: Bearer <token>` 调用。
+
+```bash
+TOKEN=cib_xxxxxxxx_yyyyyyyy
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/v1/context
+curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8000/api/v1/products?category=pump_air&limit=5"
+curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d '{"items":[{"product_id":1,"metric_key":"flow_air","value_num":0.72,"verified":true}]}'   http://127.0.0.1:8000/api/v1/specs/batch
+```
+
+### 四组划分（按用途，不按对象）
+
+| 组 | 接口 | scope |
+|---|---|---|
+| 查询 | `context` `metrics` `entities` `products` `matrix` `changes` | `read` |
+| 写入 | `POST/PATCH/DELETE products`、`specs/batch`、`POST entities` | `write` |
+| 摄取 | `POST import`（与 Excel 导入同一套校验） | `ingest` |
+| 发现 | `tools`（function-calling 清单）、令牌管理 | `read` / `admin` |
+
+### 三个关键约定
+
+| 约定 | 为什么 |
+|---|---|
+| 统一信封 `{ok,data,meta}` / `{ok:false,error:{code,message,hint}}` | `code` 是稳定枚举供程序分支；`message/hint` 给人看 |
+| `dry_run=true` 预演 | 让 AI 先展示「将要改什么」，人确认后再落库 |
+| `Idempotency-Key` | 重试不写两遍；返回 `meta.replayed=true` |
+
+另有 `ETag`/`If-Match` 防覆盖、`/changes?since=` 做增量同步、`/tools` 供 function-calling 直接消费。
+
+> 令牌走 Bearer 头、不走 Cookie，所以**不校验 CSRF**——浏览器侧的防护一条都没放松。
 
 ---
 
@@ -445,12 +489,13 @@ python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨�
 python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
 python tests/test_import_export.py    # 10 项：Excel/CSV 导入与 Excel 导出
 python tests/test_product_edit.py     # 10 项：产品编辑与三类防护
+python tests/test_api_v1.py           # 21 项：令牌鉴权、幂等、dry-run、ETag、批量回执
 python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 # 或 pytest tests/
 ```
 
-共 **106 项**。覆盖内容：
+共 **127 项**。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -458,6 +503,7 @@ node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器�
 - **权限体系**：密码哈希与策略、角色→权限位边界、匿名访问的页面跳转与接口 401、普通用户在页面与接口层被 403 拦截、导航项隐藏、CSRF 缺失被拒、停用账号会话立即失效、最后一个管理员不可降级/停用、系统参数改完即时生效
 - **表格导入 / 导出**：Excel 与 CSV 必须拦住同样的坏行（指标不在字典、大类无法识别、跨大类冲突），空值算未公开；导出 xlsx 可被 openpyxl 解析，最优加粗、缺失为「—」、完整度行存在、`E2` 冻结
 - **产品编辑**：改值并标记复核、清空即删除、非法数字不覆盖旧值、新增缺失项、换大类被拒（已有参数时）、建号与删除、viewer 一律 403
+- **AI 接口**：无凭证 401 / scope 不足 403 的统一信封、令牌 secret 含下划线仍可校验、dry_run 真不落库（连公司都不建）、幂等重放只写一条、批量写参数逐项回执、`If-Match` 过期 409、JSON 原生数字不崩、`/tools` 清单可被 function-calling 消费、旧页面路由未被影响
 - **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
 
 `test_auth.py` 与 `test_datasheet_import.py` 各用独立临时数据目录，不碰开发库。
@@ -486,16 +532,19 @@ backend/
 │   ├── compare.py        纯计算：最优值 / 差异 / 完整度（无框架依赖，可直接单测）
 │   ├── datasheet.py      规格书识别引擎（PDF 解析 + 别名匹配 + 单位换算）
 │   ├── importer.py       Excel / CSV 导入（同一套校验）+ 模板生成
+│   ├── api_v1.py         机器调用接口面（信封 / 令牌 / 幂等 / dry-run / tools）
+│   ├── tokens.py         API 令牌签发与校验（只存 sha256）
 │   ├── exporters.py      Excel 导出（冻结窗格 / 最优高亮 / 缺失灰显 / 完整度 / 说明页）
 │   ├── seed.py           示例数据
 │   ├── main.py           路由 + 鉴权异常处置
-│   ├── templates/        登录 / 对比 / 规格书 / 批量导入 / 产品管理 / 账号管理 / 系统设置 / 403
+│   ├── templates/        登录 / 对比 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
 │   └── static/           app.css, compare.js, datasheet.js, import.js, product-edit.js（零依赖）
 ├── tests/                test_compare / test_datasheet / test_datasheet_import
-│                         test_import_export / test_product_edit / test_auth
+│                         test_import_export / test_product_edit / test_api_v1 / test_auth
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt
 └── Dockerfile
+docs/                     AI-API-设计.md（接口划分、I/O、扩展点）
 deploy/                   Docker 编排（infra + app 双 profile）
 ```

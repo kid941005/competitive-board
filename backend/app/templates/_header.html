@@ -16,6 +16,7 @@
     {% endif %}
     {% if is_admin %}
     <a href="/admin/users" class="{% if active == 'users' %}on{% endif %}">账号管理</a>
+    <a href="/admin/tokens" class="{% if active == 'tokens' %}on{% endif %}">API 令牌</a>
     <a href="/admin/settings" class="{% if active == 'settings' %}on{% endif %}">系统设置</a>
     {% endif %}
   </nav>

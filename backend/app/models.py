@@ -150,3 +150,38 @@ class AppSetting(SQLModel, table=True):
     value: str
     updated_at: datetime = Field(default_factory=utcnow)
     updated_by: str | None = None
+
+
+# ── 机器调用（AI / 脚本）──────────────────────────────────────────────────
+class ApiToken(SQLModel, table=True):
+    """API 令牌。给 AI / 脚本用，不依赖 Cookie 会话，因此也不需要 CSRF。
+
+    只存 secret 的 sha256；prefix 用于定位（避免全表比对），secret 只在签发时显示一次。
+    scopes 决定能做什么：read / write / ingest / admin。
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True, description="用途标识，如「情报助手」")
+    prefix: str = Field(index=True, unique=True, description="明文前缀，便于定位与展示")
+    token_hash: str = Field(unique=True, description="sha256(secret)")
+    scopes: str = Field(default="read", description="逗号分隔：read/write/ingest/admin")
+    created_by: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class ApiIdempotency(SQLModel, table=True):
+    """幂等键 → 首次响应。AI 调用可能重试，重试不能再写一遍数据。"""
+
+    __tablename__ = "api_idempotency"
+
+    key: str = Field(primary_key=True, description="sha256(token_id + 客户端 Idempotency-Key)")
+    method: str
+    path: str
+    status_code: int
+    response_json: str
+    created_at: datetime = Field(default_factory=utcnow)
