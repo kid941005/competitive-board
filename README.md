@@ -32,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:0.8.0
+  ghcr.io/kid941005/competitive-board:0.9.0
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -511,9 +511,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 205 项测试，通过才推**。标签有 `0.8.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 205 项测试，通过才推**。标签有 `0.9.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本由 `CIB_IMAGE_TAG` 决定，默认 `0.8.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
+版本由 `CIB_IMAGE_TAG` 决定，默认 `0.9.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -552,27 +552,27 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:0.8.0
+  ghcr.io/kid941005/competitive-board:0.9.0
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=0.8.0 -t competitive-board:0.8.0 ./backend
+docker build --build-arg APP_VERSION=0.9.0 -t competitive-board:0.9.0 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.8.0
+  competitive-board:0.9.0
 ```
 
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `CIB_IMAGE_TAG` | `0.8.0` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
+| `CIB_IMAGE_TAG` | `0.9.0` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
 | `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
 | `CIB_SEED_DEMO` | `1` | 首次启动写入示例数据；库里已有数据自动跳过 |
@@ -626,7 +626,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.8.0` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.0` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
