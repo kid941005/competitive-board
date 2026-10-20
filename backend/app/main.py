@@ -1,8 +1,11 @@
-"""FastAPI 入口：参数对比页 + JSON API。
+"""FastAPI 入口：认证、参数对比、规格书导入、账号与系统参数管理。
 
-页面是服务端渲染（Jinja2 + 原生 JS），P0 阶段刻意不引入前端构建链：
-一条 `uvicorn app.main:app` 就能跑起来，便于快速判断对比视图是否真的可用。
-P1 若需要更强的表格交互，再把 /api/matrix 换给 Next.js 消费即可，后端契约不变。
+页面是服务端渲染（Jinja2 + 原生 JS），刻意不引入前端构建链：
+一条 `uvicorn app.main:app` 就能跑起来。P1 若需要更强的表格交互，
+把 /api/matrix 换给前端框架消费即可，后端契约不变。
+
+权限边界见 auth.py 的 ROLE_PERMISSIONS —— 本文件的路由只声明「需要哪个权限位」，
+不出现任何 role 字符串比较。接口层缺权限一律 403、未登录一律 401（HTML 则跳登录页）。
 """
 
 from __future__ import annotations
@@ -11,10 +14,12 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import (
@@ -29,29 +34,157 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from . import config
+from . import auth, config, settings_store
+from .auth import (
+    COOKIE_NAME,
+    P_EXPORT,
+    P_SETTINGS,
+    P_USERS,
+    P_VIEW,
+    P_WRITE,
+    AuthSession,
+    User,
+)
 from .config import category_label
 from .compare import build_matrix, completeness, diff_count, metrics_for_categories
 from .datasheet import extract_candidates, read_document, summarize
-from .db import get_session, init_db
+from .db import engine, get_session, init_db
 from .importer import CSV_TEMPLATE, import_csv
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 
 BASE = Path(__file__).resolve().parent
 DATASHEET_DIR = config.DATA_DIR / "datasheets"
 ALLOWED_DS_EXT = {".pdf", ".txt", ".md", ".csv"}
-MAX_DS_BYTES = 25 * 1024 * 1024
 DOC_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
+
+# 用户不存在时也走一次哈希校验，避免通过响应时间枚举账号
+_DUMMY_HASH = auth.hash_password("__nonexistent__")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    admin_name = (os.getenv("CIB_ADMIN_USER") or "admin").strip() or "admin"
+    with Session(engine) as session:
+        auth.purge_expired(session)
+        generated = auth.ensure_bootstrap_admin(session)
+    if generated:
+        # 只在此打印一次。请立即登录后修改密码。
+        print("=" * 62, flush=True)
+        print(f"  已创建初始管理员：{admin_name}", flush=True)
+        print(f"  初始密码：{generated}", flush=True)
+        print("  登录后请立刻在「账号管理」里修改密码。", flush=True)
+        print("=" * 62, flush=True)
     yield
 
-app = FastAPI(title="竞品情报看板 · 参数对比", version="0.1.0", lifespan=lifespan)
+
+app = FastAPI(title="竞品情报看板", version="0.3.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE / "templates"))
+
+
+# ── 认证 / 授权异常：页面层与接口层分别处置 ────────────────────────────────
+def _wants_html(request: Request) -> bool:
+    """页面返回 HTML、接口返回 JSON —— 按路径判定，不依赖 Accept 头。
+
+    只看 Accept 会造成割裂：浏览器跳登录页，而 curl 拿 401，
+    排查问题时很难判断到底是被拦了还是路由不存在。
+    """
+    path = request.url.path
+    if path.startswith("/api/") or path == "/export.csv" or path.endswith("/file"):
+        return False
+    if path.startswith("/admin/") or path in ("/", "/compare", "/datasheet"):
+        return True
+    return "text/html" in request.headers.get("accept", "")
+
+
+@app.exception_handler(auth.NotAuthenticated)
+async def _on_unauthenticated(request: Request, _exc: auth.NotAuthenticated):
+    if _wants_html(request):
+        target = request.url.path
+        if request.url.query:
+            target += "?" + request.url.query
+        return RedirectResponse(f"/login?next={quote(target)}", status_code=303)
+    return JSONResponse({"detail": "未登录", "code": "unauthenticated"}, status_code=401)
+
+
+@app.exception_handler(auth.Forbidden)
+async def _on_forbidden(request: Request, exc: auth.Forbidden):
+    if _wants_html(request):
+        return templates.TemplateResponse(
+            request=request,
+            name="forbidden.html",
+            context={
+                "required": exc.perm,
+                "role": exc.role,
+                "role_label": auth.ROLE_LABEL.get(exc.role, exc.role),
+            },
+            status_code=403,
+        )
+    return JSONResponse(
+        {
+            "detail": "权限不足",
+            "code": "forbidden",
+            "required": exc.perm,
+            "role": exc.role,
+        },
+        status_code=403,
+    )
+
+
+@app.exception_handler(auth.CsrfInvalid)
+async def _on_csrf(request: Request, _exc: auth.CsrfInvalid):
+    if _wants_html(request):
+        return templates.TemplateResponse(
+            request=request,
+            name="forbidden.html",
+            context={
+                "required": "csrf",
+                "role": "-",
+                "role_label": "会话校验失败",
+                "hint": "页面可能长时间未刷新，请返回上一页后重试。",
+            },
+            status_code=403,
+        )
+    return JSONResponse({"detail": "CSRF 校验失败", "code": "csrf"}, status_code=403)
+
+
+def _perm(perm: str):
+    """要求某权限位的依赖，同时把 (user, auth_session) 交给路由用。"""
+
+    def dependency(
+        pair: tuple[User, AuthSession] = Depends(auth.get_current),
+    ) -> tuple[User, AuthSession]:
+        user, auth_session = pair
+        if not auth.has_perm(user, perm):
+            raise auth.Forbidden(perm, user.role)
+        return pair
+
+    return dependency
+
+
+def _perm_user(perm: str):
+    """只取 User 的版本。写操作用的都是它；页面需要 csrf 时用 _perm 拿元组。"""
+
+    def dependency(pair: tuple[User, AuthSession] = Depends(_perm(perm))) -> User:
+        return pair[0]
+
+    return dependency
+
+
+def _ctx(user: User, auth_session: AuthSession, sset: dict, **extra) -> dict:
+    ctx = auth.view_ctx(user, auth_session)
+    ctx["sset"] = sset
+    ctx.update(extra)
+    return ctx
+
+
+def _safe_next(target: str | None) -> str:
+    """只允许站内相对路径，防开放重定向。"""
+    if not target or not target.startswith("/") or target.startswith("//"):
+        return "/compare"
+    return target
 
 
 # ── 数据装载 ────────────────────────────────────────────────────────────────
@@ -70,8 +203,13 @@ def _load(session: Session):
     return entities, products, metrics, sources
 
 
-def _default_selection(products: list[Product], entities: list[Entity]) -> list[int]:
-    """默认视图：取型号最多的产品大类，跨友商各取最多 2 个型号。
+def _default_selection(
+    products: list[Product],
+    entities: list[Entity],
+    preferred_cat: str | None = None,
+    limit: int = 8,
+) -> list[int]:
+    """默认视图：优先取管理员配置的大类，跨友商各取最多 2 个型号。
 
     刻意不跨大类 —— 压电陶瓷与压电泵的指标不通用，混在一张表里只会看到空白。
     """
@@ -82,8 +220,11 @@ def _default_selection(products: list[Product], entities: list[Entity]) -> list[
     if not counts:
         return [p.id for p in products[:4] if p.id]  # type: ignore[misc]
 
-    dominant = max(counts.items(), key=lambda kv: kv[1])[0]
-    pool = [p for p in products if p.category == dominant]
+    if preferred_cat and preferred_cat in counts:
+        chosen_cat = preferred_cat
+    else:
+        chosen_cat = max(counts.items(), key=lambda kv: kv[1])[0]
+    pool = [p for p in products if p.category == chosen_cat] or products
 
     picked: list[int] = []
     per_entity: dict[int, int] = {}
@@ -94,13 +235,19 @@ def _default_selection(products: list[Product], entities: list[Entity]) -> list[
             continue
         picked.append(p.id)  # type: ignore[arg-type]
         per_entity[p.entity_id] = per_entity.get(p.entity_id, 0) + 1
-    return picked[: config.MAX_COMPARE]
+    return picked[:limit]
 
 
-def _parse_ids(raw: str | None, products: list[Product], entities: list[Entity]) -> list[int]:
+def _parse_ids(
+    raw: str | None,
+    products: list[Product],
+    entities: list[Entity],
+    preferred_cat: str | None = None,
+    limit: int = 8,
+) -> list[int]:
     valid = {p.id for p in products}
     if not raw:
-        return _default_selection(products, entities)
+        return _default_selection(products, entities, preferred_cat, limit)
     out: list[int] = []
     for chunk in raw.split(","):
         chunk = chunk.strip()
@@ -109,10 +256,10 @@ def _parse_ids(raw: str | None, products: list[Product], entities: list[Entity])
         pid = int(chunk)
         if pid in valid and pid not in out:
             out.append(pid)
-    return out[: config.MAX_COMPARE] or _default_selection(products, entities)
+    return out[:limit] or _default_selection(products, entities, preferred_cat, limit)
 
 
-def _matrix_payload(session: Session, ids: list[int]) -> dict:
+def _matrix_payload(session: Session, ids: list[int], sset: dict) -> dict:
     entities, products, metrics, sources = _load(session)
     chosen = [p for p in products if p.id in ids]
     order = {pid: i for i, pid in enumerate(ids)}
@@ -154,13 +301,70 @@ def _matrix_payload(session: Session, ids: list[int]) -> dict:
         "completeness": comp,
         "diff_total": diff_count(rows),
         "selected": ids,
-        "max_compare": config.MAX_COMPARE,
+        "max_compare": sset["compare.max_products"],
     }
+
+
+# ── 登录 / 登出 ────────────────────────────────────────────────────────────
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = Query(default="/compare")):
+    return templates.TemplateResponse(
+        request=request, name="login.html", context={"next": _safe_next(next), "error": None}
+    )
+
+
+@app.post("/login", response_class=HTMLResponse)
+def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form(default="/compare"),
+    session: Session = Depends(get_session),
+):
+    name = username.strip()
+    user = session.exec(select(User).where(User.username == name)).first()
+
+    # 无论账号是否存在都做一次校验，抹平时间差
+    ok = auth.verify_password(password, user.password_hash if user else _DUMMY_HASH)
+    if user is None or not ok or not user.is_active:
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={"next": _safe_next(next), "error": "账号或密码错误，或账号已停用"},
+            status_code=401,
+        )
+
+    hours = int(settings_store.get_value(session, "security.session_hours"))
+    token, _csrf = auth.create_session(session, user, hours, request.headers.get("user-agent"))
+
+    response = RedirectResponse(_safe_next(next), status_code=303)
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=hours * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=config.COOKIE_SECURE,
+        path="/",
+    )
+    return response
+
+
+@app.post("/logout")
+def logout(
+    request: Request,
+    _csrf: None = Depends(auth.verify_csrf),
+    session: Session = Depends(get_session),
+):
+    auth.revoke_session(session, request.cookies.get(COOKIE_NAME, ""))
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return response
 
 
 # ── 页面 ───────────────────────────────────────────────────────────────────
 @app.get("/", include_in_schema=False)
-def index() -> RedirectResponse:
+def index(request: Request, pair=Depends(_perm(P_VIEW))) -> RedirectResponse:
     return RedirectResponse(url="/compare")
 
 
@@ -170,28 +374,70 @@ def compare_page(
     p: str | None = Query(default=None),
     only: str = Query(default="all"),
     cat: str = Query(default=""),
+    pair: tuple[User, AuthSession] = Depends(_perm(P_VIEW)),
     session: Session = Depends(get_session),
 ):
+    user, auth_session = pair
+    sset = settings_store.all_values(session)
     entities, products, metrics, _ = _load(session)
     if not products:
         return templates.TemplateResponse(
-            request=request, name="empty.html", context={"counts": {"metrics": len(metrics)}}
+            request=request,
+            name="empty.html",
+            context=_ctx(
+                user,
+                auth_session,
+                sset,
+                page_title="竞品参数对比",
+                page_sub="暂无产品数据",
+                active="compare",
+                counts={"metrics": len(metrics)},
+            ),
         )
-    ids = _parse_ids(p, products, entities)
-    data = _matrix_payload(session, ids)
-    data.update({"only": only, "cat": cat})
+
+    ids = _parse_ids(
+        p,
+        products,
+        entities,
+        preferred_cat=sset["ui.default_category"],
+        limit=sset["compare.max_products"],
+    )
+    data = _matrix_payload(session, ids, sset)
+    data.update(
+        _ctx(
+            user,
+            auth_session,
+            sset,
+            page_title="竞品参数对比",
+            active="compare",
+            only=only,
+            cat=cat,
+        )
+    )
+    cats_txt = " / ".join(category_label(c) for c in data["chosen_cats"]) or "全部大类"
+    data["page_sub"] = (
+        f"{cats_txt} · {len(data['products'])} 个型号 · {len(data['rows'])} 项指标"
+    )
     return templates.TemplateResponse(request=request, name="compare.html", context=data)
 
 
-# ── JSON API（供后续前端替换 / MCP 复用）────────────────────────────────────
+# ── JSON API（只读，需要 data:view）────────────────────────────────────────
 @app.get("/api/matrix")
 def api_matrix(
     p: str | None = Query(default=None),
+    _pair=Depends(_perm(P_VIEW)),
     session: Session = Depends(get_session),
 ):
+    sset = settings_store.all_values(session)
     entities, products, _, _ = _load(session)
-    ids = _parse_ids(p, products, entities)
-    data = _matrix_payload(session, ids)
+    ids = _parse_ids(
+        p,
+        products,
+        entities,
+        preferred_cat=sset["ui.default_category"],
+        limit=sset["compare.max_products"],
+    )
+    data = _matrix_payload(session, ids, sset)
     payload = {
         "selected": ids,
         "products": [
@@ -234,7 +480,7 @@ def api_matrix(
 
 
 @app.get("/api/metrics")
-def api_metrics(session: Session = Depends(get_session)):
+def api_metrics(_pair=Depends(_perm(P_VIEW)), session: Session = Depends(get_session)):
     metrics = session.exec(
         select(SpecMetric).order_by(SpecMetric.display_order, SpecMetric.id)
     ).all()
@@ -255,7 +501,7 @@ def api_metrics(session: Session = Depends(get_session)):
 
 
 @app.get("/api/products")
-def api_products(session: Session = Depends(get_session)):
+def api_products(_pair=Depends(_perm(P_VIEW)), session: Session = Depends(get_session)):
     entities, products, _, _ = _load(session)
     by_id = {e.id: e for e in entities}
     return [
@@ -274,7 +520,9 @@ def api_products(session: Session = Depends(get_session)):
 
 
 @app.get("/api/trace/{spec_id}")
-def api_trace(spec_id: int, session: Session = Depends(get_session)):
+def api_trace(
+    spec_id: int, _pair=Depends(_perm(P_VIEW)), session: Session = Depends(get_session)
+):
     spec = session.get(ProductSpec, spec_id)
     if not spec:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -300,57 +548,7 @@ def api_trace(spec_id: int, session: Session = Depends(get_session)):
     }
 
 
-# ── 导入 / 导出 ────────────────────────────────────────────────────────────
-@app.post("/api/import")
-async def api_import(file: UploadFile, session: Session = Depends(get_session)):
-    raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("gbk", errors="replace")
-    report = import_csv(session, text)
-    return report.as_dict()
-
-
-@app.get("/api/import/template")
-def api_import_template():
-    return StreamingResponse(
-        io.BytesIO(CSV_TEMPLATE.encode("utf-8-sig")),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=spec-import-template.csv"},
-    )
-
-
-@app.get("/export.csv")
-def export_csv(
-    p: str | None = Query(default=None),
-    session: Session = Depends(get_session),
-):
-    entities, products, _, _ = _load(session)
-    ids = _parse_ids(p, products, entities)
-    data = _matrix_payload(session, ids)
-
-    buf = io.StringIO()
-    buf.write("\ufeff")  # BOM，Excel 打开不乱码
-    w = csv.writer(buf)
-    header = ["指标", "单位", "优劣方向"]
-    header += [f"{data['ent_by_id'][pr.entity_id].name} {pr.model}" for pr in data["products"]]
-    w.writerow(header)
-    for row in data["rows"]:
-        line = [row.metric.name, row.metric.unit, row.metric.better]
-        for pr in data["products"]:
-            cell = row.cells[pr.id]
-            line.append("" if cell.is_missing else cell.display)
-        w.writerow(line)
-
-    return StreamingResponse(
-        io.BytesIO(buf.getvalue().encode("utf-8")),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=spec-compare.csv"},
-    )
-
-
-# ── 规格书导入：自动识别参数 ───────────────────────────────────────────────
+# ── 规格书导入（写操作，需要 data:write）──────────────────────────────────
 class CommitRow(BaseModel):
     metric_key: str
     value_num: float | None = None
@@ -390,9 +588,12 @@ def _check_doc_id(doc_id: str) -> None:
 def datasheet_page(
     request: Request,
     product_id: int | None = Query(default=None),
+    pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
     session: Session = Depends(get_session),
 ):
-    entities, products, metrics, _ = _load(session)
+    user, auth_session = pair
+    sset = settings_store.all_values(session)
+    entities, products, _, _ = _load(session)
     ent_by_id = {e.id: e for e in entities}
     groups = []
     for code, label in config.CATEGORY_LABEL.items():
@@ -402,12 +603,20 @@ def datasheet_page(
     return templates.TemplateResponse(
         request=request,
         name="datasheet.html",
-        context={
-            "groups": groups,
-            "ent_by_id": ent_by_id,
-            "product_id": product_id,
-            "metric_total": len(metrics),
-        },
+        context=_ctx(
+            user,
+            auth_session,
+            sset,
+            page_title="导入规格书",
+            page_sub="上传 PDF / 文本，自动识别参数 → 人工复核 → 入库（标记未复核）",
+            active="datasheet",
+            groups=groups,
+            ent_by_id=ent_by_id,
+            product_id=product_id,
+            metric_total=len(products),
+            min_confidence=sset["datasheet.min_confidence"],
+            max_upload_mb=sset["datasheet.max_upload_mb"],
+        ),
     )
 
 
@@ -415,17 +624,22 @@ def datasheet_page(
 async def api_ds_analyze(
     file: UploadFile,
     product_id: int = Form(...),
+    _csrf: None = Depends(auth.verify_csrf),
+    _user: User = Depends(_perm_user(P_WRITE)),
     session: Session = Depends(get_session),
 ):
     product = session.get(Product, product_id)
     if not product:
         raise HTTPException(404, "产品不存在")
 
+    sset = settings_store.all_values(session)
+    max_bytes = int(sset["datasheet.max_upload_mb"]) * 1024 * 1024
+
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "文件为空")
-    if len(raw) > MAX_DS_BYTES:
-        raise HTTPException(413, "文件超过 25 MB")
+    if len(raw) > max_bytes:
+        raise HTTPException(413, f"文件超过 {sset['datasheet.max_upload_mb']} MB")
 
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_DS_EXT:
@@ -450,9 +664,7 @@ async def api_ds_analyze(
     pages = read_document(DATASHEET_DIR / f"{doc_id}{ext}")
     _, _, metrics, _ = _load(session)
     applicable = (
-        metrics_for_categories(metrics, {product.category})
-        if product.category
-        else metrics
+        metrics_for_categories(metrics, {product.category}) if product.category else metrics
     )
     candidates = extract_candidates(pages, applicable)
     stats = summarize(pages)
@@ -471,19 +683,19 @@ async def api_ds_analyze(
         "metric_total": len(applicable),
         "candidates": [c.to_dict() for c in candidates],
         "metrics": [
-            {
-                "key": m.key,
-                "name": m.name,
-                "unit": m.unit,
-                "value_type": m.value_type,
-            }
+            {"key": m.key, "name": m.name, "unit": m.unit, "value_type": m.value_type}
             for m in applicable
         ],
     }
 
 
 @app.post("/api/datasheet/commit")
-def api_ds_commit(payload: CommitPayload, session: Session = Depends(get_session)):
+def api_ds_commit(
+    payload: CommitPayload,
+    _csrf: None = Depends(auth.verify_csrf),
+    user: User = Depends(_perm_user(P_WRITE)),
+    session: Session = Depends(get_session),
+):
     _check_doc_id(payload.doc_id)
     meta = _ds_meta(payload.doc_id)
     product = session.get(Product, payload.product_id)
@@ -497,7 +709,7 @@ def api_ds_commit(payload: CommitPayload, session: Session = Depends(get_session
         url=f"/datasheet/{payload.doc_id}/file",
         title=meta.get("filename") or f"{payload.doc_id}",
         captured_at=datetime.now(timezone.utc),
-        note=f"规格书自动识别，{len(payload.rows)} 项待复核",
+        note=f"规格书自动识别，{len(payload.rows)} 项待复核；录入人 {user.username}",
     )
     session.add(source)
     session.commit()
@@ -566,7 +778,7 @@ def api_ds_commit(payload: CommitPayload, session: Session = Depends(get_session
 
 
 @app.get("/datasheet/{doc_id}/file")
-def ds_file(doc_id: str):
+def ds_file(doc_id: str, _pair=Depends(_perm(P_VIEW))):
     _check_doc_id(doc_id)
     path = _ds_file(doc_id)
     meta = _ds_meta(doc_id)
@@ -574,6 +786,272 @@ def ds_file(doc_id: str):
     return FileResponse(path, media_type=media, filename=meta.get("filename") or path.name)
 
 
+# ── 导入 / 导出 ────────────────────────────────────────────────────────────
+@app.post("/api/import")
+async def api_import(
+    file: UploadFile,
+    _csrf: None = Depends(auth.verify_csrf),
+    _user: User = Depends(_perm_user(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("gbk", errors="replace")
+    report = import_csv(session, text)
+    return report.as_dict()
+
+
+@app.get("/api/import/template")
+def api_import_template(_pair=Depends(_perm(P_WRITE))):
+    return StreamingResponse(
+        io.BytesIO(CSV_TEMPLATE.encode("utf-8-sig")),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=spec-import-template.csv"},
+    )
+
+
+@app.get("/export.csv")
+def export_csv(
+    p: str | None = Query(default=None),
+    _pair=Depends(_perm(P_EXPORT)),
+    session: Session = Depends(get_session),
+):
+    sset = settings_store.all_values(session)
+    entities, products, _, _ = _load(session)
+    ids = _parse_ids(
+        p,
+        products,
+        entities,
+        preferred_cat=sset["ui.default_category"],
+        limit=sset["compare.max_products"],
+    )
+    data = _matrix_payload(session, ids, sset)
+
+    buf = io.StringIO()
+    buf.write("\ufeff")  # BOM，Excel 打开不乱码
+    w = csv.writer(buf)
+    header = ["指标", "单位", "优劣方向"]
+    header += [f"{data['ent_by_id'][pr.entity_id].name} {pr.model}" for pr in data["products"]]
+    w.writerow(header)
+    for row in data["rows"]:
+        line = [row.metric.name, row.metric.unit, row.metric.better]
+        for pr in data["products"]:
+            cell = row.cells[pr.id]
+            line.append("" if cell.is_missing else cell.display)
+        w.writerow(line)
+
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=spec-compare.csv"},
+    )
+
+
+# ── 管理员：账号管理 ───────────────────────────────────────────────────────
+def _active_admin_count(session: Session) -> int:
+    rows = session.exec(select(User).where(User.role == "admin", User.is_active == True)).all()  # noqa: E712
+    return len(rows)
+
+
+def _redirect(url: str, msg: str | None = None, kind: str = "ok") -> RedirectResponse:
+    if msg:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}{kind}={quote(msg)}"
+    return RedirectResponse(url, status_code=303)
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+def admin_users_page(
+    request: Request,
+    pair: tuple[User, AuthSession] = Depends(_perm(P_USERS)),
+    session: Session = Depends(get_session),
+    ok: str | None = Query(default=None),
+    err: str | None = Query(default=None),
+):
+    user, auth_session = pair
+    sset = settings_store.all_values(session)
+    users = session.exec(select(User).order_by(User.role, User.username)).all()  # type: ignore[attr-defined]
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_users.html",
+        context=_ctx(
+            user,
+            auth_session,
+            sset,
+            page_title="账号管理",
+            page_sub="新建账号、调整角色、重置密码、停用账号",
+            active="users",
+            users=users,
+            role_options=(
+                ("admin", auth.ROLE_LABEL["admin"]),
+                ("viewer", auth.ROLE_LABEL["viewer"]),
+            ),
+            role_permissions={
+                role: sorted(perms) for role, perms in auth.ROLE_PERMISSIONS.items()
+            },
+            active_admin_count=_active_admin_count(session),
+            ok=ok,
+            err=err,
+        ),
+    )
+
+
+@app.post("/admin/users/create")
+def admin_create_user(
+    username: str = Form(...),
+    password: str = Form(...),
+    display_name: str = Form(default=""),
+    role: str = Form(default="viewer"),
+    _csrf: None = Depends(auth.verify_csrf),
+    actor: User = Depends(_perm_user(P_USERS)),
+    session: Session = Depends(get_session),
+):
+    name = username.strip()
+    if not USERNAME_RE.match(name):
+        return _redirect("/admin/users", "用户名需为 3–32 位字母、数字、下划线、点或短横线", "err")
+    if role not in auth.ROLE_PERMISSIONS:
+        return _redirect("/admin/users", "角色不合法", "err")
+    problem = auth.check_password_policy(password)
+    if problem:
+        return _redirect("/admin/users", problem, "err")
+    if session.exec(select(User).where(User.username == name)).first() is not None:
+        return _redirect("/admin/users", f"用户名 {name} 已存在", "err")
+
+    session.add(
+        User(
+            username=name,
+            display_name=display_name.strip() or None,
+            password_hash=auth.hash_password(password),
+            role=role,
+            created_by=actor.username,
+        )
+    )
+    session.commit()
+    return _redirect("/admin/users", f"已创建 {name}（{auth.ROLE_LABEL[role]}）")
+
+
+@app.post("/admin/users/{uid}/role")
+def admin_set_role(
+    uid: int,
+    role: str = Form(...),
+    _csrf: None = Depends(auth.verify_csrf),
+    actor: User = Depends(_perm_user(P_USERS)),
+    session: Session = Depends(get_session),
+):
+    target = session.get(User, uid)
+    if target is None:
+        return _redirect("/admin/users", "账号不存在", "err")
+    if role not in auth.ROLE_PERMISSIONS:
+        return _redirect("/admin/users", "角色不合法", "err")
+    if target.id == actor.id and role != "admin":
+        return _redirect("/admin/users", "不能取消自己的管理员权限（避免锁死）", "err")
+    if target.role == "admin" and role != "admin" and _active_admin_count(session) <= 1:
+        return _redirect("/admin/users", "系统至少需要保留一名启用状态的管理员", "err")
+
+    target.role = role
+    session.add(target)
+    session.commit()
+    if role != "admin":
+        auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
+    return _redirect("/admin/users", f"{target.username} 的角色已改为 {auth.ROLE_LABEL[role]}")
+
+
+@app.post("/admin/users/{uid}/toggle")
+def admin_toggle_user(
+    uid: int,
+    _csrf: None = Depends(auth.verify_csrf),
+    actor: User = Depends(_perm_user(P_USERS)),
+    session: Session = Depends(get_session),
+):
+    target = session.get(User, uid)
+    if target is None:
+        return _redirect("/admin/users", "账号不存在", "err")
+    if target.id == actor.id:
+        return _redirect("/admin/users", "不能停用自己的账号", "err")
+    if target.role == "admin" and target.is_active and _active_admin_count(session) <= 1:
+        return _redirect("/admin/users", "系统至少需要保留一名启用状态的管理员", "err")
+
+    target.is_active = not target.is_active
+    session.add(target)
+    session.commit()
+    if not target.is_active:
+        auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
+    state = "启用" if target.is_active else "停用"
+    return _redirect("/admin/users", f"{target.username} 已{state}")
+
+
+@app.post("/admin/users/{uid}/password")
+def admin_reset_password(
+    uid: int,
+    password: str = Form(...),
+    _csrf: None = Depends(auth.verify_csrf),
+    actor: User = Depends(_perm_user(P_USERS)),
+    session: Session = Depends(get_session),
+):
+    target = session.get(User, uid)
+    if target is None:
+        return _redirect("/admin/users", "账号不存在", "err")
+    problem = auth.check_password_policy(password)
+    if problem:
+        return _redirect("/admin/users", problem, "err")
+
+    target.password_hash = auth.hash_password(password)
+    session.add(target)
+    session.commit()
+    auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
+    return _redirect("/admin/users", f"{target.username} 的密码已重置，其会话已全部失效")
+
+
+# ── 管理员：系统参数 ───────────────────────────────────────────────────────
+@app.get("/admin/settings", response_class=HTMLResponse)
+def admin_settings_page(
+    request: Request,
+    pair: tuple[User, AuthSession] = Depends(_perm(P_SETTINGS)),
+    session: Session = Depends(get_session),
+    ok: str | None = Query(default=None),
+    err: str | None = Query(default=None),
+):
+    user, auth_session = pair
+    sset = settings_store.all_values(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_settings.html",
+        context=_ctx(
+            user,
+            auth_session,
+            sset,
+            page_title="系统设置",
+            page_sub="调整运行参数，保存后立即生效",
+            active="settings",
+            items=settings_store.snapshot(session),
+            groups=settings_store.GROUPS,
+            ok=ok,
+            err=err,
+        ),
+    )
+
+
+@app.post("/admin/settings")
+async def admin_settings_save(
+    request: Request,
+    _csrf: None = Depends(auth.verify_csrf),
+    actor: User = Depends(_perm_user(P_SETTINGS)),
+    session: Session = Depends(get_session),
+):
+    form = await request.form()
+    values = {k: v for k, v in form.items() if k in settings_store.SPEC_INDEX}
+    if not values:
+        return _redirect("/admin/settings", "没有提交任何配置项", "err")
+
+    changed, errors = settings_store.update_many(session, values, actor.username)
+    if errors:
+        return _redirect("/admin/settings", "；".join(errors), "err")
+    return _redirect("/admin/settings", f"已保存 {changed} 项配置")
+
+
+# ── 健康检查（容器用，不过鉴权）───────────────────────────────────────────
 @app.get("/healthz")
 def healthz():
     return {"ok": True}

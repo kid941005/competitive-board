@@ -26,6 +26,9 @@ MAX_COMPARE = int(os.getenv("CIB_MAX_COMPARE", "8"))
 # 数值比较的相对容差：差值小于 max(|a|,|b|) * EPS 视为相等
 FLOAT_EPS = float(os.getenv("CIB_FLOAT_EPS", "1e-9"))
 
+# HTTPS 部署时必须置 1，否则会话 Cookie 会在明文链路上传输
+COOKIE_SECURE = os.getenv("CIB_COOKIE_SECURE", "0").strip().lower() in ("1", "true", "on", "yes")
+
 # 产品大类代码 → 中文名。指标字典的 applies_to 用的就是这些代码。
 CATEGORY_LABEL: dict[str, str] = {
     "ceramic": "压电陶瓷",

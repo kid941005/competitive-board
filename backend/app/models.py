@@ -103,3 +103,49 @@ class ProductSpec(SQLModel, table=True):
     verified: bool = Field(default=False, description="是否已人工确认")
     captured_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+# ── 账号与权限 ─────────────────────────────────────────────────────────────
+class User(SQLModel, table=True):
+    """系统账号。role 只有 admin / viewer 两种，权限映射见 auth.ROLE_PERMISSIONS。"""
+
+    __tablename__ = "users"
+
+    id: int | None = Field(default=None, primary_key=True)
+    username: str = Field(index=True, unique=True)
+    display_name: str | None = None
+    password_hash: str
+    role: str = Field(default="viewer", index=True, description="admin / viewer")
+    is_active: bool = Field(default=True, description="停用后无法登录，会话立即失效")
+    created_at: datetime = Field(default_factory=utcnow)
+    created_by: str | None = None
+    last_login_at: datetime | None = None
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+
+class AuthSession(SQLModel, table=True):
+    """登录会话。只存 token 的哈希，泄库也无法直接冒用。"""
+
+    __tablename__ = "auth_sessions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    token_hash: str = Field(index=True, unique=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    csrf: str
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: datetime = Field(index=True)
+    user_agent: str | None = None
+
+
+class AppSetting(SQLModel, table=True):
+    """运行期可调的系统参数。未写入的行回落 SettingSpec.default。"""
+
+    __tablename__ = "app_settings"
+
+    key: str = Field(primary_key=True)
+    value: str
+    updated_at: datetime = Field(default_factory=utcnow)
+    updated_by: str | None = None

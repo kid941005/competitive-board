@@ -25,13 +25,75 @@ python -m app.seed
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-打开 <http://127.0.0.1:8000/compare>。
+打开 <http://127.0.0.1:8000/compare>，会先跳到登录页。
+
+首次启动若库里没有任何管理员，会自动创建一个，密码打印在启动日志里：
+
+```
+==============================================================
+  已创建初始管理员：admin
+  初始密码：xxxxxxxxxxxx
+  登录后请立刻在「账号管理」里修改密码。
+==============================================================
+```
+
+也可显式指定：`CIB_ADMIN_PASSWORD=你的密码`。密码需 ≥10 位且同时包含字母与数字，
+不合规会拒绝启动，而不是静默降级成弱口令。
 
 默认使用 SQLite（`backend/data/ciboard.db`），无需任何外部依赖。切换 PostgreSQL 只需设 `DATABASE_URL`：
 
 ```bash
 export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 ```
+
+---
+
+## 账号与权限
+
+### 两类角色的边界
+
+| 能力 | 权限位 | 管理员 | 普通用户 |
+|---|---|---|---|
+| 查看对比矩阵、参数溯源 | `data:view` | ✓ | ✓ |
+| 导出 CSV / JSON | `data:export` | ✓ | ✓ |
+| 导入规格书、CSV 导入、写入参数 | `data:write` | ✓ | ✗ |
+| 账号管理：新建、改角色、停用、重置密码 | `admin:users` | ✓ | ✗ |
+| 系统参数配置 | `admin:settings` | ✓ | ✗ |
+
+一句话概括：**普通用户是只读的** —— 能看、能按条件筛选、能导出，但改不了任何数据，也进不了管理面。
+
+### 为什么这样切
+
+系统参数（对比型号上限、上传体积、置信度阈值、会话时长）与账号体系，属于一旦误改就影响所有人的东西，必须收在管理员手里。
+而「看数据」是产品主路径，不该多设一道门槛。
+
+若业务上需要让普通用户也能导入规格书，在 `app/auth.py` 的 `ROLE_PERMISSIONS["viewer"]` 里加上 `P_WRITE` 即可
+—— **路由层一行都不用改**，因为路由只声明所需权限位，从不判断角色名。
+
+### 访问控制规则
+
+| 场景 | 界面层 | 接口层 |
+|---|---|---|
+| 未登录访问页面 | 303 跳 `/login?next=原路径` | 401 `{"code":"unauthenticated"}` |
+| 已登录但权限不足 | 403 页面，写明缺哪个权限位与当前角色 | 403 `{"code":"forbidden","required":"data:write","role":"viewer"}` |
+| 管理功能入口 | 普通用户**看不到**导航项 | — |
+| 直访管理 URL | 403 页面（不静默跳走，边界要看得见） | — |
+
+页面与接口的错误形态按**路径**判定而非 `Accept` 头：`/api/*` 与 `/export.csv` 一律 JSON，
+`/admin/*` 与页面路由一律 HTML。这样浏览器与 curl 的行为一致，排查时不会混淆「被拦了」与「路由不存在」。
+
+### 会话与密码
+
+- 密码 `pbkdf2_sha256` + 每用户 16 字节随机盐 + 24 万次迭代
+- 会话表只存 token 的 sha256，泄库也无法直接冒用
+- Cookie `HttpOnly` + `SameSite=Lax`；HTTPS 部署必须设 `CIB_COOKIE_SECURE=1`
+- 所有非幂等请求校验 CSRF 双重提交令牌（表单字段 `_csrf` 或请求头 `X-CSRF-Token`）
+- 改密码、把管理员降级、停用账号，都会**立即吊销该用户全部会话**
+- 登录失败对「账号不存在」与「密码错误」返回同一提示，且都走一次哈希校验，避免时间侧信道枚举账号
+
+### 防锁死
+
+不能取消自己的管理员权限、不能停用自己的账号、系统至少保留一名启用状态的管理员。
 
 ---
 
@@ -160,21 +222,28 @@ python -m app.seed --force
 
 ## API
 
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| GET | `/compare?p=1,2,3` | 对比页（服务端渲染） |
-| GET | `/api/matrix?p=1,2,3` | 矩阵 JSON，供前端替换或 MCP 复用 |
-| GET | `/api/metrics` | 指标字典 |
-| GET | `/api/products` | 产品清单 |
-| GET | `/api/trace/{spec_id}` | 单条参数溯源 |
-| POST | `/api/import` | CSV 导入 |
-| GET | `/api/import/template` | CSV 模板 |
-| GET | `/datasheet` | 规格书导入页 |
-| POST | `/api/datasheet/analyze` | 上传规格书，返回识别候选（**不落库**） |
-| POST | `/api/datasheet/commit` | 提交复核后的参数，写入并标记未复核 |
-| GET | `/datasheet/{doc_id}/file` | 下载原始规格书（溯源链接指向这里） |
-| GET | `/export.csv?p=...` | 导出对比表 |
-| GET | `/healthz` | 健康检查 |
+| 方法 | 路径 | 用途 | 需要权限 |
+|---|---|---|---|
+| POST | `/login` · `/logout` | 登录 / 登出 | — |
+| GET | `/compare?p=1,2,3` | 对比页（服务端渲染） | `data:view` |
+| GET | `/api/matrix?p=1,2,3` | 矩阵 JSON，供前端替换或 MCP 复用 | `data:view` |
+| GET | `/api/metrics` | 指标字典 | `data:view` |
+| GET | `/api/products` | 产品清单 | `data:view` |
+| GET | `/api/trace/{spec_id}` | 单条参数溯源 | `data:view` |
+| GET | `/export.csv?p=...` | 导出对比表 | `data:export` |
+| GET | `/datasheet` | 规格书导入页 | `data:write` |
+| POST | `/api/datasheet/analyze` | 上传规格书，返回识别候选（**不落库**） | `data:write` |
+| POST | `/api/datasheet/commit` | 提交复核后的参数，写入并标记未复核 | `data:write` |
+| GET | `/datasheet/{doc_id}/file` | 下载原始规格书（溯源链接指向这里） | `data:view` |
+| POST | `/api/import` | CSV 导入 | `data:write` |
+| GET | `/api/import/template` | CSV 模板 | `data:write` |
+| GET | `/admin/users` | 账号管理页 | `admin:users` |
+| POST | `/admin/users/create` · `/{uid}/role` · `/{uid}/toggle` · `/{uid}/password` | 建号 / 改角色 / 停用启用 / 重置密码 | `admin:users` |
+| GET | `/admin/settings` | 系统设置页 | `admin:settings` |
+| POST | `/admin/settings` | 保存系统参数 | `admin:settings` |
+| GET | `/healthz` | 健康检查（容器探针，不鉴权） | — |
+
+所有 POST 均需带 CSRF 令牌：表单加隐藏字段 `_csrf`，`fetch` 加请求头 `X-CSRF-Token`。
 
 服务端渲染是有意选择：P0 不引入前端构建链，一条命令即可启动。P1 若要换成 Next.js，只需消费 `/api/matrix`，后端契约不变。
 
@@ -224,7 +293,11 @@ docker run -d --name competitive-board \
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
 | `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
 | `CIB_SEED_DEMO` | `1` | 首次启动写入示例数据；库里已有数据自动跳过 |
-| `CIB_MAX_COMPARE` | `8` | 单页最多对比型号数 |
+| `CIB_ADMIN_USER` | `admin` | 初始管理员账号（仅当库里无管理员时生效） |
+| `CIB_ADMIN_PASSWORD` | 空 | 留空则随机生成并打印到日志：`docker compose logs app \| grep 初始密码` |
+| `CIB_SESSION_HOURS` | `12` | 会话有效期（小时），运行时可在系统设置里改 |
+| `CIB_COOKIE_SECURE` | `0` | HTTPS 部署必须置 `1`，否则 Cookie 会明文传输 |
+| `CIB_MAX_COMPARE` | `8` | 单页最多对比型号数的初始默认 |
 | `CIB_FLOAT_EPS` | `1e-9` | 数值相等判定容差 |
 | `APP_PORT` | `8000` | 宿主端口（只绑 127.0.0.1） |
 | `POSTGRES_PASSWORD` | — | 启用 PG 时必填 |
@@ -275,20 +348,29 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 ```bash
 cd backend
+pip install -r requirements-dev.txt   # 额外装 httpx，生产镜像不需要
 python tests/test_compare.py       # 20 项：对比逻辑与 CSV 导入
 python tests/test_datasheet.py     # 18 项：规格书识别
+python tests/test_auth.py          # 25 项：权限体系（含接口层拦截与 CSRF）
 # 或 pytest tests/
 ```
 
-覆盖：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误；规格书侧的脚注防护、单位换算、区间取上限、修饰语降权、别名不重复计数、多页页码。
+覆盖内容：
+
+- **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
+- **规格书识别**：脚注防护、单位换算、区间取上限、修饰语降权、别名不重复计数、多页页码
+- **权限体系**：密码哈希与策略、角色→权限位边界、匿名访问的页面跳转与接口 401、普通用户在页面与接口层被 403 拦截、导航项隐藏、CSRF 缺失被拒、停用账号会话立即失效、最后一个管理员不可降级/停用、系统参数改完即时生效
+
+`test_auth.py` 使用独立临时数据目录，不碰开发库。
 
 ---
 
-## P0 明确不做的事
+## 暂未实现
 
-- 参数自动抓取（changedetection.io 已就绪，接入在 P1）
+- 网页参数自动抓取（changedetection.io 已就绪，接入在 P1）
 - 多条件参数透视（如同时看 @1.9GHz 与 @2.4GHz）
-- 权限与多用户（当前假设内网单团队使用）
+- 细粒度权限（当前是两角色；如需「只读某几个友商」这类行级控制，需在 `auth` 之上再加数据域）
+- 操作审计日志（改参数、改账号目前只有 `updated_by` 字段，无完整审计流）
 - 参数变更历史与趋势（表结构已留 `captured_at`，视图未做）
 - 新闻动态流（第一部分）
 
@@ -299,17 +381,19 @@ python tests/test_datasheet.py     # 18 项：规格书识别
 ```
 backend/
 ├── app/
-│   ├── models.py       数据模型 + 指标字典设计取舍
-│   ├── compare.py      纯计算：最优值 / 差异 / 完整度（无框架依赖，可直接单测）
-│   ├── datasheet.py    规格书识别引擎（PDF 解析 + 别名匹配 + 单位换算）
-│   ├── importer.py     CSV 导入与校验
-│   ├── seed.py         示例数据
-│   ├── main.py         路由
-│   ├── templates/      对比页 / 导入页 / 空状态
-│   └── static/         app.css, compare.js, datasheet.js（零依赖）
-├── tests/              test_compare.py, test_datasheet.py
-├── tools/              make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
+│   ├── models.py         数据模型 + 指标字典设计取舍
+│   ├── auth.py           密码 / 会话 / 权限位与角色映射 / CSRF
+│   ├── settings_store.py 运行期系统参数（白名单 + 校验 + 回落默认值）
+│   ├── compare.py        纯计算：最优值 / 差异 / 完整度（无框架依赖，可直接单测）
+│   ├── datasheet.py      规格书识别引擎（PDF 解析 + 别名匹配 + 单位换算）
+│   ├── importer.py       CSV 导入与校验
+│   ├── seed.py           示例数据
+│   ├── main.py           路由 + 鉴权异常处置
+│   ├── templates/        登录 / 对比 / 规格书 / 账号管理 / 系统设置 / 403 / 空状态
+│   └── static/           app.css, compare.js, datasheet.js（零依赖）
+├── tests/                test_compare.py, test_datasheet.py, test_auth.py
+├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt
 └── Dockerfile
-deploy/                 Docker 编排（infra + app 双 profile）
+deploy/                   Docker 编排（infra + app 双 profile）
 ```

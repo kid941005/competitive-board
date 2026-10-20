@@ -2,25 +2,13 @@
 {% block title %}导入规格书 · 竞品情报看板{% endblock %}
 
 {% block body %}
-<div id="cfg" data-product="{{ product_id or '' }}" hidden></div>
-
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark"></span>
-    <div>
-      <h1>导入规格书</h1>
-      <p>上传 PDF / 文本，自动识别参数 → 人工复核 → 入库（标记未复核）</p>
-    </div>
-  </div>
-  <div class="actions">
-    <a class="btn ghost" href="/compare">返回对比</a>
-  </div>
-</header>
+<div id="cfg" data-product="{{ product_id or '' }}" data-min-conf="{{ min_confidence }}" data-max-mb="{{ max_upload_mb }}" hidden></div>
+{% include "_header.html" %}
 
 <section class="panel">
   <div class="panel-head">
     <h2>第一步 · 选择型号并上传</h2>
-    <span class="hint">支持 PDF / TXT / Markdown，单文件 ≤ 25 MB</span>
+    <span class="hint">支持 PDF / TXT / Markdown，单文件 ≤ {{ max_upload_mb }} MB</span>
   </div>
 
   <div class="ds-form">

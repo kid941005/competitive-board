@@ -176,6 +176,10 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ciboard}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ciboard}
       CIB_DATA_DIR: /app/data
       CIB_SEED_DEMO: ${CIB_SEED_DEMO:-1}
+      CIB_ADMIN_USER: ${CIB_ADMIN_USER:-admin}
+      CIB_ADMIN_PASSWORD: ${CIB_ADMIN_PASSWORD:-}
+      CIB_SESSION_HOURS: ${CIB_SESSION_HOURS:-12}
+      CIB_COOKIE_SECURE: ${CIB_COOKIE_SECURE:-0}
       REDIS_URL: redis://redis:6379/1
       RSSHUB_BASE: http://rsshub:1200
       CDIO_BASE: http://changedetection:5000

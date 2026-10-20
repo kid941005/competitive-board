@@ -1,0 +1,29 @@
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <div>
+      <h1>{{ page_title }}</h1>
+      {% if page_sub %}<p>{{ page_sub }}</p>{% endif %}
+    </div>
+  </div>
+
+  <nav class="mainnav">
+    <a href="/compare" class="{% if active == 'compare' %}on{% endif %}">参数对比</a>
+    {% if can_write %}
+    <a href="/datasheet" class="{% if active == 'datasheet' %}on{% endif %}">导入规格书</a>
+    {% endif %}
+    {% if is_admin %}
+    <a href="/admin/users" class="{% if active == 'users' %}on{% endif %}">账号管理</a>
+    <a href="/admin/settings" class="{% if active == 'settings' %}on{% endif %}">系统设置</a>
+    {% endif %}
+  </nav>
+
+  <div class="userbox">
+    <span class="uname" title="{{ user.username }}">{{ user.display_name or user.username }}</span>
+    <span class="rolebadge {{ user.role }}">{{ role_label }}</span>
+    <form method="post" action="/logout" class="logoutform">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <button type="submit" class="link">退出</button>
+    </form>
+  </div>
+</header>

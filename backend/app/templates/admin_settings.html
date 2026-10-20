@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}系统设置 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if ok %}<div class="flash ok">{{ ok }}</div>{% endif %}
+{% if err %}<div class="flash err">{{ err }}</div>{% endif %}
+
+<form method="post" action="/admin/settings">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+
+  {% for group in groups %}
+  <section class="panel">
+    <div class="panel-head">
+      <h2>{{ group }}</h2>
+    </div>
+
+    {% for item in items if item.spec.group == group %}
+    <div class="settingrow">
+      <div class="settingmeta">
+        <label for="set-{{ item.spec.key }}">{{ item.spec.label }}</label>
+        <code>{{ item.spec.key }}</code>
+        {% if item.modified %}
+        <span class="tag-modified">已修改</span>
+        {% endif %}
+      </div>
+
+      <div class="settinginput">
+        {% if item.spec.choices %}
+        <select id="set-{{ item.spec.key }}" name="{{ item.spec.key }}">
+          {% for choice in item.spec.choices %}
+          <option value="{{ choice }}"{% if choice == item.value %} selected{% endif %}>{{ choice }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input id="set-{{ item.spec.key }}"
+               name="{{ item.spec.key }}"
+               type="{{ 'number' if item.spec.kind in ('int', 'float') else 'text' }}"
+               {% if item.spec.minimum is not none %}min="{{ item.spec.minimum }}"{% endif %}
+               {% if item.spec.maximum is not none %}max="{{ item.spec.maximum }}"{% endif %}
+               {% if item.spec.kind == 'float' %}step="0.01"{% elif item.spec.kind == 'int' %}step="1"{% endif %}
+               value="{{ item.value }}">
+        {% endif %}
+      </div>
+
+      <div class="settingnote">
+        {% if item.spec.help %}<span>{{ item.spec.help }}</span>{% endif %}
+        <span class="dim">默认 {{ item.spec.default }}
+          {% if item.spec.minimum is not none %}· 范围 {{ item.spec.minimum }}–{{ item.spec.maximum }}{% endif %}
+        </span>
+        {% if item.updated_by %}
+        <span class="dim">上次修改：{{ item.updated_by }} @ {{ item.updated_at }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endfor %}
+
+  <div class="settings-actions">
+    <button type="submit" class="btn">保存全部</button>
+    <span class="hint">保存后立即生效，无需重启。已登录用户的会话时长不回溯调整。</span>
+  </div>
+</form>
+
+<section class="panel notes">
+  <div class="panel-head"><h2>说明</h2></div>
+  <ul class="plainlist">
+    <li>只有登记在参数表里的键可写，接口不接受任意键，避免配置表失管。</li>
+    <li>「单页最多对比型号数」会同时作用于页面勾选上限与接口截断。</li>
+    <li>「规格书最大上传体积」超限时接口直接返回 413，不进入解析流程。</li>
+    <li>「默认勾选的识别置信度阈值」只影响复核页的初始勾选，不改变已有数据。</li>
+  </ul>
+</section>
+{% endblock %}

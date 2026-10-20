@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}账号管理 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if ok %}<div class="flash ok">{{ ok }}</div>{% endif %}
+{% if err %}<div class="flash err">{{ err }}</div>{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>新建账号</h2>
+    <span class="hint">密码至少 10 位，需同时包含字母与数字</span>
+  </div>
+  <form class="userform" method="post" action="/admin/users/create">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="field inline">
+      <span>账号</span>
+      <input type="text" name="username" placeholder="如 zhangsan" required>
+    </label>
+    <label class="field inline">
+      <span>显示名</span>
+      <input type="text" name="display_name" placeholder="选填">
+    </label>
+    <label class="field inline">
+      <span>初始密码</span>
+      <input type="password" name="password" autocomplete="new-password" required>
+    </label>
+    <label class="field inline">
+      <span>角色</span>
+      <select name="role">
+        {% for value, label in role_options %}
+        <option value="{{ value }}"{% if value == 'viewer' %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn">创建</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>账号列表</h2>
+    <span class="hint">共 {{ users|length }} 个，启用中的管理员 {{ active_admin_count }} 名</span>
+  </div>
+
+  <div class="table-wrap users-wrap">
+    <table class="matrix usertable">
+      <thead>
+        <tr>
+          <th>账号</th>
+          <th>显示名</th>
+          <th>角色</th>
+          <th>状态</th>
+          <th>创建</th>
+          <th>最后登录</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td class="mono">{{ u.username }}{% if u.id == user.id %} <span class="tag-self">本人</span>{% endif %}</td>
+          <td>{{ u.display_name or '—' }}</td>
+          <td><span class="rolebadge {{ u.role }}">{{ '管理员' if u.role == 'admin' else '普通用户' }}</span></td>
+          <td>
+            {% if u.is_active %}<span class="pill-ok">启用</span>
+            {% else %}<span class="pill-off">停用</span>{% endif %}
+          </td>
+          <td class="mono dim">{{ u.created_at.strftime('%Y-%m-%d') if u.created_at else '—' }}</td>
+          <td class="mono dim">{{ u.last_login_at.strftime('%m-%d %H:%M') if u.last_login_at else '—' }}</td>
+          <td class="rowacts">
+            <form method="post" action="/admin/users/{{ u.id }}/role" class="inlinerow">
+              <input type="hidden" name="_csrf" value="{{ csrf }}">
+              <select name="role" aria-label="角色">
+                {% for value, label in role_options %}
+                <option value="{{ value }}"{% if u.role == value %} selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="link">改角色</button>
+            </form>
+
+            <form method="post" action="/admin/users/{{ u.id }}/toggle" class="inlinerow">
+              <input type="hidden" name="_csrf" value="{{ csrf }}">
+              <button type="submit" class="link {% if u.is_active %}danger{% endif %}">
+                {{ '停用' if u.is_active else '启用' }}
+              </button>
+            </form>
+
+            <details class="pwdreset">
+              <summary class="link">重置密码</summary>
+              <form method="post" action="/admin/users/{{ u.id }}/password" class="inlinerow">
+                <input type="hidden" name="_csrf" value="{{ csrf }}">
+                <input type="password" name="password" placeholder="新密码" autocomplete="new-password" required>
+                <button type="submit" class="link">确认</button>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>权限边界</h2>
+    <span class="hint">角色到权限位的映射集中在一处，页面与接口共用同一份定义</span>
+  </div>
+  <table class="matrix permtable">
+    <thead>
+      <tr>
+        <th>权限位</th>
+        <th>含义</th>
+        <th>管理员</th>
+        <th>普通用户</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set perm_meanings = [
+        ('data:view', '查看对比矩阵与参数溯源'),
+        ('data:export', '导出 CSV / JSON'),
+        ('data:write', '导入规格书、CSV 导入、写入参数'),
+        ('admin:users', '账号管理：新建、改角色、停用、重置密码'),
+        ('admin:settings', '系统参数配置')
+      ] %}
+      {% for key, meaning in perm_meanings %}
+      <tr>
+        <td class="mono">{{ key }}</td>
+        <td>{{ meaning }}</td>
+        <td>{% if key in role_permissions['admin'] %}<span class="pill-ok">✓</span>{% else %}<span class="pill-off">—</span>{% endif %}</td>
+        <td>{% if key in role_permissions['viewer'] %}<span class="pill-ok">✓</span>{% else %}<span class="pill-off">—</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

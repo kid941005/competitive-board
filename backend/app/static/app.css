@@ -390,6 +390,135 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
   .conf-badge.low { background: #3b1113; color: #fca5a5; }
 }
 
+/* ── 导航与身份 ── */
+.mainnav { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; justify-content: center; }
+.mainnav a {
+  padding: 6px 12px; border-radius: 8px; font-size: 13px;
+  color: var(--text-2); text-decoration: none; white-space: nowrap;
+}
+.mainnav a:hover { background: var(--surface-3); color: var(--text); }
+.mainnav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+
+.userbox { display: flex; align-items: center; gap: 8px; flex: none; }
+.uname {
+  font-size: 13px; color: var(--text); max-width: 140px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rolebadge {
+  font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--line-strong); color: var(--text-2); background: var(--surface-3);
+  white-space: nowrap;
+}
+.rolebadge.admin { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.rolebadge.viewer { background: var(--surface-3); }
+.logoutform { display: inline; margin: 0; }
+
+.toolactions { display: flex; gap: 8px; align-items: center; }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+
+/* ── 登录页 ── */
+.loginwrap { display: flex; align-items: center; justify-content: center; min-height: 78vh; }
+.logincard {
+  width: 360px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 14px; padding: 26px 24px 22px; box-shadow: 0 6px 24px rgba(0, 0, 0, .06);
+}
+.loginbrand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.loginbrand h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.loginbrand p { margin: 1px 0 0; font-size: 12px; color: var(--text-3); }
+.field { display: block; margin-bottom: 12px; }
+.field > span { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 5px; }
+.field input, .field select {
+  width: 100%; height: 34px; padding: 0 10px;
+  border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+  font-size: 13px; font-family: var(--font); outline: none;
+}
+.field input:focus, .field select:focus { border-color: var(--accent); }
+.field.inline { display: flex; flex-direction: column; margin-bottom: 0; min-width: 130px; }
+.btn.block { width: 100%; justify-content: center; height: 36px; margin-top: 6px; }
+.loginerr {
+  margin: 0 0 10px; padding: 7px 10px; border-radius: 7px;
+  background: #fee2e2; color: #991b1b; font-size: 12.5px;
+}
+.loginhint { margin: 14px 0 0; font-size: 11.5px; color: var(--text-3); text-align: center; }
+
+/* ── 403 ── */
+.empty-state.forbid { text-align: left; }
+.forbid code {
+  font-family: var(--mono); font-size: 12px;
+  background: var(--surface-3); padding: 2px 6px; border-radius: 4px;
+}
+.forbid-hint { color: var(--warn); }
+.forbid-note { color: var(--text-3); font-size: 12px; }
+
+/* ── 提示条 ── */
+.flash { margin: 0 0 12px; padding: 9px 13px; border-radius: 8px; font-size: 13px; }
+.flash.ok { background: var(--best-bg); color: var(--best-fg); border: 1px solid var(--best-line); }
+.flash.err { background: #fee2e2; color: #991b1b; border: 1px solid #f09595; }
+
+/* ── 账号管理 ── */
+.userform { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.users-wrap { max-height: none; }
+.usertable th, .usertable td { padding: 8px 12px; font-size: 12.5px; vertical-align: middle; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.dim { color: var(--text-3); }
+.tag-self {
+  font-size: 10px; padding: 0 5px; border-radius: 4px;
+  background: var(--accent-soft); color: var(--accent); margin-left: 4px;
+}
+.pill-ok { color: var(--best-fg); font-size: 12px; }
+.pill-off { color: var(--text-3); font-size: 12px; }
+.rowacts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.inlinerow { display: flex; gap: 5px; align-items: center; margin: 0; }
+.inlinerow select, .inlinerow input {
+  height: 26px; padding: 0 6px; border-radius: 6px;
+  border: 1px solid var(--line-strong); background: var(--surface);
+  color: var(--text); font-size: 12px; font-family: var(--font);
+}
+.inlinerow input { width: 110px; }
+.link.danger { color: #b91c1c; }
+.pwdreset summary { cursor: pointer; list-style: none; }
+.pwdreset summary::-webkit-details-marker { display: none; }
+.pwdreset[open] { display: flex; gap: 6px; align-items: center; }
+.permtable th, .permtable td { padding: 7px 12px; font-size: 12.5px; }
+
+/* ── 系统设置 ── */
+.settingrow {
+  display: grid; grid-template-columns: 260px 200px 1fr;
+  gap: 16px; align-items: center;
+  padding: 12px 0; border-top: 1px dashed var(--line);
+}
+.settingrow:first-of-type { border-top: 0; }
+.settingmeta label { display: block; font-size: 13px; font-weight: 500; }
+.settingmeta code { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+.tag-modified {
+  font-size: 10px; padding: 0 5px; border-radius: 4px; margin-left: 5px;
+  background: #fef3c7; color: #92400e;
+}
+.settinginput input, .settinginput select {
+  width: 100%; height: 32px; padding: 0 9px;
+  border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+  font-size: 13px; font-family: var(--font); outline: none;
+}
+.settinginput input:focus, .settinginput select:focus { border-color: var(--accent); }
+.settingnote { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: var(--text-2); }
+.settings-actions { display: flex; align-items: center; gap: 14px; margin: 4px 0 18px; }
+.panel.notes { background: var(--surface-2); }
+.plainlist { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-2); line-height: 1.9; }
+
+@media (prefers-color-scheme: dark) {
+  .loginerr, .flash.err { background: #3b1113; color: #fca5a5; border-color: #7f1d1d; }
+  .tag-modified { background: #3a2c0a; color: #fbbf24; }
+  .link.danger { color: #fca5a5; }
+}
+
+@media (max-width: 900px) {
+  .mainnav { justify-content: flex-start; order: 3; flex-basis: 100%; }
+  .settingrow { grid-template-columns: 1fr; gap: 6px; }
+  .userform { flex-direction: column; align-items: stretch; }
+}
+
 @media (max-width: 900px) {
   .ds-wrap { max-height: none; }
   .ds-table .ctx { max-width: 140px; }

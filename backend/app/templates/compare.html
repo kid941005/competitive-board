@@ -3,20 +3,7 @@
 
 {% block body %}
 <div id="cfg" data-max="{{ max_compare }}" hidden></div>
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark"></span>
-    <div>
-      <h1>竞品参数对比</h1>
-      <p>{% for c in chosen_cats %}{{ cat_label[c] }}{% if not loop.last %} / {% endif %}{% endfor %} · {{ products|length }} 个型号 · {{ rows|length }} 项指标</p>
-    </div>
-  </div>
-  <div class="actions">
-    <a class="btn ghost" href="/datasheet">导入规格书</a>
-    <a class="btn" href="/export.csv?p={{ selected|join(',') }}">导出 CSV</a>
-    <a class="btn ghost" href="/api/matrix?p={{ selected|join(',') }}" target="_blank" rel="noopener">查看 JSON</a>
-  </div>
-</header>
+{% include "_header.html" %}
 
 <section class="panel picker">
   <div class="panel-head">
@@ -75,6 +62,13 @@
       <span>只看有缺失</span>
     </label>
     <input type="search" id="search" class="search" placeholder="搜索指标…" autocomplete="off">
+  </div>
+
+  <div class="toolactions">
+    {% if can_export %}
+    <a class="btn ghost sm" href="/export.csv?p={{ selected|join(',') }}">导出 CSV</a>
+    {% endif %}
+    <a class="btn ghost sm" href="/api/matrix?p={{ selected|join(',') }}" target="_blank" rel="noopener">JSON</a>
   </div>
 </section>
 

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}403 · 权限不足{% endblock %}
+
+{% block body %}
+<main class="empty-state forbid">
+  <h1>403 · 权限不足</h1>
+  <p>
+    当前身份为 <b>{{ role_label }}</b>，没有执行该操作所需的权限
+    <code>{{ required }}</code>。
+  </p>
+  {% if hint %}
+  <p class="forbid-hint">{{ hint }}</p>
+  {% endif %}
+  <p>
+    <a href="/compare">返回参数对比</a>
+    {% if not user %}· <a href="/login">重新登录</a>{% endif %}
+  </p>
+  <p class="forbid-note">需要更高权限请联系管理员调整账号角色。</p>
+</main>
+{% endblock %}

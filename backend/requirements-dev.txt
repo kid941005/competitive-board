@@ -1,0 +1,3 @@
+# 仅测试需要。生产镜像不安装这些。
+-r requirements.txt
+httpx>=0.27      # fastapi.testclient 依赖；用于权限体系的接口层测试

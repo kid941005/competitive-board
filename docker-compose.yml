@@ -33,6 +33,13 @@ services:
       CIB_SEED_DEMO: "${CIB_SEED_DEMO:-1}"
       CIB_MAX_COMPARE: "${CIB_MAX_COMPARE:-8}"
       CIB_FLOAT_EPS: "${CIB_FLOAT_EPS:-1e-9}"
+      # 初始管理员：仅当库里没有任何管理员时创建。
+      # 密码留空则随机生成并打印到日志，用 docker compose logs app | grep 初始密码 查看
+      CIB_ADMIN_USER: "${CIB_ADMIN_USER:-admin}"
+      CIB_ADMIN_PASSWORD: "${CIB_ADMIN_PASSWORD:-}"
+      CIB_SESSION_HOURS: "${CIB_SESSION_HOURS:-12}"
+      # HTTPS 部署时置 1，让会话 Cookie 带 Secure
+      CIB_COOKIE_SECURE: "${CIB_COOKIE_SECURE:-0}"
       TZ: "${TZ:-Asia/Shanghai}"
     ports:
       - "127.0.0.1:${APP_PORT:-8000}:8000"

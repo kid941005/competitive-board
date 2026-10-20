@@ -3,6 +3,9 @@
   "use strict";
 
   var cfg = document.getElementById("cfg");
+  var CSRF = (document.querySelector('meta[name="csrf-token"]') || {}).content || "";
+  var MIN_CONF = Number((cfg && cfg.dataset.minConf) || 0.75);
+  var MAX_MB = Number((cfg && cfg.dataset.maxMb) || 25);
   var productSel = document.getElementById("productSel");
   var fileInput = document.getElementById("fileInput");
   var fileName = document.getElementById("fileName");
@@ -60,6 +63,11 @@
   // ── 识别 ────────────────────────────────────────────────────
   analyzeBtn.addEventListener("click", function () {
     if (!state.file || !productSel.value) return;
+    if (state.file.size > MAX_MB * 1024 * 1024) {
+      uploadMsg.className = "ds-msg warn";
+      uploadMsg.textContent = "文件超过 " + MAX_MB + " MB，请压缩后重试。";
+      return;
+    }
     var fd = new FormData();
     fd.append("file", state.file);
     fd.append("product_id", productSel.value);
@@ -68,7 +76,11 @@
     uploadMsg.className = "ds-msg";
     uploadMsg.textContent = "正在解析文档并匹配指标…";
 
-    fetch("/api/datasheet/analyze", { method: "POST", body: fd })
+    fetch("/api/datasheet/analyze", {
+      method: "POST",
+      body: fd,
+      headers: { "X-CSRF-Token": CSRF }
+    })
       .then(function (r) {
         return r.json().then(function (body) {
           if (!r.ok) throw new Error(body.detail || "识别失败");
@@ -133,7 +145,7 @@
 
       tr.innerHTML =
         '<td class="ds-check"><input type="checkbox" class="row-check"' +
-          (c.confidence >= 0.75 ? " checked" : "") + "></td>" +
+          (c.confidence >= MIN_CONF ? " checked" : "") + "></td>" +
         '<td><select class="metric-sel">' + opts + "</select></td>" +
         '<td><input class="val-input" value="' + esc(valueText) + '"></td>' +
         '<td class="unit-cell">' + esc(metric.unit || c.unit || "") + "</td>" +
@@ -246,7 +258,7 @@
 
     fetch("/api/datasheet/commit", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
       body: JSON.stringify({
         doc_id: state.docId,
         product_id: state.productId,

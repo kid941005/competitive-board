@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}登录 · 竞品情报看板{% endblock %}
+
+{% block body %}
+<main class="loginwrap">
+  <form class="logincard" method="post" action="/login">
+    <div class="loginbrand">
+      <span class="brand-mark"></span>
+      <div>
+        <h1>竞品情报看板</h1>
+        <p>压电领域友商参数对比</p>
+      </div>
+    </div>
+
+    <input type="hidden" name="next" value="{{ next }}">
+
+    <label class="field">
+      <span>账号</span>
+      <input type="text" name="username" autocomplete="username" autofocus required>
+    </label>
+
+    <label class="field">
+      <span>密码</span>
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+
+    {% if error %}
+    <p class="loginerr">{{ error }}</p>
+    {% endif %}
+
+    <button type="submit" class="btn block">登录</button>
+
+    <p class="loginhint">账号由管理员创建，本系统不开放自助注册。</p>
+  </form>
+</main>
+{% endblock %}
