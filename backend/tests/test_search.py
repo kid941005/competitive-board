@@ -144,22 +144,24 @@ def test_entities_search_combines_with_kind():
 
 # ── 指标检索 ───────────────────────────────────────────────────────────────
 def test_metrics_search_by_name_key_and_alias():
+    # 「静压」现在只有一项：风扇那套 pressure_fan 已经在 v3 迁移里并进 pressure_air，
+    # 否则跨大类对比会出现两个同名指标。
     by_name = _get("/api/v1/metrics?q=静压")
     keys = sorted(m["key"] for m in by_name["data"])
-    assert keys == ["pressure_air", "pressure_fan"], keys
+    assert keys == ["pressure_air"], keys
 
     by_key = _get("/api/v1/metrics?q=flow")
-    assert len(by_key["data"]) == 3, by_key["data"]
+    assert len(by_key["data"]) == 2, by_key["data"]  # flow_air + flow_liquid
     assert all("key" in m["matched"] for m in by_key["data"])
 
-    # 别名：airflow 只在 flow_fan 的 aliases 里
+    # 别名：airflow 在 flow_air 的 aliases 里（合并后「风量」也归到这一项）
     by_alias = _get("/api/v1/metrics?q=airflow")
-    assert [m["key"] for m in by_alias["data"]] == ["flow_fan"], by_alias["data"]
+    assert [m["key"] for m in by_alias["data"]] == ["flow_air"], by_alias["data"]
 
 
 def test_metrics_search_combines_with_category():
     body = _get("/api/v1/metrics?q=pressure&category=fan")
-    assert [m["key"] for m in body["data"]] == ["pressure_fan"]
+    assert [m["key"] for m in body["data"]] == ["pressure_air"]
     assert _get("/api/v1/metrics?q=zzz")["data"] == []
 
 

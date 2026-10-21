@@ -143,7 +143,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 
 | 功能 | 说明 |
 |---|---|
-| 型号多选 | 按友商分组勾选，最多 8 个型号（`CIB_MAX_COMPARE` 可调） |
+| 型号多选 | 先按 **压电气泵 / 压电风扇 / 压电液泵** 分段、再按友商分组勾选，最多 8 个型号（`CIB_MAX_COMPARE` 可调） |
 | 最优值高亮 | 依指标字典的 `better` 方向自动判定；并列时同时高亮；只有一个值时**不标最优** |
 | 差异过滤 | 「只看有差异」按容差判定，1.50 与 1.5 不算差异 |
 | 缺失过滤 | 「只看有缺失」——谁在藏参数，本身即情报 |
@@ -154,7 +154,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 导出 | **Excel（带格式：最优加粗、缺失「—」、完整度行、说明页）**、CSV（带 BOM）、JSON |
 | 规格书导入 | 上传 PDF，自动识别参数，人工复核后入库（见下节） |
 | 批量导入 | Excel / CSV 一次写入多型号多参数，自动建档（见下节） |
-| 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号；列表支持关键词 + 公司 + 大类筛选 |
+| 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号；列表按大类分段，支持关键词 + 公司 + 大类筛选；型号详情页可记录**客户采用**（谁在用这款泵） |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 | 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
 
@@ -292,8 +292,8 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 
 | 页面 | 能做什么 |
 |---|---|
-| `/products` | 全部型号清单（含完整度）+ 新建型号 + 删除 |
-| `/products/{id}` | 改型号元信息；逐项改参数值 / 测试条件 / 复核状态；清空数值即删除该项 |
+| `/products` | 全部型号清单（含完整度，**按压电气泵 / 压电风扇 / 压电液泵分段**）+ 新建型号 + 删除 |
+| `/products/{id}` | 改型号元信息；逐项改参数值 / 测试条件 / 复核状态；清空数值即删除该项；**客户采用**：记录谁在用这款泵 |
 
 五条实现约定：
 
@@ -334,6 +334,7 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d 
 | 查询 | `context` `metrics` `entities` `products` `matrix` `changes` | `read` |
 | 写入 | `POST/PATCH/DELETE products`、`specs/batch`、`POST/PATCH entities` | `write` |
 | 摄取 | `POST import`（与 Excel 导入同一套校验） | `ingest` |
+| 采用 | `GET/POST /adoptions`、`PATCH/DELETE /adoptions/{id}`（谁在用哪款泵） | `read` / `write` |
 | 发现 | `tools`（function-calling 清单）、令牌管理 | `read` / `admin` |
 
 ### 检索（`q` 参数）
@@ -450,6 +451,7 @@ Entity（公司：自研 / 友商 / 客户）
   └─ Product（型号）
         └─ ProductSpec（参数值）──► SpecMetric（指标字典）
                                └──► SpecSource（来源 + 抓取时间）
+        └─ Adoption（客户采用关系）──► Entity（kind=customer）
 ```
 
 `kind=self` 的那家公司（左蓝微）在页面上**直接用公司名**，不加「本方 / 我方」之类的徽标：
@@ -460,6 +462,28 @@ Entity（公司：自研 / 友商 / 客户）
 - `better`：`higher` / `lower` / `target` / `na`，决定最优值方向。`target` 与 `na` 不参与最优判定。
 - `precision`：显示精度，同时作为差异判定的量化粒度。
 - `applies_to`：该指标适用于哪些产品大类（逗号分隔），留空表示全类通用。
+
+### 流量与静压为什么不再按大类分家（v3）
+
+原来气泵一套（`flow_air` / `pressure_air`）、风扇一套（`flow_fan` / `pressure_fan`）。问题是
+**选一个气泵 + 一个风扇做对比时，表里会出现两行流量、两行静压** —— 物理量明明是同一个
+（流量 L/min、压差 kPa），只因指标是按大类各建的，横向对比就读不出一条可比的行。
+
+v3 把风扇那套并进气泵那套：`flow_fan → flow_air`、`pressure_fan → pressure_air`
+（**1300 Pa → 1.3 kPa**，同一物理量，不是近似），两个指标各自补上 `fan` 适用大类。
+液泵仍然单列 —— 它的量级差 10⁴（µL/min 与 mbar），混在一起没法读。
+
+同时删掉了「真空度」：全库只有村田一条、且它来自官网参数表而非规格书，其余型号全空 ——
+留在表里永远是一行孤点。泵「吹」的能力由静压代表，「吸」的能力等有真实数据再单独建模。
+
+### 客户采用关系
+
+一张 `adoptions` 表记「哪家客户在自己的产品里用了哪款泵」：客户 × 型号 × 进度 × 年份 × 备注。
+状态是**进度**不是优劣：传闻 → 送样 → 导入设计 → 量产 → 已停用。
+
+客户不另建主数据，就是 `kind=customer` 的公司实体 —— 同一家既可能是友商又可能是客户，
+目前一个 `kind` 只能选一个，这是已知取舍。同一客户对同一型号只有一条记录（唯一索引兜底），
+状态变了是「改那一条」，不是再记一条。
 
 ### 表结构与升级
 
@@ -592,7 +616,7 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 291 项测试，通过才推**。标签有 `0.9.6`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 303 项测试，通过才推**。标签有 `0.9.6`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
 版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `0.9.6` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
@@ -748,12 +772,13 @@ python tests/test_import_export.py    # 10 项：Excel/CSV 导入与 Excel 导�
 python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
 python tests/test_api_v1.py           # 23 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算
 python tests/test_units.py            # 21 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义）
+python tests/test_adoptions.py        # 11 项：客户采用关系（页面 + API、重复拒收、同名复用、审计）
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
 python tests/test_labels.py           #  6 项：自家公司用公司名，不出现「本方 / 我方」
 python tests/test_fixes.py            # 10 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS）
 python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
 python tests/test_channel_parity.py   # 13 项：四条写入通道的规则一致性（applies_to / 置信度 / 出处 / 日志时间）
-python tests/test_schema.py           #  6 项：表结构迁移（新库 / 老库升级去重 / 版本过新拒启 / 唯一约束兜底）
+python tests/test_schema.py           #  7 项：表结构迁移（新库 / 老库升级去重 / v3 指标合并 / 版本过新拒启）
 python tests/test_retention.py        #  4 项：规格书原文保留（被引用的不删、过期的删、未到期留着）
 python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
 python tests/test_datadir.py          #  6 项：数据目录自检（不可写 / 建不出 / 磁盘满各有各的话）

@@ -40,11 +40,11 @@ from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 # 气泵看流量/静压、风扇看风量/厚度、液泵看流量µL级/背压 —— 三套口径不通用，必须分开。
 METRICS = [
     # 气动与流体
-    ("flow_air", "气动与流体", "空气流量", "L/min", "number", "higher", 3, 300, True, "pump_air", ""),
-    ("pressure_air", "气动与流体", "静压", "kPa", "number", "higher", 2, 310, True, "pump_air", ""),
-    ("vacuum_air", "气动与流体", "真空度", "kPa", "number", "higher", 2, 320, False, "pump_air", "负压能力，按绝对值记"),
-    ("flow_fan", "气动与流体", "风量", "L/min", "number", "higher", 2, 330, True, "fan", ""),
-    ("pressure_fan", "气动与流体", "静压", "Pa", "number", "higher", 0, 340, True, "fan", ""),
+    # 流量与静压**不按大类分家**：气泵吹气、风扇推风，物理量是同一个（流量 L/min、
+    # 压差 kPa），分两套指标会让「气泵 vs 风扇」的对比里出现两行流量、两行静压。
+    # 液泵仍然单列 —— 它的量级差了 10⁴（µL/min 与 mbar），混在一起没法读。
+    ("flow_air", "气动与流体", "空气流量", "L/min", "number", "higher", 3, 300, True, "pump_air,fan", ""),
+    ("pressure_air", "气动与流体", "静压", "kPa", "number", "higher", 2, 310, True, "pump_air,fan", ""),
     ("flow_liquid", "气动与流体", "液体流量", "µL/min", "number", "higher", 0, 350, True, "pump_liquid", "典型值"),
     ("pressure_liquid", "气动与流体", "背压", "mbar", "number", "higher", 0, 360, True, "pump_liquid", "典型值"),
     ("self_priming", "气动与流体", "自吸", "", "text", "na", 0, 370, False, "pump_liquid", ""),
@@ -69,11 +69,8 @@ METRICS = [
 # 注意：不要写过于泛化的词（如裸「压力」），否则会命中「压力型」这类修饰语；
 # 确需保留时由 datasheet.py 的限定词规则降权。
 ALIASES = {
-    "flow_air": "流量, 空气流量, 气体流量, 最大流量, flow rate, air flow, flow",
+    "flow_air": "流量, 空气流量, 气体流量, 最大流量, 风量, 最大风量, flow rate, air flow, airflow, flow",
     "pressure_air": "静压, 最大静压, 输出压力, 压力, static pressure, max pressure",
-    "vacuum_air": "真空度, 负压, vacuum",
-    "flow_fan": "风量, 流量, 最大风量, airflow, air flow",
-    "pressure_fan": "静压, 压力, static pressure",
     "flow_liquid": "流量, 液体流量, flow rate, flow",
     "pressure_liquid": "背压, 压力, back pressure",
     "self_priming": "自吸, self-priming",
@@ -172,7 +169,7 @@ SPECS: dict[str, dict[str, float | str]] = {
         "drive_voltage": "8~21", "op_temp_max": 45, "size": "19×19",
     },
     "MZB4001T05": {
-        "flow_air": 0.5, "vacuum_air": 10.5, "resonance": "20~22",
+        "flow_air": 0.5, "resonance": "20~22",
         "drive_voltage": "20~28", "op_temp_max": 50, "size": "φ28",
     },
 
@@ -204,14 +201,14 @@ SPECS: dict[str, dict[str, float | str]] = {
         "lifetime_h": 5000, "wetted_material": "PP", "media": "液体与气体",
     },
 
-    # 固态散热
+    # 固态散热（风扇的静压已从 Pa 换算成 kPa，与气泵同一口径）
     "XMC-2400": {
-        "flow_fan": 1.5, "pressure_fan": 1300, "power_mw": 200,
+        "flow_air": 1.5, "pressure_air": 1.3, "power_mw": 200,
         "noise_dba": 13.7, "thickness": 1.13, "drive_voltage": "20",
     },
     # Frore 未公开风量 —— 刻意留空，用于体现「未公开」在选型时的实际影响
     "AirJet Mini G2": {
-        "pressure_fan": 1750, "power_mw": 1000, "noise_dba": 21.0,
+        "pressure_air": 1.75, "power_mw": 1000, "noise_dba": 21.0,
         "thickness": 2.65, "heat_w": 7.5,
     },
 }
@@ -221,7 +218,7 @@ CONDITIONS = {
     "MZB1001T02": {"flow_air": "@15Vpp", "pressure_air": "@15Vpp", "drive_voltage": "Vdc"},
     "MZB3004T04": {"flow_air": "@18Vdc", "pressure_air": "@21Vdc", "drive_voltage": "Vdc"},
     "MZB3005T06": {"flow_air": "@18Vdc", "pressure_air": "@21Vdc", "drive_voltage": "Vdc"},
-    "MZB4001T05": {"flow_air": "@24Vdc", "vacuum_air": "@24Vdc", "drive_voltage": "Vdc"},
+    "MZB4001T05": {"flow_air": "@24Vdc", "drive_voltage": "Vdc"},
     "mp6-gas": {"flow_air": "空气·250Vpp/300Hz", "pressure_air": "空气·250Vpp/300Hz"},
     "mp6-gas+": {"flow_air": "空气·250Vpp/300Hz", "pressure_air": "空气·250Vpp/300Hz"},
     "mp6-liq": {"flow_liquid": "水·250Vpp/100Hz", "pressure_liquid": "水·250Vpp/100Hz"},

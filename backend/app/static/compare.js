@@ -127,6 +127,12 @@
       row.hidden = !any;
     });
 
+    // 大类分组标题：整组都过滤掉了，标题也不该留在页面上（否则会出现空标题）
+    Array.prototype.forEach.call(document.querySelectorAll(".cat-group"), function (group) {
+      var rows = Array.prototype.slice.call(group.querySelectorAll(".ent-row"));
+      group.hidden = rows.every(function (r) { return r.hidden; });
+    });
+
     if (pickerEmpty) pickerEmpty.hidden = !(q.trim() && visible === 0);
     var hint = document.getElementById("pickHint");
     if (hint) {

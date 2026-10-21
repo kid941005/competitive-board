@@ -106,6 +106,46 @@ class ProductSpec(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+# 客户采用的进度档位。放在模型层：页面（routes_products）、接口（api_v1）、
+# 导出都要用同一套中文名，各写一份必然会漂。
+ADOPTION_STATUS: dict[str, str] = {
+    "rumored": "传闻",
+    "sample": "送样",
+    "design_in": "导入设计",
+    "mass_production": "量产",
+    "eol": "已停用",
+}
+
+
+class Adoption(SQLModel, table=True):
+    """客户采用关系：某家客户在自己的产品里用了哪一款微泵。
+
+    为什么要单独一张表而不是给 Product 加个「客户」字段：一款泵会被多家客户采用，
+    一家客户也会用多款泵，是多对多。挂在 Product 上只能记第一家，挂在 Entity 上
+    只能记一款 —— 两种都不够用。
+
+    客户不另建主数据表：客户就是 `kind="customer"` 的 Entity。同一家既可能是友商
+    又可能是客户（买了你的泵同时自己也做），一个 kind 只能选一个，这是已知取舍；
+    真要两种身份并存，再加 `roles` 表，这里不提前设计。
+
+    status 取值：rumored 传闻 / sample 送样 / design_in 导入设计 / mass_production 量产 /
+    eol 已停用。不设 better 之类的大小关系 —— 它表达的是进度，不是优劣。
+    """
+
+    __tablename__ = "adoptions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    customer_id: int = Field(foreign_key="entities.id", index=True, description="客户（Entity.kind=customer）")
+    product_id: int = Field(foreign_key="products.id", index=True, description="被采用的型号")
+    status: str = Field(default="sample", index=True,
+                        description="rumored / sample / design_in / mass_production / eol")
+    year: int | None = Field(default=None, description="采用年份，只知道年份就够，不必编月日")
+    note: str | None = Field(default=None, description="如「用在血压计气路」")
+    source_id: int | None = Field(default=None, foreign_key="spec_sources.id")
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 # ── 账号与权限 ─────────────────────────────────────────────────────────────
 class User(SQLModel, table=True):
     """系统账号。role 只有 admin / viewer 两种，权限映射见 auth.ROLE_PERMISSIONS。"""

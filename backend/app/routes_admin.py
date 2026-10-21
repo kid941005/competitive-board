@@ -21,6 +21,8 @@ MAX_DISPLAY_NAME = 32
 LOG_ACTIONS = (("create", "新建"), ("update", "修改"), ("delete", "删除"), ("import", "导入"))
 LOG_OBJECTS = (
     ("product", "型号"), ("spec", "参数"), ("entity", "公司"),
+    # adoption = 客户采用关系；metric = 指标字典（迁移会写这条）
+    ("adoption", "客户采用"), ("metric", "指标"),
     ("user", "账号"), ("token", "令牌"), ("setting", "系统参数"),
 )
 
@@ -375,11 +377,8 @@ def admin_tokens_revoke(
 
 
 # ── 管理员：变更日志 ───────────────────────────────────────────────────────
-LOG_ACTIONS = (("create", "新建"), ("update", "修改"), ("delete", "删除"), ("import", "导入"))
-LOG_OBJECTS = (
-    ("product", "型号"), ("spec", "参数"), ("entity", "公司"),
-    ("user", "账号"), ("token", "令牌"), ("setting", "系统参数"),
-)
+# LOG_ACTIONS / LOG_OBJECTS 定义在文件顶部（这里曾经又定义了一遍，两处内容一模一样，
+# 改一处漏一处的风险大于「就近可读」的好处）。
 
 
 @router.get("/admin/logs", response_class=HTMLResponse)

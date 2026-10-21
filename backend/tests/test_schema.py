@@ -96,7 +96,8 @@ def test_fresh_database_gets_indexes_and_version():
     assert _version(engine) == 0, "新库还没有版本号"
     result = schema.migrate(engine)
     assert result["to"] == schema.CURRENT_SCHEMA_VERSION
-    assert _indexes(engine) == ["ux_products_entity_model", "ux_specs_product_metric"]
+    assert _indexes(engine) == ["ux_adoptions_customer_product", "ux_products_entity_model",
+                              "ux_specs_product_metric"]
     assert _version(engine) == schema.CURRENT_SCHEMA_VERSION
 
     # 幂等：再跑一次不重复建、不报错
@@ -144,10 +145,64 @@ def test_upgrade_from_old_database_merges_duplicates():
         assert logs, "合并动作必须留审计，否则数据凭空少了一条没人说得清"
         assert all(row.actor == "system" for row in logs)
 
-    assert _indexes(engine) == ["ux_products_entity_model", "ux_specs_product_metric"]
+    assert _indexes(engine) == ["ux_adoptions_customer_product", "ux_products_entity_model",
+                              "ux_specs_product_metric"]
 
 
-# ── 3. 库比代码新 ──────────────────────────────────────────────────────────
+# ── 3. v3：合并风量/静压两套指标 ────────────────────────────────────────────
+def test_v3_merges_fan_metrics_and_drops_vacuum():
+    """跨大类对比里出现两行流量、两行静压 —— 迁移要把风扇那套并进气泵那套。
+
+    关键不是「行数变少」，而是**量纲不能错**：风扇静压原单位是 Pa，气泵是 kPa，
+    合并时必须 ÷1000，否则 1300 Pa 会变成 1300 kPa（差三个数量级，而且看起来
+    只是「一个很大的值」）。
+    """
+    engine = _temp_engine("v3.db")
+    SQLModel.metadata.create_all(engine)
+    schema.migrate(engine)   # 先把索引与版本推到 3，再退回 2 模拟老库
+    with Session(engine) as s:
+        s.add(Entity(id=1, kind="competitor", name="甲"))
+        for mid, key, name, unit, applies in (
+            (1, "flow_air", "空气流量", "L/min", "pump_air"),
+            (2, "pressure_air", "静压", "kPa", "pump_air"),
+            (3, "vacuum_air", "真空度", "kPa", "pump_air"),
+            (4, "flow_fan", "风量", "L/min", "fan"),
+            (5, "pressure_fan", "静压", "Pa", "fan"),
+        ):
+            s.add(SpecMetric(id=mid, key=key, category="g", name=name, unit=unit,
+                             value_type="number", better="higher", precision=2,
+                             applies_to=applies))
+        s.add(Product(id=10, entity_id=1, model="P1", category="pump_air"))
+        s.add(Product(id=11, entity_id=1, model="F1", category="fan"))
+        s.commit()
+        s.add(ProductSpec(product_id=10, metric_id=1, value_num=0.5))
+        s.add(ProductSpec(product_id=10, metric_id=3, value_num=10.5))
+        s.add(ProductSpec(product_id=11, metric_id=4, value_num=1.5))
+        s.add(ProductSpec(product_id=11, metric_id=5, value_num=1300))
+        s.commit()
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE schema_meta SET value = '2' WHERE key = 'version'"))
+
+    result = schema.migrate(engine)
+    assert any(step.startswith("v3") for step in result["applied"]), result
+
+    with Session(engine) as s:
+        keys = {m.key for m in s.exec(select(SpecMetric)).all()}
+        assert "flow_fan" not in keys and "pressure_fan" not in keys
+        assert "vacuum_air" not in keys, "真空度全库只有一条且规格书里没有，应删掉"
+
+        press = s.exec(select(SpecMetric).where(SpecMetric.key == "pressure_air")).first()
+        assert press is not None
+        assert "fan" in (press.applies_to or "").split(","), "合并后静压要覆盖风扇大类"
+
+        specs = {(sp.product_id, sp.metric_id): sp.value_num
+                 for sp in s.exec(select(ProductSpec)).all()}
+        assert specs[(11, press.id)] == 1.3, f"1300 Pa 应换算成 1.3 kPa，实际 {specs.get((11, press.id))}"
+        assert specs[(10, 1)] == 0.5
+        assert len(specs) == 3, f"真空度那条应被删除，实际剩 {len(specs)} 条"
+
+
+# ── 4. 库比代码新 ──────────────────────────────────────────────────────────
 def test_database_newer_than_code_refuses_to_start():
     engine = _temp_engine("future.db")
     SQLModel.metadata.create_all(engine)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from .compare import format_number, metrics_for_categories
 from .config import category_label
 from .db import get_session
 from .importer import CSV_TEMPLATE, import_csv, import_xlsx, xlsx_template
-from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
+from .models import ADOPTION_STATUS, Adoption, Entity, Product, ProductSpec, SpecMetric, SpecSource
 from .numeric import parse_number
 from .sanitize import safe_url
 from .selection import _load
@@ -33,6 +34,10 @@ from .web_shared import (
 )
 
 SHEET_EXT = {".xlsx", ".xlsm", ".csv", ".txt"}
+
+# 公司名归一：与导入建公司用同一套规则（忽略空格、标点、大小写），
+# 否则「村田制作所」和「村田制作所 」会各建一份客户档案。
+_NAME_NOISE = re.compile(r"[\s\-_.·/\\()（）]+")
 
 router = APIRouter()
 
@@ -183,7 +188,21 @@ def products_page(
             "total": total,
             "pct": round(filled / total * 100) if total else 0,
         })
-    table.sort(key=lambda r: ((r["entity"].name if r["entity"] else ""), r["product"].model))
+    # 按「大类 → 公司 → 型号」排：型号清单是拿来翻的，同一类的放在一起才好比。
+    # 大类顺序取 config 里的声明顺序（压电气泵 / 压电风扇 / 压电液泵），空大类排最后。
+    cat_order = {code: i for i, code in enumerate(config.CATEGORY_LABEL)}
+    table.sort(key=lambda r: (
+        cat_order.get(r["product"].category or "", 99),
+        r["product"].category or "~",
+        (r["entity"].name if r["entity"] else ""),
+        r["product"].model,
+    ))
+    # 每段第一行带上分组标题（模板据此插一行 <tr class="grouprow">），其余行留空
+    prev_cat: str | None = None
+    for idx, row in enumerate(table):
+        cat = row["product"].category or ""
+        row["group"] = (config.category_label(cat) if cat else "未分类") if (idx == 0 or cat != prev_cat) else None
+        prev_cat = cat
 
     # 「新建型号」要能选到所有公司（包括还没型号的 —— 那正是要给它们建第一个型号），
     # 但「按公司筛选」是浏览用，列一家 0 个型号的公司在里面，选了就是个空表格。
@@ -308,8 +327,148 @@ def product_edit_page(
             rows=rows,
             categories=list(config.CATEGORY_LABEL.items()),
             statuses=[("active", "在售"), ("eol", "停产"), ("rumored", "传闻")],
+            adoptions=_adoptions_of(session, product.id, ent_by_id),
+            customers=[e for e in entities if e.kind == "customer"],
+            adoption_status=ADOPTION_STATUS,
         ),
     )
+
+
+def _adoptions_of(session: Session, product_id: int, ent_by_id: dict) -> list[dict]:
+    """某型号的客户采用情况：客户名、状态、年份、备注。量产后排在前面。"""
+    order = list(ADOPTION_STATUS)
+    out = []
+    for a in session.exec(select(Adoption).where(Adoption.product_id == product_id)).all():
+        cust = ent_by_id.get(a.customer_id)
+        out.append({
+            "row": a,
+            "customer": cust,
+            "status_label": ADOPTION_STATUS.get(a.status, a.status),
+            "order": order.index(a.status) if a.status in order else 99,
+        })
+    out.sort(key=lambda r: (-(r["row"].year or 0), r["order"],
+                            r["customer"].name if r["customer"] else ""))
+    return out
+
+
+def _norm_company(name: str) -> str:
+    return _NAME_NOISE.sub("", (name or "").strip()).lower()
+
+
+@router.post("/products/{product_id}/adoptions")
+def adoption_create(
+    product_id: int,
+    customer_id: int = Form(default=0),
+    customer_name: str = Form(default=""),
+    status: str = Form(default="sample"),
+    year: str = Form(default=""),
+    note: str = Form(default=""),
+    _csrf: None = Depends(auth.verify_csrf),
+    _pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    """记一条「某客户用了这款泵」。
+
+    客户来源二选一：下拉选已有客户，或直接填名字（不存在就建成 kind=customer 的公司）。
+    同名公司已经存在时一律复用，不新建 —— 客户档案重复比少一条采用记录更难清理。
+    """
+    user, _ = _pair
+    product = session.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "型号不存在")
+    if status not in ADOPTION_STATUS:
+        return _redirect(f"/products/{product_id}", f"状态「{status}」不可识别", "err")
+
+    year_val: int | None = None
+    if (year or "").strip():
+        try:
+            year_val = int((year or "").strip())
+        except ValueError:
+            return _redirect(f"/products/{product_id}", f"年份「{year}」不是数字", "err")
+        if year_val < 2000 or year_val > 2100:
+            return _redirect(f"/products/{product_id}", f"年份 {year_val} 看着不对", "err")
+
+    customer: Entity | None = None
+    if customer_id:
+        customer = session.get(Entity, customer_id)
+        if customer is None:
+            return _redirect(f"/products/{product_id}", f"客户 id={customer_id} 不存在", "err")
+    else:
+        name = (customer_name or "").strip()
+        if not name:
+            return _redirect(f"/products/{product_id}", "请选择客户或填写客户名称", "err")
+        key = _norm_company(name)
+        for e in session.exec(select(Entity)).all():
+            if _norm_company(e.name) == key:
+                customer = e
+                break
+        if customer is None:
+            customer = Entity(kind="customer", name=name)
+            session.add(customer)
+            session.flush()
+            audit.record(
+                session, actor=user.username, action="create", object_type="entity",
+                object_id=customer.id, label=name, origin="web",
+                changes=[{"field": "类型", "old": "", "new": "客户"}],
+                note="记客户采用情况时顺手建档", request_id=_rid(),
+            )
+
+    exists = session.exec(
+        select(Adoption).where(
+            Adoption.customer_id == customer.id, Adoption.product_id == product.id
+        )
+    ).first()
+    if exists is not None:
+        return _redirect(
+            f"/products/{product_id}",
+            f"{customer.name} 对 {product.model} 已有记录，改那一条的状态即可", "err",
+        )
+
+    row = Adoption(
+        customer_id=customer.id, product_id=product.id, status=status,
+        year=year_val, note=(note or "").strip() or None,
+    )
+    session.add(row)
+    session.flush()
+    audit.record(
+        session, actor=user.username, action="create", object_type="adoption",
+        object_id=row.id, label=f"{customer.name} · {product.model}", origin="web",
+        changes=[
+            {"field": "客户", "old": "", "new": customer.name},
+            {"field": "型号", "old": "", "new": product.model},
+            {"field": "状态", "old": "", "new": ADOPTION_STATUS[status]},
+        ],
+        note=note or None, request_id=_rid(),
+    )
+    session.commit()
+    return _redirect(f"/products/{product_id}", f"已记录：{customer.name} 采用 {product.model}")
+
+
+@router.post("/products/{product_id}/adoptions/{adoption_id}/delete")
+def adoption_delete(
+    product_id: int,
+    adoption_id: int,
+    _csrf: None = Depends(auth.verify_csrf),
+    _pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    user, _ = _pair
+    row = session.get(Adoption, adoption_id)
+    if row is None or row.product_id != product_id:
+        return _redirect(f"/products/{product_id}", "这条采用记录不存在", "err")
+    product = session.get(Product, product_id)
+    customer = session.get(Entity, row.customer_id)
+    label = f"{customer.name if customer else row.customer_id} · " \
+            f"{product.model if product else product_id}"
+    session.delete(row)
+    audit.record(
+        session, actor=user.username, action="delete", object_type="adoption",
+        object_id=adoption_id, label=label, origin="web",
+        changes=[{"field": "客户采用", "old": "存在", "new": "已删除"}],
+        request_id=_rid(),
+    )
+    session.commit()
+    return _redirect(f"/products/{product_id}", "已删除该采用记录")
 
 
 @router.post("/products/{product_id}")

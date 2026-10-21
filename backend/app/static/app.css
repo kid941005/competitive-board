@@ -96,6 +96,22 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 
 /* ── 型号选择 ── */
 .picker { margin-bottom: 12px; }
+/* 按产品大类分组：气泵吹气、风扇推风是同一个流量，混在一起列会让人以为有两套数据 */
+.cat-group { padding: 2px 0 4px; }
+.cat-group + .cat-group { border-top: 1px solid var(--line-strong); margin-top: 4px; }
+.cat-head {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 0 2px;
+}
+.cat-name {
+  font-size: 12px; font-weight: 600; color: var(--text-2);
+  letter-spacing: .02em;
+}
+.cat-name::before {
+  content: ""; display: inline-block; width: 3px; height: 10px;
+  background: var(--accent); border-radius: 2px;
+  margin-right: 6px; vertical-align: -1px;
+}
 .ent-row {
   display: flex; align-items: flex-start; gap: 12px;
   padding: 5px 0; border-top: 1px dashed var(--line);
@@ -495,6 +511,14 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 .userform { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
 .users-wrap { max-height: none; }
 .usertable th, .usertable td { padding: 8px 12px; font-size: 12.5px; vertical-align: middle; }
+/* 大类分组标题行：型号清单按压电气泵 / 压电风扇 / 压电液泵分段 */
+.usertable tr.grouprow td {
+  background: var(--surface-3);
+  font-size: 12px; font-weight: 600; color: var(--text-2);
+  padding-top: 6px; padding-bottom: 6px;
+  border-top: 1px solid var(--line-strong);
+}
+.usertable tr.grouprow:first-child td { border-top: 0; }
 .mono { font-family: var(--mono); font-size: 12px; }
 .dim { color: var(--text-3); }
 .tag-self {

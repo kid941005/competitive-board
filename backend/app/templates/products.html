@@ -70,6 +70,11 @@
       </thead>
       <tbody>
         {% for r in rows %}
+        {% if r.group %}
+        <tr class="grouprow" data-group-row="{{ r.product.category or '' }}">
+          <td colspan="7">{{ r.group }}</td>
+        </tr>
+        {% endif %}
         <tr data-ent="{{ r.entity.name if r.entity else '' }}"
             data-cat="{{ r.product.category or '' }}"
             data-haystack="{{ r.entity.name if r.entity else '' }} {{ r.product.model }} {{ r.product.name or '' }}">

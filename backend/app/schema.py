@@ -27,10 +27,10 @@ from sqlalchemy import text
 from sqlmodel import Session, select
 
 from . import audit
-from .models import Product, ProductSpec
+from .models import Product, ProductSpec, SpecMetric
 
 # 当前代码期望的表结构版本。加一版就在这里改一个数字，并在 MIGRATIONS 末尾追加一步。
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 _VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -49,6 +49,11 @@ UX_PRODUCT = (
 UX_SPEC = (
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_specs_product_metric "
     "ON product_specs (product_id, metric_id)"
+)
+# 同一家客户对同一款泵只记一条采用关系（状态变了就更新那条，不并列两条）。
+UX_ADOPTION = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_adoptions_customer_product "
+    "ON adoptions (customer_id, product_id)"
 )
 
 
@@ -156,6 +161,86 @@ def _v2_unique_indexes(session: Session) -> None:
     conn.execute(text(UX_SPEC))
 
 
+def _v3_merge_gas_metrics(session: Session) -> None:
+    """把「风量 / 静压(风扇)」并进「空气流量 / 静压(气泵)」，删掉「真空度」。
+
+    起因是跨大类对比：选一个气泵 + 一个风扇，表里会出现两行流量、两行静压 ——
+    物理量明明是同一个，只因为指标字典按大类各建了一套。合并后每个物理量只有一行。
+
+    细节：
+    - 风扇的静压原单位是 Pa，气泵是 kPa，迁移时 ÷1000（同一物理量，不是近似）。
+    - 两边都有值的型号（理论上不该有），保留目标指标那一格，源那一格删掉并记录条数。
+    - 「真空度」全库只有村田一条，且没有任何规格书原文出现过，直接删掉指标与数据。
+    - 每步先查再动，重复执行不出错（迁移器要求幂等）。
+    """
+    metrics = {m.key: m for m in session.exec(select(SpecMetric)).all()}
+    merged: list[str] = []
+
+    for src_key, dst_key, factor, unit_note in (
+        ("flow_fan", "flow_air", 1.0, "L/min"),
+        ("pressure_fan", "pressure_air", 0.001, "Pa → kPa"),
+    ):
+        src, dst = metrics.get(src_key), metrics.get(dst_key)
+        if src is None or dst is None:
+            continue
+
+        if "fan" not in (dst.applies_to or "").split(","):
+            dst.applies_to = ",".join(x for x in [(dst.applies_to or ""), "fan"] if x)
+            session.add(dst)
+
+        moved = dropped = 0
+        specs = session.exec(
+            select(ProductSpec).where(ProductSpec.metric_id == src.id)
+        ).all()
+        for spec in specs:
+            value = spec.value_num * factor if spec.value_num is not None else None
+            existing = session.exec(
+                select(ProductSpec).where(
+                    ProductSpec.product_id == spec.product_id,
+                    ProductSpec.metric_id == dst.id,
+                )
+            ).first()
+            if existing is not None:
+                session.delete(spec)
+                dropped += 1
+                continue
+            spec.metric_id = dst.id
+            if value is not None:
+                spec.value_num = value
+            session.add(spec)
+            moved += 1
+        session.flush()
+        session.delete(src)
+        merged.append(f"{src_key} → {dst_key}（迁 {moved} 条、丢弃重复 {dropped} 条，{unit_note}）")
+
+    vac = metrics.get("vacuum_air")
+    if vac is not None:
+        dropped = 0
+        for spec in session.exec(
+            select(ProductSpec).where(ProductSpec.metric_id == vac.id)
+        ).all():
+            session.delete(spec)
+            dropped += 1
+        session.delete(vac)
+        merged.append(f"vacuum_air 删除（连带 {dropped} 条数据）")
+
+    session.flush()
+    if merged:
+        audit.record(
+            session, actor="system", actor_kind="system", action="update",
+            object_type="metric", label="指标字典", origin="migration",
+            changes=[{"field": "指标合并", "old": "按大类各一套", "new": "流量/静压各一项"}],
+            note="；".join(merged),
+        )
+
+
+def _v3_adoption_index(session: Session) -> None:
+    """客户采用关系的唯一索引（表本身由 create_all 建）。"""
+    _v3_merge_gas_metrics(session)
+    conn = session.connection()
+    conn.execute(text(UX_ADOPTION))
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -166,6 +251,7 @@ class Migration:
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline（建表由 create_all 完成）", _v1_baseline),
     Migration(2, "型号与参数加唯一索引（先合并存量重复）", _v2_unique_indexes),
+    Migration(3, "合并风量/静压两套指标、删掉真空度、客户采用关系唯一索引", _v3_adoption_index),
 )
 
 

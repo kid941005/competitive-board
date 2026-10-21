@@ -14,32 +14,75 @@
     <span class="hint" id="pickHint">已选 <b id="selCount">{{ selected|length }}</b> / 最多 {{ max_compare }}</span>
   </div>
 
-  {% for ent in entities %}
-    {% set items = all_products | selectattr('entity_id', 'equalto', ent.id) | list %}
-    {% if items %}
-    <div class="ent-row" data-kind="{{ ent.kind }}" data-ent="{{ ent.name }}">
-      <div class="ent-label">
-        {% if ent.kind != 'self' %}<span class="ent-kind {{ ent.kind }}">{{ kind_label[ent.kind] }}</span>{% endif %}
-        <span class="ent-name">{{ ent.name }}</span>
-        {% if ent.tier %}<span class="ent-tier">{{ ent.tier }}</span>{% endif %}
+  {% for cat_code, cat_name in cat_all.items() %}
+    {% set cat_products = all_products | selectattr('category', 'equalto', cat_code) | list %}
+    {% if cat_products %}
+    <div class="cat-group" data-group="{{ cat_code }}">
+      <div class="cat-head">
+        <span class="cat-name">{{ cat_name }}</span>
+        <span class="hint">{{ cat_products | length }} 个型号</span>
       </div>
-      <div class="chips">
-        {% for pr in items %}
-        <button type="button"
-                class="chip{% if pr.id in selected %} on{% endif %}"
-                data-pid="{{ pr.id }}"
-                data-model="{{ pr.model }}"
-                data-pcat="{{ pr.category or '' }}"
-                data-haystack="{{ ent.name }} {{ pr.model }} {{ pr.name or '' }}"
-                title="{{ pr.name or pr.model }}（{{ cat_all.get(pr.category, pr.category or '未分类') }}）">
-          {{ pr.model }}
-          {% if pr.status != 'active' %}<em>{{ pr.status }}</em>{% endif %}
-        </button>
-        {% endfor %}
-      </div>
+      {% for ent in entities %}
+        {% set items = cat_products | selectattr('entity_id', 'equalto', ent.id) | list %}
+        {% if items %}
+        <div class="ent-row" data-kind="{{ ent.kind }}" data-ent="{{ ent.name }}">
+          <div class="ent-label">
+            {% if ent.kind != 'self' %}<span class="ent-kind {{ ent.kind }}">{{ kind_label[ent.kind] }}</span>{% endif %}
+            <span class="ent-name">{{ ent.name }}</span>
+            {% if ent.tier %}<span class="ent-tier">{{ ent.tier }}</span>{% endif %}
+          </div>
+          <div class="chips">
+            {% for pr in items %}
+            <button type="button"
+                    class="chip{% if pr.id in selected %} on{% endif %}"
+                    data-pid="{{ pr.id }}"
+                    data-model="{{ pr.model }}"
+                    data-pcat="{{ pr.category or '' }}"
+                    data-haystack="{{ ent.name }} {{ pr.model }} {{ pr.name or '' }}"
+                    title="{{ pr.name or pr.model }}（{{ cat_all.get(pr.category, pr.category or '未分类') }}）">
+              {{ pr.model }}
+              {% if pr.status != 'active' %}<em>{{ pr.status }}</em>{% endif %}
+            </button>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      {% endfor %}
     </div>
     {% endif %}
   {% endfor %}
+
+  {# 没填大类的型号也要能选到，否则建完型号在对比页上凭空消失 #}
+  {% set nocat_products = all_products | selectattr('category', 'none') | list %}
+  {% if nocat_products %}
+  <div class="cat-group" data-group="">
+    <div class="cat-head">
+      <span class="cat-name">未分类</span>
+      <span class="hint">{{ nocat_products | length }} 个型号 · 去<a href="/products">产品管理</a>补大类</span>
+    </div>
+    {% for ent in entities %}
+      {% set items = nocat_products | selectattr('entity_id', 'equalto', ent.id) | list %}
+      {% if items %}
+      <div class="ent-row" data-kind="{{ ent.kind }}" data-ent="{{ ent.name }}">
+        <div class="ent-label">
+          {% if ent.kind != 'self' %}<span class="ent-kind {{ ent.kind }}">{{ kind_label[ent.kind] }}</span>{% endif %}
+          <span class="ent-name">{{ ent.name }}</span>
+        </div>
+        <div class="chips">
+          {% for pr in items %}
+          <button type="button" class="chip{% if pr.id in selected %} on{% endif %}"
+                  data-pid="{{ pr.id }}" data-model="{{ pr.model }}" data-pcat=""
+                  data-haystack="{{ ent.name }} {{ pr.model }} {{ pr.name or '' }}"
+                  title="{{ pr.name or pr.model }}（未分类）">
+            {{ pr.model }}
+          </button>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
 
   <p class="hint picker-empty" id="pickerEmpty" hidden>没有匹配的型号。换个关键词，或清空搜索框。</p>
 

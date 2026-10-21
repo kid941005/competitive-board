@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,7 +41,7 @@ from . import audit, auth, config, search, settings_store, tokens, units
 from .compare import format_number, metrics_for_categories
 from .db import get_session
 from .importer import import_rows
-from .models import ApiIdempotency, Entity, Product, ProductSpec, SpecMetric
+from .models import ADOPTION_STATUS, Adoption, ApiIdempotency, Entity, Product, ProductSpec, SpecMetric
 from .numeric import clamp_confidence
 from .sanitize import safe_url
 from .selection import _matrix_payload, _parse_ids
@@ -59,6 +60,8 @@ E: dict[str, int] = {
     "ENTITY_SIMILAR": 409,
     "CATEGORY_CONFLICT": 409,
     "CONFLICT_VERSION": 409,
+    # 同一客户对同一型号只能有一条采用记录：改状态用 PATCH，不是再记一条
+    "ADOPTION_EXISTS": 409,
     # 唯一索引兜底：并发提交同一型号/同一参数，或迁移后仍有重复数据
     "UNIQUE_CONFLICT": 409,
     "CONFIRM_REQUIRED": 400,
@@ -185,6 +188,66 @@ def _entity_dict(e: Entity) -> dict:
         "id": e.id, "kind": e.kind, "name": e.name, "name_en": e.name_en,
         "region": e.region, "tier": e.tier,
     }
+
+
+def _adoption_dict(a: Adoption, session: Session) -> dict:
+    """一条采用关系。客户名、型号名都摊平 —— 调用方拿 id 去二次查询没有意义。"""
+    cust = session.get(Entity, a.customer_id)
+    prod = session.get(Product, a.product_id)
+    return {
+        "id": a.id,
+        "customer_id": a.customer_id,
+        "customer": cust.name if cust else None,
+        "product_id": a.product_id,
+        "model": prod.model if prod else None,
+        "status": a.status,
+        "status_label": ADOPTION_STATUS.get(a.status, a.status),
+        "year": a.year,
+        "note": a.note,
+        "updated_at": iso_utc(a.updated_at),
+    }
+
+
+def _adoptions_payload(
+    session: Session, *, product_id: int | None = None, customer_id: int | None = None
+) -> list[dict]:
+    stmt = select(Adoption)
+    if product_id is not None:
+        stmt = stmt.where(Adoption.product_id == product_id)
+    if customer_id is not None:
+        stmt = stmt.where(Adoption.customer_id == customer_id)
+    rows = session.exec(stmt).all()
+    order = list(ADOPTION_STATUS)
+    rows.sort(key=lambda a: (order.index(a.status) if a.status in order else 99,
+                             -(a.year or 0), a.id or 0))
+    return [_adoption_dict(a, session) for a in rows]
+
+
+def _resolve_customer(
+    session: Session, customer_id: int | None, customer_name: str | None
+) -> Entity:
+    """按 id 或按名字找客户；名字不存在就建一个 kind=customer 的公司。
+
+    同名公司已经存在（哪怕它是友商）就复用，不新建：客户档案重复比少一条采用
+    记录难收拾得多。kind 不改 —— 一家既是友商又是客户的情况，这里保持原类型。
+    """
+    if customer_id:
+        ent = session.get(Entity, customer_id)
+        if ent is None:
+            raise ApiError("NOT_FOUND", f"客户 id={customer_id} 不存在")
+        return ent
+    name = (customer_name or "").strip()
+    if not name:
+        raise ApiError("VALIDATION_FAILED", "customer_id 与 customer_name 至少给一个",
+                       field="customer_name")
+    key = re.sub(r"[\s\-_.·/\\()（）]+", "", name).lower()
+    for ent in session.exec(select(Entity)).all():
+        if re.sub(r"[\s\-_.·/\\()（）]+", "", ent.name or "").lower() == key:
+            return ent
+    ent = Entity(kind="customer", name=name)
+    session.add(ent)
+    session.flush()
+    return ent
 
 
 def _metric_dict(m: SpecMetric) -> dict:
@@ -469,6 +532,22 @@ class EntityPatch(BaseModel):
     dry_run: bool = False
 
 
+class AdoptionIn(BaseModel):
+    product_id: int
+    customer_id: int | None = None
+    customer_name: str | None = None
+    status: str = "sample"
+    year: int | None = None
+    note: str | None = None
+    dry_run: bool = False
+
+
+class AdoptionPatch(BaseModel):
+    status: str | None = None
+    year: int | None = None
+    note: str | None = None
+
+
 class TokenIn(BaseModel):
     name: str
     scopes: list[str] = ["read"]
@@ -656,6 +735,7 @@ def get_product(
         _spec_dict(s, metrics[s.metric_id]) for s in specs if s.metric_id in metrics
     ]
     payload["missing_metrics"] = [m.key for m in pool if m.key not in present]
+    payload["adoptions"] = _adoptions_payload(session, product_id=product_id)
     etag = _etag(product, specs)          # 原来算了两遍
     return ok(payload, etag=etag, headers={"ETag": etag})
 
@@ -671,6 +751,127 @@ def get_specs(
     metrics = {m.id: m for m in session.exec(select(SpecMetric)).all()}
     specs = _specs_of(session, product_id)
     return ok([_spec_dict(s, metrics[s.metric_id]) for s in specs if s.metric_id in metrics])
+
+
+@router.get("/adoptions")
+def list_adoptions(
+    product_id: int | None = Query(default=None),
+    customer_id: int | None = Query(default=None),
+    _p: Principal = Depends(require_scope("read")),
+    session: Session = Depends(get_session),
+):
+    """客户采用关系。按型号或按客户查都行 —— 两个方向都是真实需求。"""
+    return ok(_adoptions_payload(session, product_id=product_id, customer_id=customer_id))
+
+
+@router.post("/adoptions")
+def create_adoption(
+    body: AdoptionIn,
+    request: Request,
+    principal: Principal = Depends(require_scope("write")),
+    session: Session = Depends(get_session),
+):
+    """记一条「某客户用了某款泵」。客户不存在会顺手建档（kind=customer）。"""
+    if body.status not in ADOPTION_STATUS:
+        raise ApiError("VALIDATION_FAILED",
+                       f"status 只能是 {' / '.join(ADOPTION_STATUS)}", field="status")
+    product = session.get(Product, body.product_id)
+    if product is None:
+        raise ApiError("NOT_FOUND", f"型号 id={body.product_id} 不存在")
+
+    customer = _resolve_customer(session, body.customer_id, body.customer_name)
+    dup = session.exec(
+        select(Adoption).where(
+            Adoption.customer_id == customer.id, Adoption.product_id == product.id
+        )
+    ).first()
+    if dup is not None:
+        raise ApiError(
+            "ADOPTION_EXISTS",
+            f"{customer.name} 对 {product.model} 已有记录",
+            hint=f"用 PATCH /api/v1/adoptions/{dup.id} 改状态，而不是再记一条",
+        )
+
+    row = Adoption(
+        customer_id=customer.id, product_id=product.id, status=body.status,
+        year=body.year, note=(body.note or "").strip() or None,
+    )
+    session.add(row)
+    session.flush()
+    data = _adoption_dict(row, session)
+    if _is_dry(request, body):
+        session.rollback()
+        return ok(data, dry_run=True, hint="预演：未落库")
+
+    actor, kind = _actor(principal)
+    audit.record(
+        session, actor=actor, actor_kind=kind, action="create", object_type="adoption",
+        object_id=row.id, label=f"{customer.name} · {product.model}", origin="api",
+        changes=[{"field": "采用", "old": None, "new": ADOPTION_STATUS[body.status]}],
+        request_id=uuid.uuid4().hex[:12],
+    )
+    session.commit()
+    return ok(_adoption_dict(row, session), status=201)
+
+
+@router.patch("/adoptions/{adoption_id}")
+def patch_adoption(
+    adoption_id: int,
+    body: AdoptionPatch,
+    _p: Principal = Depends(require_scope("write")),
+    session: Session = Depends(get_session),
+):
+    row = session.get(Adoption, adoption_id)
+    if row is None:
+        raise ApiError("NOT_FOUND", f"采用记录 id={adoption_id} 不存在")
+    if body.status is not None and body.status not in ADOPTION_STATUS:
+        raise ApiError("VALIDATION_FAILED",
+                       f"status 只能是 {' / '.join(ADOPTION_STATUS)}", field="status")
+
+    before = _adoption_dict(row, session)
+    if body.status is not None:
+        row.status = body.status
+    if body.year is not None:
+        row.year = body.year or None
+    if body.note is not None:
+        row.note = body.note.strip() or None
+    row.updated_at = datetime.now(timezone.utc)
+    session.add(row)
+    session.flush()
+    after = _adoption_dict(row, session)
+    changed = [{"field": k, "old": before.get(k), "new": after.get(k)}
+               for k in ("status", "year", "note") if before.get(k) != after.get(k)]
+    if not changed:
+        session.rollback()
+        return ok(after, hint="没有变化")
+    audit.record(
+        session, actor=_p.name, actor_kind="token", action="update", object_type="adoption",
+        object_id=row.id, label=f"{after.get('customer')} · {after.get('model')}",
+        origin="api", changes=changed, request_id=uuid.uuid4().hex[:12],
+    )
+    session.commit()
+    return ok(after)
+
+
+@router.delete("/adoptions/{adoption_id}")
+def delete_adoption(
+    adoption_id: int,
+    _p: Principal = Depends(require_scope("write")),
+    session: Session = Depends(get_session),
+):
+    row = session.get(Adoption, adoption_id)
+    if row is None:
+        raise ApiError("NOT_FOUND", f"采用记录 id={adoption_id} 不存在")
+    data = _adoption_dict(row, session)
+    session.delete(row)
+    audit.record(
+        session, actor=_p.name, actor_kind="token", action="delete", object_type="adoption",
+        object_id=adoption_id, label=f"{data.get('customer')} · {data.get('model')}",
+        origin="api", changes=[{"field": "采用", "old": "存在", "new": "已删除"}],
+        request_id=uuid.uuid4().hex[:12],
+    )
+    session.commit()
+    return ok({"deleted": adoption_id})
 
 
 @router.get("/matrix")
@@ -1455,6 +1656,52 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
             "parameters": {
                 "type": "object", "required": ["product_id"],
                 "properties": {"product_id": {"type": "integer"}},
+            },
+        },
+        {
+            "name": "list_adoptions",
+            "method": "GET", "path": "/api/v1/adoptions",
+            "description": "客户采用关系：谁在用哪款泵。可按 product_id 或 customer_id 过滤。",
+            "scope": "read",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "integer", "description": "被采用的型号"},
+                    "customer_id": {"type": "integer", "description": "客户公司 id"},
+                },
+            },
+        },
+        {
+            "name": "create_adoption",
+            "method": "POST", "path": "/api/v1/adoptions",
+            "description": "记一条客户采用（客户名不存在会顺手建档）。同一客户+型号重复会返回 409。",
+            "scope": "write",
+            "parameters": {
+                "type": "object", "required": ["product_id"],
+                "properties": {
+                    "product_id": {"type": "integer"},
+                    "customer_id": {"type": "integer"},
+                    "customer_name": {"type": "string", "description": "客户名；与 customer_id 二选一"},
+                    "status": {"type": "string", "enum": list(ADOPTION_STATUS)},
+                    "year": {"type": "integer"},
+                    "note": {"type": "string"},
+                    "dry_run": {"type": "boolean"},
+                },
+            },
+        },
+        {
+            "name": "update_adoption",
+            "method": "PATCH", "path": "/api/v1/adoptions/{adoption_id}",
+            "description": "改进度（传闻→送样→导入设计→量产→已停用）、年份、备注。",
+            "scope": "write",
+            "parameters": {
+                "type": "object", "required": ["adoption_id"],
+                "properties": {
+                    "adoption_id": {"type": "integer"},
+                    "status": {"type": "string", "enum": list(ADOPTION_STATUS)},
+                    "year": {"type": "integer"},
+                    "note": {"type": "string"},
+                },
             },
         },
         {

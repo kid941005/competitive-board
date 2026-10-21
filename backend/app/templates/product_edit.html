@@ -122,6 +122,74 @@
   </form>
 </section>
 
+<section class="panel">
+  <div class="panel-head">
+    <h2>客户采用</h2>
+    <span class="hint">谁在用这款泵。一条记录 = 一家客户 × 一款型号；状态是进度，不是优劣</span>
+  </div>
+
+  <form method="post" action="/products/{{ product.id }}/adoptions" class="userform">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="ds-field">
+      <span>已有客户</span>
+      <select name="customer_id" class="ds-select">
+        <option value="">— 选客户 —</option>
+        {% for e in customers %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>或新客户名</span>
+      <input type="text" name="customer_name" class="ds-input" placeholder="如 鱼跃医疗">
+    </label>
+    <label class="ds-field">
+      <span>状态</span>
+      <select name="status" class="ds-select">
+        {% for code, label in adoption_status.items() %}
+        <option value="{{ code }}"{% if code == 'sample' %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>年份</span>
+      <input type="text" name="year" class="ds-input" placeholder="2025" inputmode="numeric"
+             style="width:80px">
+    </label>
+    <label class="ds-field">
+      <span>备注</span>
+      <input type="text" name="note" class="ds-input" placeholder="如 用在血压计气路">
+    </label>
+    <button type="submit" class="btn">添加</button>
+  </form>
+
+  <div class="table-wrap">
+    <table class="matrix usertable">
+      <thead>
+        <tr><th>客户</th><th>状态</th><th>年份</th><th>备注</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for a in adoptions %}
+        <tr>
+          <td>{{ a.customer.name if a.customer else '—' }}</td>
+          <td>{{ a.status_label }}</td>
+          <td>{{ a.row.year or '—' }}</td>
+          <td>{{ a.row.note or '—' }}</td>
+          <td class="rowacts">
+            <form method="post" action="/products/{{ product.id }}/adoptions/{{ a.row.id }}/delete"
+                  class="inlinerow" data-confirm="删除这条采用记录？">
+              <input type="hidden" name="_csrf" value="{{ csrf }}">
+              <button type="submit" class="link danger">删除</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not adoptions %}
+        <tr><td colspan="5" class="dim">还没有客户采用记录。填一家客户，就知道这款泵被谁用。</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <section class="panel notes">
   <div class="panel-head"><h2>危险操作</h2></div>
   <form method="post" action="/products/{{ product.id }}/delete"

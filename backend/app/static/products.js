@@ -12,6 +12,7 @@
   if (!search || !company || !category) return;
 
   var rows = Array.prototype.slice.call(document.querySelectorAll("tr[data-haystack]"));
+  var groupRows = Array.prototype.slice.call(document.querySelectorAll("tr.grouprow"));
   var noMatch = document.getElementById("prodNoMatch");
   var hint = document.getElementById("prodFilterHint");
   var total = rows.length;
@@ -29,6 +30,17 @@
       if (ok && wantCat) ok = tr.getAttribute("data-cat") === wantCat;
       tr.hidden = !ok;
       if (ok) shown += 1;
+    });
+
+    // 大类分组标题：整组都被筛掉了就把标题一起藏起来，否则页面上全是空标题
+    groupRows.forEach(function (head) {
+      var anyVisible = false;
+      var node = head.nextElementSibling;
+      while (node && !node.classList.contains("grouprow")) {
+        if (!node.hidden) { anyVisible = true; break; }
+        node = node.nextElementSibling;
+      }
+      head.hidden = !anyVisible;
     });
 
     if (noMatch) noMatch.hidden = !(total > 0 && shown === 0);
