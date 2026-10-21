@@ -238,7 +238,7 @@ def _clear(session: Session) -> None:
 def seed(force: bool = False, metrics_only: bool = False) -> dict[str, int]:
     """写入压电领域的内置数据。
 
-    metrics_only=True 时只写指标字典（20 个指标，含适用大类），
+    metrics_only=True 时只写指标字典（17 个指标，含适用大类），
     不建任何公司、型号、参数 —— 这是「空库」最常用的入口：
     看板的行来自字典，没有字典什么都渲染不出来，但用户往往不想要示例公司。
     """

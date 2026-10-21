@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from sqlmodel import Session, select
 
-from . import backup, settings_store
+from . import backup, config, settings_store
 from .auth import P_EXPORT, P_VIEW, AuthSession, User
 from .compare import better_label
 from .config import category_label
@@ -57,6 +57,7 @@ def compare_page(
         limit=sset["compare.max_products"],
     )
     data = _matrix_payload(session, ids, sset, loaded=loaded)
+    data["picker_groups"] = _picker_groups(products)
     data.update(
         _ctx(
             user,
@@ -73,6 +74,26 @@ def compare_page(
         f"{cats_txt} · {len(data['products'])} 个型号 · {len(data['rows'])} 项指标"
     )
     return templates.TemplateResponse(request=request, name="compare.html", context=data)
+
+
+def _picker_groups(products: list[Product]) -> list[dict]:
+    """型号选择器的分组：按压电气泵 / 压电风扇 / 压电液泵分段，未分类单列一段。
+
+    在 Python 里分好组，模板只写一遍 chip 结构 —— 之前模板里把同一段 markup 复制了
+    两份（有分类 / 未分类），改一处漏一处是迟早的事。
+    """
+    groups: list[dict] = []
+    for code, label in config.CATEGORY_LABEL.items():
+        items = [p for p in products if p.category == code]
+        if items:
+            groups.append({"code": code, "label": label, "products": items})
+    nocat = [p for p in products if not p.category]
+    if nocat:
+        groups.append({
+            "code": "", "label": "未分类", "products": nocat,
+            "hint": "去<a href=\"/products\">产品管理</a>补大类",
+        })
+    return groups
 
 
 # ── JSON API（只读，需要 data:view）────────────────────────────────────────

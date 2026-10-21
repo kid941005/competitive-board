@@ -126,11 +126,6 @@ def unit_dimension(unit: str) -> str | None:
     return _UNITS.get((unit or "").strip().lower(), (None, 0.0))[0]
 
 
-def same_dimension(a: str, b: str) -> bool:
-    da, db = unit_dimension(a), unit_dimension(b)
-    return da is not None and da == db
-
-
 def convert(value: float, src_unit: str, dst_unit: str) -> Converted:
     """把 value 从 src_unit 换算成 dst_unit。
 

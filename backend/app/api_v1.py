@@ -832,8 +832,9 @@ def patch_adoption(
     if not changed:
         session.rollback()
         return ok(after, hint="没有变化")
+    actor, kind = _actor(_p)
     audit.record(
-        session, actor=_p.name, actor_kind="token", action="update", object_type="adoption",
+        session, actor=actor, actor_kind=kind, action="update", object_type="adoption",
         object_id=row.id, label=f"{after.get('customer')} · {after.get('model')}",
         origin="api", changes=changed, request_id=uuid.uuid4().hex[:12],
     )
@@ -852,8 +853,9 @@ def delete_adoption(
         raise ApiError("NOT_FOUND", f"采用记录 id={adoption_id} 不存在")
     data = _adoption_dict(row, session)
     session.delete(row)
+    actor, kind = _actor(_p)
     audit.record(
-        session, actor=_p.name, actor_kind="token", action="delete", object_type="adoption",
+        session, actor=actor, actor_kind=kind, action="delete", object_type="adoption",
         object_id=adoption_id, label=f"{data.get('customer')} · {data.get('model')}",
         origin="api", changes=[{"field": "采用", "old": "存在", "new": "已删除"}],
         request_id=uuid.uuid4().hex[:12],
@@ -1690,6 +1692,16 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "year": {"type": "integer"},
                     "note": {"type": "string"},
                 },
+            },
+        },
+        {
+            "name": "delete_adoption",
+            "method": "DELETE", "path": "/api/v1/adoptions/{adoption_id}",
+            "description": "删除一条客户采用记录。删除前建议先 list_adoptions 确认是哪一条。",
+            "scope": "write",
+            "parameters": {
+                "type": "object", "required": ["adoption_id"],
+                "properties": {"adoption_id": {"type": "integer"}},
             },
         },
         {

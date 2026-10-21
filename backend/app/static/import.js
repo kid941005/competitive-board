@@ -104,6 +104,7 @@
         if (r.skipped_missing) bits.push("数值为空跳过 " + r.skipped_missing);
         if (r.skipped_unchanged) bits.push("无变化跳过 " + r.skipped_unchanged);
         if (r.converted_units) bits.push("换算单位 " + r.converted_units);
+        if ((r.adoptions_added || []).length) bits.push("客户采用 " + r.adoptions_added.length);
         if ((r.needs_review || []).length) bits.push("单位待确认 " + r.needs_review.length);
         msg.innerHTML = "导入完成：" + esc(bits.join("，")) +
           '。<a href="/products">去产品管理复核 →</a>';
@@ -116,6 +117,7 @@
           ["数值为空跳过", r.skipped_missing],
           ["无变化跳过", r.skipped_unchanged || 0],
           ["单位换算", r.converted_units || 0],
+          ["客户采用", (r.adoptions_added || []).length],
           ["报错行数", (r.errors || []).length],
         ];
         grid.innerHTML = cells.map(function (c) {
@@ -134,6 +136,16 @@
         if (r.conversions && r.conversions.length) {
           html += '<div class="rerr-head">已按单位换算（前 50 条）：</div><ul class="plainlist">' +
             r.conversions.slice(0, 50).map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") +
+            "</ul>";
+        }
+        if (r.adoptions_added && r.adoptions_added.length) {
+          html += '<div class="rerr-head">已记客户采用（前 50 条）：</div><ul class="plainlist">' +
+            r.adoptions_added.slice(0, 50).map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") +
+            "</ul>";
+        }
+        if (r.adoptions_skipped && r.adoptions_skipped.length) {
+          html += '<div class="rerr-head">采用记录未写入：</div><ul class="plainlist">' +
+            r.adoptions_skipped.slice(0, 50).map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") +
             "</ul>";
         }
         if (r.needs_review && r.needs_review.length) {

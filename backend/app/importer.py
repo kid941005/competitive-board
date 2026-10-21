@@ -24,7 +24,6 @@ import io
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 
 from sqlmodel import Session, select
 
@@ -123,8 +122,9 @@ MISSING_TOKENS = {
 _NUM = r"[-+]?\d+(?:[.,]\d+)?"
 _RE_RANGE = re.compile(rf"(?P<a>{_NUM})\s*[~～\-–—至]\s*(?P<b>{_NUM})")
 _RE_NUM = re.compile(_NUM)
-# 数字后面紧跟的单位写法（用来在「50,000 Pa」这类单元格里认出单位）
-_RE_UNIT_TAIL = re.compile(r"[A-Za-zµμ℃°%()/³²]+")
+# 数字后面紧跟的单位写法（用来在「50,000 Pa」这类单元格里认出单位）。
+# 必须以字母 / µ / ℃ / % 开头：否则「1.5 (典型)」里的括号会被当成单位。
+_RE_UNIT_TAIL = re.compile(r"[A-Za-zµμ℃°%][A-Za-zµμ℃°%/³²]*")
 
 
 @dataclass
@@ -317,14 +317,26 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
         num = b if b >= a else a
         condition = f"原文 {rng.group('a')}~{rng.group('b')}"
     else:
+        numbers = _RE_NUM.findall(text)
         found = _RE_NUM.search(text)
         num = parse_number(found.group(0)) if found else None
         if num is None:
             return Cell(error=f"「{text}」里没有可识别的数字")
+        if len(numbers) > 1:
+            # 「100000（水）／15000（空气）」这类并列口径：只能取一个，
+            # 但必须标出来 —— 静默丢掉另一个值正是最坏的一种错。
+            return Cell(
+                value_num=num, review=f"单元格里有 {len(numbers)} 个数字（{text}），"
+                                      f"只取了第一个，请人工确认口径",
+            )
 
-    # 单位优先级：单元格自带的 > 列头声明的 > 指标字典的
+    # 单位优先级：单元格自带的 > 列头声明的 > 指标字典的。
+    # 单元格写了单位但认不出来（如把「3.3 Vrms」填进静压列）必须报错 ——
+    # 退回列头单位会把它当成 3.3 Pa 静默落库，是「差 1000 倍」那类错的同一族。
     token = _unit_token(text)
-    src_unit = token if token and units.unit_dimension(token) else (column_unit or metric.unit)
+    if token and units.unit_dimension(token) is None:
+        return Cell(error=f"单位「{token}」认不出，没法换算成 {metric.unit}")
+    src_unit = token or column_unit or metric.unit
     conv = units.convert(num, src_unit, metric.unit)
     if not conv.ok:
         return Cell(error=f"「{text}」{conv.reason}")
@@ -410,7 +422,18 @@ def import_rows(
 ) -> ImportReport:
     """按宽表写入。一行 = 一个型号；行内每个指标列一格。"""
     report = ImportReport(rows_read=len(rows))
-    if not headers:
+    # 表头校验：文件导入带的是识别后的规范表头，JSON 调用方（/api/v1/import）只给行，
+    # 这里统一按「行里出现过的键」补一次 —— 两条通道必须给出同一句人话，
+    # 否则 AI 传旧格式只会收到 41 条「产品型号为空」，看不出是自己格式错了。
+    present = set(headers)
+    if not present:
+        for row in rows:
+            for key in row:
+                if str(key).startswith("_"):
+                    continue
+                col = match_column(str(key))
+                present.add(col.header if col else str(key).strip())
+    if not {"企业名称", "产品型号"} <= present:
         report.errors.append(
             "没认到表头。模板已改为宽表：表头必须同时包含「企业名称」与「产品型号」，"
             "并包含各指标列（如「流量L/min」「静压Pa」）。请重新下载模板。"
@@ -447,7 +470,12 @@ def import_rows(
         return bucket
 
     for idx, row in enumerate(rows, start=2):
-        row = {str(k).strip(): ("" if v is None else str(v).strip()) for k, v in row.items()}
+        normalized: dict[str, str] = {}
+        for k, v in row.items():
+            key = str(k).strip()
+            col = match_column(key)
+            normalized[col.header if col else key] = "" if v is None else str(v).strip()
+        row = normalized
         raw_lineno = row.pop("_lineno", "")
         lineno = int(raw_lineno) if raw_lineno.isdigit() else idx
         where = f"第 {lineno} 行"
@@ -539,7 +567,9 @@ def import_rows(
                 session.add(product)
                 session.flush()
 
-        src = source_for(row.get("来源链接", ""))
+        # 只有真要写格子时才建来源；否则「只写了备注」的行会凭空多出一条
+        # 「表格导入」来源记录，攒成垃圾数据。
+        src_id = source_for(row.get("来源链接", "")).id if pending else None
         conf = _confidence(row.get("置信度", ""))
 
         for col, metric, cell, raw in pending:
@@ -584,7 +614,7 @@ def import_rows(
                 existing.value_num = cell.value_num
                 existing.value_text = cell.value_text
                 existing.condition = condition
-                existing.source_id = src.id
+                existing.source_id = src_id
                 existing.confidence = conf
                 # 机器又写了一遍值，人工复核就不再成立
                 existing.verified = False
@@ -598,7 +628,7 @@ def import_rows(
                     value_num=cell.value_num,
                     value_text=cell.value_text,
                     condition=condition,
-                    source_id=src.id,
+                    source_id=src_id,
                     confidence=conf,
                     verified=False,
                 )
@@ -731,10 +761,3 @@ def xlsx_template() -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
-
-
-def read_document_rows(path: str | Path) -> tuple[list[dict], list[str]]:
-    """按扩展名读文件（给命令行/离线校验用）。"""
-    if str(path).lower().endswith((".xlsx", ".xlsm")):
-        return rows_from_xlsx(Path(path).read_bytes())
-    return rows_from_csv(Path(path).read_text(encoding="utf-8-sig"))
