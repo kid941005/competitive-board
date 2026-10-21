@@ -288,6 +288,8 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 - **已有参数的型号不能换大类**，要改先清空参数。
 - 人工改动记 `confidence=1.0`、来源 `manual`、`verified` 按勾选；普通用户访问一律 403。
 
+一处容易混淆的地方：公司列表有**两份**。`/products` 的「按公司筛选」只列**已有型号**的公司（列一家 0 型号的进去，点开就是个空表格）；「新建型号」的公司下拉则保留全部（包括还没型号的 —— 那正是给它建第一个型号的入口）。`/compare` 的型号选择区同理，有型号才成行。
+
 ---
 
 ## AI / 脚本调用（`/api/v1`）
@@ -573,7 +575,7 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 266 项测试，通过才推**。标签有 `0.9.6`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 268 项测试，通过才推**。标签有 `0.9.6`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
 版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `0.9.6` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
@@ -726,7 +728,7 @@ python tests/test_compare.py          # 20 项：对比逻辑与 CSV 导入
 python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨界与别名边界）
 python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
 python tests/test_import_export.py    # 10 项：Excel/CSV 导入与 Excel 导出
-python tests/test_product_edit.py     # 10 项：产品编辑与三类防护
+python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
 python tests/test_api_v1.py           # 21 项：令牌鉴权、幂等、dry-run、ETag、批量回执
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
 python tests/test_labels.py           #  6 项：自家公司用公司名，不出现「本方 / 我方」

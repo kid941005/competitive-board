@@ -5,6 +5,7 @@
   · 数值型指标填了非数字：不静默丢弃，也不覆盖旧值，要明确报错
   · 已有参数的型号不能换大类（会让历史参数落到错误的指标体系）
   · viewer 一律 403
+  · 公司列表分两份：浏览用的筛选不含 0 型号的公司，新建用的下拉保留（否则建不出第一个型号）
 
 两种跑法都支持：pytest tests/ 或 python tests/test_product_edit.py
 """
@@ -255,6 +256,68 @@ def test_viewer_cannot_edit_products():
     assert r.status_code == 403
     with Session(engine) as s:
         assert s.get(Product, p.id) is not None, "普通用户不得删除型号"
+
+
+# ── 公司列表：浏览用 vs 新建用 ─────────────────────────────────────────────
+def _select_block(html: str, marker: str) -> str:
+    """取出某个 <select> 的完整内容，避免整页 grep 分不清是哪一处。"""
+    i = html.index(marker)
+    j = html.index("</select>", i)
+    return html[i:j]
+
+
+def test_company_filter_hides_companies_without_products():
+    """0 个型号的公司在「按公司筛选」里是纯噪音 —— 选了就是个空表格。
+
+    但「新建型号」的公司下拉必须保留它：那正是给它建第一个型号的入口。
+    两处共用一份列表时，这条区分会被抹平，所以分开取 context。
+    """
+    from app.models import Entity
+
+    c = _client()
+    ghost = "空壳测试公司"
+    with Session(engine) as s:
+        exist = s.exec(select(Entity).where(Entity.name == ghost)).first()
+        if exist is None:
+            s.add(Entity(name=ghost, kind="competitor", tier="C"))
+            s.commit()
+    try:
+        html = c.get("/products").text
+        creatable = _select_block(html, '<select name="entity_id"')
+        filt = _select_block(html, '<select id="prodCompany"')
+
+        assert ghost in creatable, "新建型号必须能选到还没有型号的公司"
+        assert ghost not in filt, "0 个型号的公司不该出现在公司筛选里"
+        assert "村田制作所" in filt, "有型号的公司当然要在筛选里"
+        assert html.count(ghost) == 1, f"公司名应只出现一次（新建下拉），实际 {html.count(ghost)} 次"
+    finally:
+        with Session(engine) as s:
+            row = s.exec(select(Entity).where(Entity.name == ghost)).first()
+            if row is not None:
+                s.delete(row)
+                s.commit()
+
+
+def test_compare_picker_skips_companies_without_products():
+    """对比页的型号选择区同理：company 有型号才成行。"""
+    from app.models import Entity
+
+    c = _client()
+    ghost = "空壳测试公司二"
+    with Session(engine) as s:
+        if s.exec(select(Entity).where(Entity.name == ghost)).first() is None:
+            s.add(Entity(name=ghost, kind="competitor", tier="C"))
+            s.commit()
+    try:
+        html = c.get("/compare").text
+        assert ghost not in html, "对比页不该出现没有型号的公司"
+        assert "村田制作所" in html, "有型号的公司要在选择区里"
+    finally:
+        with Session(engine) as s:
+            row = s.exec(select(Entity).where(Entity.name == ghost)).first()
+            if row is not None:
+                s.delete(row)
+                s.commit()
 
 
 # ── 运行器 ─────────────────────────────────────────────────────────────────

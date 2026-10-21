@@ -182,6 +182,13 @@ def products_page(
         })
     table.sort(key=lambda r: ((r["entity"].name if r["entity"] else ""), r["product"].model))
 
+    # 「新建型号」要能选到所有公司（包括还没型号的 —— 那正是要给它们建第一个型号），
+    # 但「按公司筛选」是浏览用，列一家 0 个型号的公司在里面，选了就是个空表格。
+    companies = [e for e in entities if e.kind in ("self", "competitor")]
+    companies.sort(key=lambda e: (0 if e.kind == "self" else 1, e.name))
+    with_products = {r["entity"].id for r in table if r["entity"] is not None}
+    filter_companies = [e for e in companies if e.id in with_products]
+
     return templates.TemplateResponse(
         request=request,
         name="products.html",
@@ -195,7 +202,8 @@ def products_page(
             ok=ok,
             err=err,
             rows=table,
-            companies=[e for e in entities if e.kind in ("self", "competitor")],
+            companies=companies,
+            filter_companies=filter_companies,
             categories=list(config.CATEGORY_LABEL.items()),
             cat_all=config.CATEGORY_LABEL,
             product_total=len(products),

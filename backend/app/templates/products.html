@@ -51,7 +51,7 @@
            autocomplete="off" aria-label="搜索型号">
     <select id="prodCompany" class="ds-select" aria-label="按公司筛选">
       <option value="">全部公司</option>
-      {% for e in companies %}<option value="{{ e.name }}">{{ e.name }}</option>{% endfor %}
+      {% for e in filter_companies %}<option value="{{ e.name }}">{{ e.name }}</option>{% endfor %}
     </select>
     <select id="prodCat" class="ds-select" aria-label="按大类筛选">
       <option value="">全部大类</option>
