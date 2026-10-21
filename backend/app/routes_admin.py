@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlmodel import Session, select
 
-from . import audit, auth, settings_store, tokens
+from . import audit, auth, seed as seed_module, settings_store, tokens
 from .auth import P_SETTINGS, P_USERS, AuthSession, User
 from .db import get_session
+from .models import SpecMetric
 from .web_shared import _ctx, _perm, _perm_user, _redirect, _rid, templates
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
@@ -442,6 +443,44 @@ async def admin_settings_save(
         )
         session.commit()
     return _redirect("/admin/settings", f"已保存 {changed} 项配置")
+
+
+@router.post("/admin/settings/apply-metrics-template")
+def admin_apply_metrics_template(
+    _csrf: None = Depends(auth.verify_csrf),
+    actor: User = Depends(_perm_user(P_SETTINGS)),
+    session: Session = Depends(get_session),
+):
+    """把内置的压电指标字典写进空库。
+
+    空库启动后这是「从零到能用」的关键一步：对比页的行来自指标字典，
+    字典为空时导入进去了也匹配不到、页面上什么都不显示。
+    只写指标与适用大类，不建任何公司/型号 —— 那些应当由用户自己导入。
+    """
+    before = len(session.exec(select(SpecMetric)).all())
+    try:
+        result = seed_module.seed(metrics_only=True)
+    except Exception as exc:  # noqa: BLE001 - 数据库问题时给出可读的原因
+        return _redirect("/admin/settings", f"写入失败：{exc}", "err")
+
+    if result.get("skipped"):
+        return _redirect(
+            "/admin/settings",
+            f"库里已有 {before} 个指标，未做改动（要重来请先清空）",
+            "err",
+        )
+
+    audit.record(
+        session, actor=actor.username, action="create", object_type="setting",
+        label="指标字典", origin="web", request_id=_rid(),
+        changes=[{"field": "指标数", "old": str(before), "new": str(result.get("metrics", 0))}],
+        note="应用内置压电指标模板（只写字典，不含公司/型号）",
+    )
+    session.commit()
+    return _redirect(
+        "/admin/settings",
+        f"已写入 {result.get('metrics', 0)} 个指标，未创建任何公司或型号",
+    )
 
 
 # ── 健康检查（容器用，不过鉴权）───────────────────────────────────────────

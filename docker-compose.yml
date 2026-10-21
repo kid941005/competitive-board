@@ -25,15 +25,22 @@ x-logging: &default-logging
 services:
   app:
     # 镜像由 GitHub Actions 构建并发布（见 .github/workflows/build-image.yml）
-    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.9.1}
+    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.9.2}
     container_name: competitive-board
     restart: unless-stopped
     logging: *default-logging
+    # 容器以数据目录的属主身份运行。默认 10001 与镜像内 appuser 一致；
+    # 若数据目录属主是别的 uid（NAS 共享目录常见），把它设成那个 uid 就
+    # 不必再 chown 目录 —— 例如 CIB_UID=1000 CIB_GID=1000。
+    user: "${CIB_UID:-10001}:${CIB_GID:-10001}"
     environment:
       # 数据目录：SQLite 数据库与上传的规格书都落在这里
       CIB_DATA_DIR: /app/data
-      # 首次启动写入示例数据；库里已有数据时自动跳过
-      CIB_SEED_DEMO: "${CIB_SEED_DEMO:-1}"
+      # 默认空库：只建表 + 一个管理员账号，不写任何示例数据。
+      # 需要压电领域的样子（示例公司/型号/参数）时设为 1；
+      # 只想要指标字典而不想要示例公司，用「系统设置」里的「应用内置模板」
+      # 或 docker compose exec app python -m app.seed --metrics-only
+      CIB_SEED_DEMO: "${CIB_SEED_DEMO:-0}"
       CIB_MAX_COMPARE: "${CIB_MAX_COMPARE:-8}"
       # 未入库规格书原文的保留天数（被参数引用的不受影响）
       CIB_DATASHEET_DAYS: "${CIB_DATASHEET_DAYS:-30}"

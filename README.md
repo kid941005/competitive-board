@@ -31,20 +31,32 @@ docker compose up -d
 ```bash
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
-  -e CIB_SEED_DEMO=1 -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:0.9.1
+  -v competitive-board-data:/app/data \
+  ghcr.io/kid941005/competitive-board:0.9.2
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
 更多部署方式见 [Docker 部署](#docker-部署)。
+
+### 默认是空库
+
+启动后只有表结构和一个管理员账号，**没有任何示例数据**。第一次登录会看到一页提示：
+
+> 这是一个空库 —— 还没有指标字典。对比页的每一行都来自字典，规格书识别也靠它做别名匹配。
+
+先到**系统设置 → 指标字典 → 应用内置压电指标模板**，写入 20 个指标（含适用大类），
+它**只写字典，不创建任何公司或型号**。之后用「批量导入」或「产品管理」录自己的数据。
+
+想直接看到压电领域的示例公司/型号（10 家公司 / 11 个型号 / 81 条参数），启动时加 `CIB_SEED_DEMO=1`。
 
 从源码跑：
 
 ```bash
 cd backend
 
-# 1) 写入示例数据（20 个指标 / 10 家公司 / 11 个型号 / 81 条参数）
-python -m app.seed
+# 1) 写入指标字典（20 个指标，不含任何公司/型号）
+python -m app.seed --metrics-only
+#    想要完整示例数据（含 10 家公司 / 11 个型号 / 81 条参数）：python -m app.seed
 
 # 2) 启动
 python -m uvicorn app.main:app --reload --port 8000
@@ -509,11 +521,11 @@ python -m app.seed --force
 
 **一个镜像即可承载全部功能。** 展示层是服务端渲染（Jinja2 + 原生 JS），没有 Node 构建阶段，也不需要第二个镜像。
 
-镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
+镜像内已处理：非 root 用户（uid 10001，可被 `CIB_UID` 覆盖）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 211 项测试，通过才推**。标签有 `0.9.1`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 218 项测试，通过才推**。标签有 `0.9.2`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本由 `CIB_IMAGE_TAG` 决定，默认 `0.9.1` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
+版本由 `CIB_IMAGE_TAG` 决定，默认 `0.9.2` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -548,34 +560,33 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
 ```bash
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
-  -e CIB_SEED_DEMO=1 \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:0.9.1
+  ghcr.io/kid941005/competitive-board:0.9.2
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=0.9.1 -t competitive-board:0.9.1 ./backend
+docker build --build-arg APP_VERSION=0.9.2 -t competitive-board:0.9.2 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
-  -e CIB_SEED_DEMO=1 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.9.1
+  competitive-board:0.9.2
 ```
 
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `CIB_IMAGE_TAG` | `0.9.1` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
+| `CIB_IMAGE_TAG` | `0.9.2` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
 | `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
-| `CIB_SEED_DEMO` | `1` | 首次启动写入示例数据；库里已有数据自动跳过 |
+| `CIB_SEED_DEMO` | `0` | 是否写入压电示例数据。默认 `0` = 空库。设为 `1` 才灌示例公司/型号；库里已有数据时自动跳过 |
+| `CIB_UID` / `CIB_GID` | `10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）设成那个值，就不必 `chown` 目录 |
 | `CIB_ADMIN_USER` | `admin` | 初始管理员账号（仅当库里无管理员时生效） |
 | `CIB_ADMIN_PASSWORD` | 空 | 留空则随机生成并打印到日志：`docker compose logs app \| grep 初始密码` |
 | `CIB_SESSION_HOURS` | `12` | 会话有效期（小时），运行时可在系统设置里改 |
@@ -641,7 +652,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.1` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.2` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
@@ -665,13 +676,14 @@ python tests/test_schema.py           #  6 项：表结构迁移（新库 / 老�
 python tests/test_retention.py        #  4 项：规格书原文保留（被引用的不删、过期的删、未到期留着）
 python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
 python tests/test_datadir.py          #  6 项：数据目录自检（不可写 / 建不出 / 磁盘满各有各的话）
+python tests/test_empty_startup.py    #  7 项：空库启动、空状态文案、应用模板、幂等、权限
 python tests/test_search.py           # 13 项：检索（公司名/产品名/型号、多词 AND、通配符转义、matched）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与后端同一套语义）
 # 或 pytest tests/
 ```
 
-共 **211 项**（后端 192 + 前端 19）。覆盖内容：
+共 **218 项**（后端 199 + 前端 19）。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -686,6 +698,7 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 - **表结构与迁移**：全新库补齐索引与版本号、0.7.x 老库带着重复数据升级（合并型号 / 去重参数 / 留审计）、库比代码新时拒绝启动、唯一索引在并发下回 409、同一批内重复项不炸
 - **规格书保留**：被参数引用的永不删、过期且无引用的连原文一起删、未到期保留、`keep_days=0` 关闭清理
 - **登录限速**：第 5 次失败后开始退避、第 6 次返回 429 + `Retry-After`、退避期内正确密码也不放行、成功登录清零、不影响其他账号
+- **空库启动**：只有表与管理员的空库、空状态分「无字典」与「有字典无产品」两种话术、应用模板只写 20 个指标不建公司、重复应用不重复写、普通用户不能应用模板、幂等判断跟着模式走
 - **数据目录自检**：可写时通过且不留探针文件、不可写时报出 uid/属主/权限位与修复命令、目录建不出与不可写不混成一句、路径是文件时说「不是目录」、磁盘满时报出剩余字节、`init_db` 顺手建出 `datasheets` 子目录
 - **检索**：`q` 命中公司中文名/英文名/型号/产品名、多词按 AND、`%` 与 `_` 按字面量、`matched` 字段、与 `category`/`kind` 叠加、空关键词不过滤
 - **前端过滤**（`test_filter.js`，无 DOM）：大小写、多词 AND、空串、`%` 不具通配含义
@@ -742,7 +755,7 @@ backend/
 │                         test_import_export / test_product_edit / test_api_v1
 │                         test_audit / test_labels / test_fixes / test_auth
 │                         test_channel_parity / test_schema / test_retention / test_throttle
-│                         test_datadir
+│                         test_datadir / test_empty_startup
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt

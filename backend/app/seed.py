@@ -238,12 +238,21 @@ def _clear(session: Session) -> None:
     session.commit()
 
 
-def seed(force: bool = False) -> dict[str, int]:
+def seed(force: bool = False, metrics_only: bool = False) -> dict[str, int]:
+    """写入压电领域的内置数据。
+
+    metrics_only=True 时只写指标字典（20 个指标，含适用大类），
+    不建任何公司、型号、参数 —— 这是「空库」最常用的入口：
+    看板的行来自字典，没有字典什么都渲染不出来，但用户往往不想要示例公司。
+    """
     init_db()
     counts = {"metrics": 0, "entities": 0, "products": 0, "specs": 0}
 
     with Session(engine) as session:
-        existing = session.exec(select(Entity)).first()
+        # 幂等判断按「这次要写的东西」来判，不能一律看 Entity：
+        # --metrics-only 只写字典，库里没有实体本来就是正常状态。
+        gate = SpecMetric if metrics_only else Entity
+        existing = session.exec(select(gate)).first()
         if existing and not force:
             return {"skipped": 1}
         if force:
@@ -262,6 +271,13 @@ def seed(force: bool = False) -> dict[str, int]:
             metric_by_key[key] = m
             counts["metrics"] += 1
 
+        session.commit()
+        for obj in metric_by_key.values():
+            session.refresh(obj)
+
+        if metrics_only:
+            return counts
+
         # 实体
         entity_by_key: dict[str, Entity] = {}
         for key, kind, name, name_en, region, tier in ENTITIES:
@@ -271,7 +287,7 @@ def seed(force: bool = False) -> dict[str, int]:
             counts["entities"] += 1
 
         session.commit()
-        for obj in list(metric_by_key.values()) + list(entity_by_key.values()):
+        for obj in entity_by_key.values():
             session.refresh(obj)
 
         # 产品 + 来源 + 参数
@@ -320,10 +336,14 @@ def seed(force: bool = False) -> dict[str, int]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="写入压电领域示例数据")
+    ap = argparse.ArgumentParser(description="写入压电领域内置数据")
     ap.add_argument("--force", action="store_true", help="清空现有数据后重建")
+    ap.add_argument(
+        "--metrics-only", action="store_true",
+        help="只写指标字典（含适用大类），不建任何公司/型号 —— 空库启动后用它拿一套可用字典",
+    )
     args = ap.parse_args()
-    print(seed(force=args.force))
+    print(seed(force=args.force, metrics_only=args.metrics_only))
 
 
 if __name__ == "__main__":

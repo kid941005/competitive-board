@@ -4,11 +4,29 @@
 {% block body %}
 {% include "_header.html" %}
 <main class="empty-state">
+  {% if not counts or counts.metrics == 0 %}
+  <h1>这是一个空库</h1>
+  <p>
+    还没有指标字典。对比页的每一行都来自字典，规格书识别也靠它做别名匹配
+    —— 字典为空时，导入进去的参数匹配不到任何指标，页面上不会有任何一行。
+  </p>
+  <p>
+    最省事的做法是应用内置的压电指标模板（20 个指标，带适用大类：
+    压电气泵 / 压电风扇 / 压电液泵）。它<b>只写字典，不创建任何公司或型号</b>，
+    那些数据应当由你自己导入。
+  </p>
+  <p><a href="/admin/settings">去「系统设置」→ 应用内置压电指标模板</a>（需要管理员权限）</p>
+  <p class="dim">
+    命令行等价操作：<code>docker compose exec app python -m app.seed --metrics-only</code>
+  </p>
+  {% else %}
   <h1>还没有任何产品数据</h1>
-  <p>指标字典已就绪（{{ counts.metrics }} 个指标）。接下来二选一：</p>
+  <p>指标字典已就绪（{{ counts.metrics }} 个指标）。接下来三选一：</p>
   <ol>
-    <li>写入示例数据：<code>python -m app.seed</code></li>
-    <li>用 CSV 导入真实参数：<a href="/api/import/template">下载模板</a></li>
+    <li>用 CSV 批量导入真实参数：<a href="/api/import/template">下载模板</a></li>
+    <li>在<a href="/products">产品管理</a>里手工建公司、型号，再逐项填参数</li>
+    <li>想先看效果：<code>docker compose exec app python -m app.seed</code> 写入示例公司</li>
   </ol>
+  {% endif %}
 </main>
 {% endblock %}

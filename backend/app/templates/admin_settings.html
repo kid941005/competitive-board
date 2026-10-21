@@ -64,6 +64,26 @@
   </div>
 </form>
 
+<section class="panel">
+  <div class="panel-head">
+    <h2>指标字典</h2>
+    <span class="hint">对比页与规格书识别都依赖它</span>
+  </div>
+  <div class="panel-body">
+    <p class="dim">
+      空库启动时字典是空的，而对比页的每一行都来自字典 —— 此时导入任何数据都匹配不到指标。
+      「应用内置模板」会写入 20 个压电指标（含适用大类：压电气泵 / 压电风扇 / 压电液泵），
+      <b>不会创建任何公司或型号</b>。已有指标时不会重复写入。
+    </p>
+    <form method="post" action="/admin/settings/apply-metrics-template">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <button type="submit" class="btn" data-confirm="写入 20 个内置指标？不会动公司、型号与已有参数。">
+        应用内置压电指标模板
+      </button>
+    </form>
+  </div>
+</section>
+
 <section class="panel notes">
   <div class="panel-head"><h2>说明</h2></div>
   <ul class="plainlist">
