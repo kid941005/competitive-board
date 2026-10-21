@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import units
 from .models import SpecMetric
 
 # 标签后向后搜索的范围（字符）。太小会漏掉「标签在表头、数值在下一行」的版式，
@@ -48,7 +49,7 @@ UNIT_SYNONYMS: dict[str, tuple[str, ...]] = {
     "kHz": ("khz", "hz"),
     "mW": ("mw", "w"),
     "W": ("w", "mw"),
-    "V": ("vdc", "vpp", "v", "mv"),
+    "V": ("vdc", "vpp", "vp-p", "vp", "v", "mv"),
     "mm": ("mm", "cm"),
     "g": ("g", "mg"),
     "℃": ("℃", "°c", "degc", "摄氏度"),
@@ -63,32 +64,9 @@ _ALL_UNIT_SYNS: tuple[str, ...] = tuple(
     sorted({syn for syns in UNIT_SYNONYMS.values() for syn in syns}, key=len, reverse=True)
 )
 
-# 找到的单位 → 该指标的标准单位，对应的换算系数。
-# ⚠️ 键必须统一小写：_convert() 查找前会把两侧都 lower()，此前这里写了 "µL/min"
-# 这类首字母大写的键，导致 l/min → µL/min 的换算静默失效（值原样落库，差 10⁶ 倍）。
-_CONVERT_RAW: dict[tuple[str, str], float] = {
-    ("ml/min", "µL/min"): 1000.0,
-    ("l/min", "µL/min"): 1_000_000.0,
-    ("ml/min", "l/min"): 0.001,
-    ("µl/min", "l/min"): 1e-6,
-    ("ul/min", "l/min"): 1e-6,
-    ("pa", "kpa"): 0.001,
-    ("mpa", "kpa"): 1000.0,
-    ("mbar", "kpa"): 0.1,
-    ("bar", "kpa"): 100.0,
-    ("kpa", "pa"): 1000.0,
-    ("kpa", "mbar"): 10.0,
-    ("bar", "mbar"): 1000.0,
-    ("mw", "w"): 0.001,
-    ("w", "mw"): 1000.0,
-    ("cm", "mm"): 10.0,
-    ("hz", "khz"): 0.001,
-    ("mv", "v"): 0.001,
-    ("mg", "g"): 0.001,
-}
-UNIT_CONVERT: dict[tuple[str, str], float] = {
-    (a.strip().lower(), b.strip().lower()): f for (a, b), f in _CONVERT_RAW.items()
-}
+# 换算系数表已经搬到 units.py —— 它原先长在这里，于是「只有规格书这条通道会换算」，
+# 批量导入和 /api/v1 各写各的、实际不换算。现在所有入口共用一份。
+# 这里只保留「识别用」的同义词表：哪些写法算作本指标的单位。
 
 
 @dataclass
@@ -228,14 +206,15 @@ def _is_footnote(window: str, m: re.Match) -> bool:
 
 
 def _convert(value: float, found_unit: str, target_unit: str) -> tuple[float, bool]:
-    fu = found_unit.strip().lower()
-    tu = target_unit.strip().lower()
-    if not fu or fu == tu:
+    """换算交给 units.py（单一真相源）；这里只关心「换没换」。
+
+    换不了的时候**保持原值**而不是丢弃，是这个通道的历史行为：规格书识别出来的
+    候选一律进复核页由人确认，页面上看得到原文与命中单位。
+    """
+    got = units.convert(value, found_unit, target_unit)
+    if not got.ok:
         return value, False
-    factor = UNIT_CONVERT.get((fu, tu))
-    if factor is None:
-        return value, False
-    return value * factor, True
+    return got.value, got.converted
 
 
 # ── 取值 ───────────────────────────────────────────────────────────────────

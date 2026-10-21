@@ -36,7 +36,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
-from . import audit, auth, config, search, settings_store, tokens
+from . import audit, auth, config, search, settings_store, tokens, units
 from .compare import format_number, metrics_for_categories
 from .db import get_session
 from .importer import import_rows
@@ -441,6 +441,9 @@ class SpecItem(BaseModel):
     action: str = "upsert"  # upsert / delete
     value_num: float | None = None
     value_text: str | None = None
+    # 传了 unit 就按它换算到指标字典的单位（mL/min → L/min、Vp → Vpp）；
+    # 不传视为已经是字典单位。跨维度或认不出的单位会让该项被拒，不会按原值落库。
+    unit: str | None = None
     condition: str | None = None
     verified: bool = False
     confidence: float | None = None
@@ -1135,6 +1138,15 @@ def batch_specs(
                     "message": f"{metric.name} 需要数值，请传 value_num",
                 })
                 continue
+            conv = units.convert(num, item.unit or metric.unit, metric.unit)
+            if not conv.ok:
+                results.append({
+                    **base, "ok": False, "code": "VALIDATION_FAILED", "message": conv.reason,
+                })
+                continue
+            if conv.converted:
+                base["converted"] = f"{num} {item.unit} → {conv.value} {metric.unit}"
+            num = conv.value
             text = None
         else:
             if not (text or "").strip():
@@ -1143,6 +1155,14 @@ def batch_specs(
                     "message": f"{metric.name} 需要文本，请传 value_text",
                 })
                 continue
+            # 文本型电压（驱动电压）统一「数值 + 口径」写法；口径不明就不动，标出来
+            vt = units.normalize_voltage_text(text) if units.is_voltage_unit(metric.unit) else None
+            if vt is not None:
+                if vt.converted:
+                    base["converted"] = f"{text} → {vt.text}"
+                if vt.needs_review:
+                    base["needs_review"] = vt.note
+                text = vt.text
             num = None
 
         if existing:
@@ -1519,6 +1539,11 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                                 "action": {"type": "string", "enum": ["upsert", "delete"]},
                                 "value_num": {"type": "number"},
                                 "value_text": {"type": "string"},
+                                "unit": {
+                                    "type": "string",
+                                    "description": "值的原始单位，如 mL/min、Vp、mbar。"
+                                                   "传了就换算到指标字典的单位；不传视为已是字典单位",
+                                },
                                 "condition": {"type": "string", "description": "如 @15Vpp"},
                                 "verified": {"type": "boolean"},
                             },

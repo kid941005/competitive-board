@@ -25,11 +25,17 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from . import config
+from . import config, units
 from .compare import metric_applies
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 from .numeric import clamp_confidence, parse_number
 from .sanitize import safe_url
+
+
+def _fmt(value: float) -> str:
+    """报告里的数字：1.1 而不是 1.1000000000000001。"""
+    s = f"{value:.6f}".rstrip("0").rstrip(".")
+    return s or "0"
 
 # 规范列名 → 可接受的写法（中英文都收，避免用户改表头就导入失败）
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -61,6 +67,12 @@ class ImportReport:
     skipped_missing: int = 0
     # 值、条件都没变：不写库、不记日志，也不能把人工复核标记清掉
     skipped_unchanged: int = 0
+    # 真的做了单位换算的行数（mL/min → L/min、Vp → Vpp 这类）
+    converted_units: int = 0
+    # 逐条换算记录，给报告用：「第 3 行 MPA201 · 空气流量：1100 mL/min → 1.1 L/min」
+    conversions: list[str] = field(default_factory=list)
+    # 单位有歧义、原样保留待人工确认的（Vrms、只写 V 的电压）
+    needs_review: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     # 逐项变更明细（供审计日志使用）：{model, metric, old, new}
     details: list[dict] = field(default_factory=list)
@@ -73,6 +85,9 @@ class ImportReport:
             "written_specs": self.written_specs,
             "skipped_missing": self.skipped_missing,
             "skipped_unchanged": self.skipped_unchanged,
+            "converted_units": self.converted_units,
+            "conversions": self.conversions,
+            "needs_review": self.needs_review,
             "errors": self.errors,
         }
 
@@ -410,11 +425,42 @@ def import_rows(
             )
             continue
 
+        # 单位换算。表的「单位」列以前只在说明里提了一句「仅作说明」，代码从没读过它 ——
+        # 于是 1100 mL/min 会原样落成 1100 L/min（差 1000 倍）。现在按这一列换算到
+        # 指标字典的单位；跨维度或认不出的单位直接拒收该行：宁可少一行，不要错一个量级。
+        unit_raw = (row.get("单位") or "").strip()
+        new_cond = row.get("条件") or None
+        new_text = None if is_number else value_raw
+        if is_number:
+            conv = units.convert(num or 0.0, unit_raw or metric.unit, metric.unit)
+            if not conv.ok:
+                report.errors.append(f"第 {lineno} 行：{conv.reason}，已跳过")
+                continue
+            if conv.converted:
+                num = conv.value
+                report.converted_units += 1
+                report.conversions.append(
+                    f"第 {lineno} 行 {model} · {metric.name}："
+                    f"{value_raw} {unit_raw} → {_fmt(conv.value)} {metric.unit}"
+                )
+            if conv.note:
+                report.needs_review.append(f"第 {lineno} 行 {model} · {metric.name}：{conv.note}")
+        elif units.is_voltage_unit(metric.unit):
+            # 驱动电压是文本型，统一「数值 + 口径」的写法（Vp→Vpp 乘 2、±25V→50 Vpp）；
+            # 口径不明（只写 V、Vrms）就不动，进待确认清单。
+            vt = units.normalize_voltage_text(value_raw)
+            new_text = vt.text
+            if vt.converted:
+                report.converted_units += 1
+                report.conversions.append(
+                    f"第 {lineno} 行 {model} · {metric.name}：{value_raw} → {vt.text}"
+                )
+            if vt.needs_review:
+                report.needs_review.append(f"第 {lineno} 行 {model} · {metric.name}：{vt.note}")
+
         existing = specs_of(product.id).get(metric.id)  # type: ignore[arg-type]
         new_num = num if is_number else None
-        new_text = None if is_number else value_raw
-        new_cond = row.get("条件") or None
-        new_value = num if is_number else value_raw
+        new_value = num if is_number else new_text
 
         if existing is not None:
             # 值与条件都没变就什么都不做：不写库、不记日志、更不清人工复核标记。
@@ -536,7 +582,8 @@ def xlsx_template() -> bytes:
         ("大类", "可选，但强烈建议填。只能填：" + "、".join(config.CATEGORY_LABEL.values())),
         ("指标", "必填。填指标中文名或 key，必须在指标字典中存在，否则该行跳过。"),
         ("数值", "必填。数值型指标填数字；文本型指标填原文（如 24~27）。留空表示未公开，跳过。"),
-        ("单位", "仅作说明，实际单位以指标字典为准；填错不会改变换算。"),
+        ("单位", "填了这个值原本的单位（如 mL/min、mbar、Vp）就会换算到指标字典的单位；"
+                 "认不出或跨维度（如把 kPa 填进流量行）该行报错跳过。不填视为已是字典单位。"),
         ("条件", "如 @15Vpp、水·100Hz，会显示在溯源浮层。"),
         ("来源链接", "越具体越好，便于逐项复核。"),
         ("置信度", "0~1，缺省 1.0。"),

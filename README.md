@@ -253,6 +253,21 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 
 导入的参数一律 `verified=False`，需在「产品管理」里逐项确认。
 
+### 单位换算：`单位` 这一列是算数的
+
+`单位` 列填了就会**先换算到指标字典的单位再落库**。以前这一列只写在说明里、代码从没读过它，于是 `1100 mL/min` 会原样存成 `1100 L/min` —— 差 1000 倍，而且界面上看不出来。
+
+| 原文 | 落库 | 说明 |
+|---|---|---|
+| `1100` + `mL/min` | `1.1 L/min` | 流量按体积/时间换算，µL/min、m³/h、sccm 同理 |
+| `500` + `mbar` | `50 kPa` | 压力同理（Pa / MPa / bar / psi / mmH₂O） |
+| `±25` + `V` | `50 Vpp` | ±X V 是峰值幅度，峰峰值乘 2；`11.5~21 Vp` → `23~42 Vpp` |
+| `3.3` + `Vrms` | 原样保留，标「待确认」 | Vpp 与 Vrms 的关系取决于波形（正弦 2√2、方波 2），不猜 |
+| `11.5~21` + `Vdc` | 原样保留 | 直流乘 2 变成「峰峰值」没有物理意义 |
+| `1.5` + `kPa`（指标是流量） | 整行报错跳过 | 跨维度不换算，宁可少一行，不要错一个量级 |
+
+规则收敛在 `backend/app/units.py` 一个文件里，批量导入、`/api/v1/specs/batch`（可传 `unit`）、规格书识别三个入口共用，不各写一套。换算过的行会在导入报告里逐条列出来（`1100 mL/min → 1.1 L/min`），口径有歧义的（Vrms、只写 `V`）单独列在「单位口径需人工确认」里，值按原文保留。
+
 **重复导入是安全的**：值与条件都没变的行会被跳过（报告里的「无变化跳过」），既不写库、也不清掉已复核标记、更不会再造一条来源记录。改动过的行才会更新，并重新标为未复核。
 
 报错里的行号是**文件里的真实行号**（表头不在第一行也准），直接照它去改。程序生成的 xlsx（openpyxl / pandas）若用了公式且没被 Excel 保存过，公式列读出来是空值，导入前请「复制 → 粘贴为值」。
@@ -492,6 +507,8 @@ v2 给两处加了唯一索引，并且**先合并存量重复再建索引**（�
 
 另外，厂商常以区间给出参数（如谐振频率 `24~27 kHz`、驱动电压 `11.5~21 Vdc`），这类指标用 `value_type=text` 存原文、`better=na` 不判定优劣——把区间硬压成一个数就是造假。
 
+**驱动电压为什么是文本型**：它有三种互相不能换算的口径 —— 交流峰值（`Vp` / `Vpp`，Vp→Vpp 乘 2 是定义）、交流有效值（`Vrms`，换算要看波形）、直流（`Vdc`，乘 2 变成峰峰值没有意义）。这几家的数据正好三种都有（村田 MZB 是 Vdc、巴特尔斯 mp6 是 Vpp、xMEMS 写 Vpp），所以字典里单位保持 `V`、由值与溯源说明口径；导入时只做定义性的换算（Vp→Vpp、mV→V），其余原样保留并在报告里标「待人工确认」。
+
 ---
 
 ## 用真实数据替换示例
@@ -575,7 +592,7 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 268 项测试，通过才推**。标签有 `0.9.6`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 291 项测试，通过才推**。标签有 `0.9.6`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
 版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `0.9.6` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
@@ -729,7 +746,8 @@ python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨�
 python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
 python tests/test_import_export.py    # 10 项：Excel/CSV 导入与 Excel 导出
 python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
-python tests/test_api_v1.py           # 21 项：令牌鉴权、幂等、dry-run、ETag、批量回执
+python tests/test_api_v1.py           # 23 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算
+python tests/test_units.py            # 21 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义）
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
 python tests/test_labels.py           #  6 项：自家公司用公司名，不出现「本方 / 我方」
 python tests/test_fixes.py            # 10 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS）
@@ -799,7 +817,8 @@ backend/
 │   ├── settings_store.py 运行期系统参数（白名单 + 校验 + 回落默认值）
 │   ├── compare.py        纯计算：最优值 / 差异 / 完整度（无框架依赖，可直接单测）
 │   ├── datasheet.py      规格书识别引擎（PDF 解析 + 别名匹配 + 单位换算）
-│   ├── importer.py       Excel / CSV 导入（同一套校验）+ 模板生成
+│   ├── units.py          单位归一的唯一真相源（维度 / 因子 / 电压口径归一）
+│   ├── importer.py       Excel / CSV 导入（同一套校验 + 按「单位」列换算）+ 模板生成
 │   ├── api_v1.py         机器调用接口面（信封 / 令牌 / 幂等 / dry-run / tools）
 │   ├── search.py         检索约定：归一 / LIKE 转义 / 多词 AND / 命中字段
 │   ├── tokens.py         API 令牌签发与校验（只存 sha256）

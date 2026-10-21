@@ -103,6 +103,8 @@
         bits.push("写入参数 " + r.written_specs);
         if (r.skipped_missing) bits.push("数值为空跳过 " + r.skipped_missing);
         if (r.skipped_unchanged) bits.push("无变化跳过 " + r.skipped_unchanged);
+        if (r.converted_units) bits.push("换算单位 " + r.converted_units);
+        if ((r.needs_review || []).length) bits.push("单位待确认 " + r.needs_review.length);
         msg.innerHTML = "导入完成：" + esc(bits.join("，")) +
           '。<a href="/products">去产品管理复核 →</a>';
 
@@ -113,6 +115,7 @@
           ["写入参数", r.written_specs],
           ["数值为空跳过", r.skipped_missing],
           ["无变化跳过", r.skipped_unchanged || 0],
+          ["单位换算", r.converted_units || 0],
           ["报错行数", (r.errors || []).length],
         ];
         grid.innerHTML = cells.map(function (c) {
@@ -120,13 +123,26 @@
                  '<span class="rv">' + esc(c[1]) + "</span></div>";
         }).join("");
 
+        var html = "";
         if (r.errors && r.errors.length) {
-          errBox.innerHTML = '<div class="rerr-head">以下行未写入（前 50 条）：</div><ul class="plainlist">' +
+          html += '<div class="rerr-head">以下行未写入（前 50 条）：</div><ul class="plainlist">' +
             r.errors.slice(0, 50).map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") +
             "</ul>";
         } else {
-          errBox.innerHTML = '<p class="dim">没有报错行。</p>';
+          html += '<p class="dim">没有报错行。</p>';
         }
+        if (r.conversions && r.conversions.length) {
+          html += '<div class="rerr-head">已按单位换算（前 50 条）：</div><ul class="plainlist">' +
+            r.conversions.slice(0, 50).map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") +
+            "</ul>";
+        }
+        if (r.needs_review && r.needs_review.length) {
+          html += '<div class="rerr-head">单位口径需人工确认（值按原文保留）：</div>' +
+            '<ul class="plainlist">' +
+            r.needs_review.slice(0, 50).map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") +
+            "</ul>";
+        }
+        errBox.innerHTML = html;
         report.hidden = false;
         report.scrollIntoView({ behavior: "smooth", block: "start" });
         btn.disabled = false;

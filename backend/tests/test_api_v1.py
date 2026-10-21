@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app import tokens
 from app.db import engine, init_db
 from app.main import app
-from app.models import Product, ProductSpec
+from app.models import Product, ProductSpec, SpecMetric
 from app.seed import seed
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -69,6 +69,13 @@ def _product_id(model: str) -> int:
         p = s.exec(select(Product).where(Product.model == model)).first()
         assert p is not None, f"找不到 {model}"
         return p.id  # type: ignore[return-value]
+
+
+def _metric_id(key: str) -> int:
+    with Session(engine) as s:
+        m = s.exec(select(SpecMetric).where(SpecMetric.key == key)).first()
+        assert m is not None, f"找不到指标 {key}"
+        return m.id  # type: ignore[return-value]
 
 
 # ── 鉴权与信封 ─────────────────────────────────────────────────────────────
@@ -247,6 +254,55 @@ def test_specs_batch_partial_success_is_explicit():
     with Session(engine) as s:
         spec = s.exec(select(ProductSpec).where(ProductSpec.product_id == pid)).all()
     assert any(abs(x.value_num - 0.2) < 1e-9 for x in spec if x.value_num is not None)
+
+
+def test_specs_batch_converts_unit():
+    """传了 unit 就换算到字典单位 —— 否则 AI 传 mL/min 会写成 1000 倍。
+
+    这条与批量导入守的是同一件事：单位归一只有一个真相源（app/units.py），
+    两个入口不能各写一套。
+    """
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    r = c.post("/api/v1/products",
+               json={"entity_id": 2, "model": "UNIT-API-1", "category": "pump_air"}, headers=h)
+    pid = r.json()["data"]["id"]
+
+    r = c.post("/api/v1/specs/batch", json={"items": [
+        {"product_id": pid, "metric_key": "flow_air", "value_num": 1100, "unit": "mL/min"},
+    ]}, headers=h)
+    assert r.status_code == 200, r.text
+    item = r.json()["data"]["results"][0]
+    assert item["ok"], item
+    assert "mL/min" in item.get("converted", ""), item
+
+    with Session(engine) as s:
+        spec = s.exec(
+            select(ProductSpec).where(ProductSpec.product_id == pid,
+                                      ProductSpec.metric_id == _metric_id("flow_air"))
+        ).first()
+        assert spec is not None and abs(spec.value_num - 1.1) < 1e-9, spec.value_num
+
+
+def test_specs_batch_rejects_cross_dimension_unit():
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    r = c.post("/api/v1/products",
+               json={"entity_id": 2, "model": "UNIT-API-2", "category": "pump_air"}, headers=h)
+    pid = r.json()["data"]["id"]
+
+    r = c.post("/api/v1/specs/batch", json={"items": [
+        {"product_id": pid, "metric_key": "flow_air", "value_num": 1.5, "unit": "kPa"},
+    ]}, headers=h)
+    item = r.json()["data"]["results"][0]
+    assert not item["ok"] and item["code"] == "VALIDATION_FAILED", item
+    assert "跨维度" in item["message"], item
+    with Session(engine) as s:
+        assert s.exec(
+            select(ProductSpec).where(ProductSpec.product_id == pid)
+        ).first() is None, "跨维度的值不能落库"
 
 
 def test_delete_requires_confirm():
