@@ -49,8 +49,10 @@ jobs:
           V = re.search(r'version="([0-9.]+)"',
                         pathlib.Path('backend/app/main.py').read_text(encoding='utf-8')).group(1)
           checks = {
-              'docker-compose.yml': r'CIB_IMAGE_TAG:-([0-9]+\.[0-9]+\.[0-9]+)',
-              'docker-compose.build.yml': r'CIB_IMAGE_TAG:-([0-9]+\.[0-9]+\.[0-9]+)',
+              # 这两个文件已改成字面值（不再有 ${CIB_IMAGE_TAG:-x} 变量），
+              # 直接从 image 标签与 build arg 提取
+              'docker-compose.yml': r'competitive-board:([0-9]+\.[0-9]+\.[0-9]+)',
+              'docker-compose.build.yml': r'APP_VERSION:\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
               'deploy/docker-compose.yml': r'CIB_IMAGE_TAG:-([0-9]+\.[0-9]+\.[0-9]+)',
               'README.md': r'ghcr\.io/kid941005/competitive-board:([0-9]+\.[0-9]+\.[0-9]+)',
           }

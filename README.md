@@ -32,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:0.9.2
+  ghcr.io/kid941005/competitive-board:0.9.3
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -521,11 +521,11 @@ python -m app.seed --force
 
 **一个镜像即可承载全部功能。** 展示层是服务端渲染（Jinja2 + 原生 JS），没有 Node 构建阶段，也不需要第二个镜像。
 
-镜像内已处理：非 root 用户（uid 10001，可被 `CIB_UID` 覆盖）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
+镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 218 项测试，通过才推**。标签有 `0.9.2`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 218 项测试，通过才推**。标签有 `0.9.3`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本由 `CIB_IMAGE_TAG` 决定，默认 `0.9.2` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
+版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `0.9.3` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -546,10 +546,15 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 ### 方式三：compose + PostgreSQL（团队共用 / 数据量上来后）
 
+不用 .env。把 `docker-compose.pg.yml` 里三处 `ciboard-change-me` 一起改成你自己的密码，
+建议用 `openssl rand -base64 24` 生成：
+
 ```bash
-cp .env.example .env        # 填 POSTGRES_PASSWORD：openssl rand -base64 24
 docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
 ```
+
+⚠️ PostgreSQL 的密码**只在数据目录首次初始化时生效**。`pgdata` 卷已存在时改这里不起作用，
+需要先进库 `ALTER USER ciboard WITH PASSWORD '…'`，或删卷重建（会丢数据）。
 
 叠加关系：`docker-compose.pg.yml` 只追加 `db` 服务并把 `DATABASE_URL` 注入 `app`。切换数据库不改一行业务代码。要和本地构建一起用，三个文件按顺序叠加即可。
 
@@ -563,38 +568,44 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:0.9.2
+  ghcr.io/kid941005/competitive-board:0.9.3
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=0.9.2 -t competitive-board:0.9.2 ./backend
+docker build --build-arg APP_VERSION=0.9.3 -t competitive-board:0.9.3 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.9.2
+  competitive-board:0.9.3
 ```
 
-### 环境变量
+### 配置项在哪改
 
-| 变量 | 默认 | 作用 |
+**没有 `.env` 文件**。所有配置都以字面值写在 `docker-compose.yml` 里，改哪个值就改哪一行，然后 `docker compose up -d` 生效。
+
+刻意不用「环境变量 + 默认值兜底」那种写法（`${VAR:-default}` 配 `.env`）：那会让人以为改了 compose 就生效，实际被 `.env` 里的同名项悄悄覆盖 —— 这类问题排查起来很费时间。
+
+| 位置 | 当前值 | 作用 |
 |---|---|---|
-| `CIB_IMAGE_TAG` | `0.9.2` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
+| `image:` 的标签 | `0.9.3` | 镜像版本。升级就改这里，再 `docker compose pull` |
+| `user:` | `10001:10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）改这里，就不必 `chown` 目录；改 `"0:0"` 则以 root 运行 |
+| `ports:` | `127.0.0.1:8000:8000` | 宿主端口。只绑回环，对外访问需反向代理 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
-| `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
-| `CIB_SEED_DEMO` | `0` | 是否写入压电示例数据。默认 `0` = 空库。设为 `1` 才灌示例公司/型号；库里已有数据时自动跳过 |
-| `CIB_UID` / `CIB_GID` | `10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）设成那个值，就不必 `chown` 目录 |
+| `CIB_SEED_DEMO` | `0` | 设为 `1` 才灌压电示例公司/型号；默认 `0` 是空库 |
 | `CIB_ADMIN_USER` | `admin` | 初始管理员账号（仅当库里无管理员时生效） |
 | `CIB_ADMIN_PASSWORD` | 空 | 留空则随机生成并打印到日志：`docker compose logs app \| grep 初始密码` |
-| `CIB_SESSION_HOURS` | `12` | 会话有效期（小时），运行时可在系统设置里改 |
-| `CIB_COOKIE_SECURE` | `0` | HTTPS 部署必须置 `1`，否则 Cookie 会明文传输 |
+| `CIB_SESSION_HOURS` | `12` | 会话有效期（小时），运行期可在系统设置里改 |
+| `CIB_COOKIE_SECURE` | `0` | HTTPS 部署必须改 `1`，否则 Cookie 会明文传输 |
 | `CIB_MAX_COMPARE` | `8` | 单页最多对比型号数的初始默认 |
 | `CIB_DATASHEET_DAYS` | `30` | 未入库规格书的保留天数（运行期可在系统设置里改） |
-| `APP_PORT` | `8000` | 宿主端口（只绑 127.0.0.1） |
-| `POSTGRES_PASSWORD` | — | 启用 PG 时必填 |
+| `DATABASE_URL` | 未设 | 不设即 SQLite。启用 PG 时由 `docker-compose.pg.yml` 叠加注入 |
+| `POSTGRES_PASSWORD` | `ciboard-change-me` | 仅 PG，在 `docker-compose.pg.yml` 里改；该文件有三处要一起改 |
+
+`deploy/` 目录是「新闻动态流」的规划稿，**不参与看板部署**。那一份仍然用变量加自己的 `.env.example` —— 它要填一堆第三方服务凭据，不适合写死。
 
 ### 常用运维
 
@@ -652,7 +663,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.2` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.3` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 

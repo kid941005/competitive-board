@@ -6,8 +6,8 @@
 # 改了代码、要从源码重新构建（构建结果沿用同一个镜像名，不会出现两套标签）：
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 #
-# 换版本（默认固定在 CIB_IMAGE_TAG，不跟随 latest）：
-#   CIB_IMAGE_TAG=latest docker compose up -d
+# 换版本：直接改下面 image 那行的版本号，然后 docker compose pull && up -d。
+# 刻意不跟 latest —— 跟了之后某次重启会悄悄换版本，回退还会因库结构更新而被拒。
 #
 # 需要 PostgreSQL 时叠加 override：
 #   docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
@@ -25,14 +25,14 @@ x-logging: &default-logging
 services:
   app:
     # 镜像由 GitHub Actions 构建并发布（见 .github/workflows/build-image.yml）
-    image: ghcr.io/kid941005/competitive-board:${CIB_IMAGE_TAG:-0.9.2}
+    image: ghcr.io/kid941005/competitive-board:0.9.3
     container_name: competitive-board
     restart: unless-stopped
     logging: *default-logging
-    # 容器以数据目录的属主身份运行。默认 10001 与镜像内 appuser 一致；
-    # 若数据目录属主是别的 uid（NAS 共享目录常见），把它设成那个 uid 就
-    # 不必再 chown 目录 —— 例如 CIB_UID=1000 CIB_GID=1000。
-    user: "${CIB_UID:-10001}:${CIB_GID:-10001}"
+    # 容器运行身份。10001 与镜像内 appuser 一致，一般不用改。
+    # 若数据目录的属主是别的 uid（NAS 共享目录常见），把这里改成那个 uid:gid，
+    # 就不必再 chown 目录 —— 例如 "1000:1000"；改成 "0:0" 则以 root 运行。
+    user: "10001:10001"
     environment:
       # 数据目录：SQLite 数据库与上传的规格书都落在这里
       CIB_DATA_DIR: /app/data
@@ -40,20 +40,20 @@ services:
       # 需要压电领域的样子（示例公司/型号/参数）时设为 1；
       # 只想要指标字典而不想要示例公司，用「系统设置」里的「应用内置模板」
       # 或 docker compose exec app python -m app.seed --metrics-only
-      CIB_SEED_DEMO: "${CIB_SEED_DEMO:-0}"
-      CIB_MAX_COMPARE: "${CIB_MAX_COMPARE:-8}"
+      CIB_SEED_DEMO: "0"
+      CIB_MAX_COMPARE: "8"
       # 未入库规格书原文的保留天数（被参数引用的不受影响）
-      CIB_DATASHEET_DAYS: "${CIB_DATASHEET_DAYS:-30}"
+      CIB_DATASHEET_DAYS: "30"
       # 初始管理员：仅当库里没有任何管理员时创建。
       # 密码留空则随机生成并打印到日志，用 docker compose logs app | grep 初始密码 查看
-      CIB_ADMIN_USER: "${CIB_ADMIN_USER:-admin}"
-      CIB_ADMIN_PASSWORD: "${CIB_ADMIN_PASSWORD:-}"
-      CIB_SESSION_HOURS: "${CIB_SESSION_HOURS:-12}"
+      CIB_ADMIN_USER: "admin"
+      CIB_ADMIN_PASSWORD: ""
+      CIB_SESSION_HOURS: "12"
       # HTTPS 部署时置 1，让会话 Cookie 带 Secure
-      CIB_COOKIE_SECURE: "${CIB_COOKIE_SECURE:-0}"
-      TZ: "${TZ:-Asia/Shanghai}"
+      CIB_COOKIE_SECURE: "0"
+      TZ: "Asia/Shanghai"
     ports:
-      - "127.0.0.1:${APP_PORT:-8000}:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - appdata:/app/data
     healthcheck:
