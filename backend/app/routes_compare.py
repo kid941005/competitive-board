@@ -86,12 +86,15 @@ def _picker_groups(products: list[Product]) -> list[dict]:
     for code, label in config.CATEGORY_LABEL.items():
         items = [p for p in products if p.category == code]
         if items:
-            groups.append({"code": code, "label": label, "products": items})
+            # hint 一律给键（哪怕是空串）：模板里 `{% if g.hint %}` 在
+            # StrictUndefined 下对缺键会直接抛错 —— 生产环境宽松所以看不出来，
+            # 测试一开严格模式就是 500。
+            groups.append({"code": code, "label": label, "products": items, "hint": ""})
     nocat = [p for p in products if not p.category]
     if nocat:
         groups.append({
             "code": "", "label": "未分类", "products": nocat,
-            "hint": "去<a href=\"/products\">产品管理</a>补大类",
+            "hint": '去<a href="/products">产品管理</a>补大类',
         })
     return groups
 

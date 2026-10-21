@@ -115,6 +115,43 @@ def test_footer_shows_app_version_everywhere():
         assert f'v{_app.version}' in html, f"{name} 页脚版本号不是 v{_app.version}"
 
 
+def test_picker_is_collapsed_by_default_and_table_is_sticky():
+    """型号选择器默认收起；参数表整块吸顶。
+
+    两条都是「看起来能用、其实没生效」的高危点：
+      · 收起靠 `hidden` 属性 —— 漏了它就是默认全展开，等于没做；
+      · 吸顶靠 CSS（.table-wrap position: sticky），模板里看不出来，
+        删掉样式没有任何页面会报错，只能靠这里钉住。
+    """
+    import pathlib
+    import re
+
+    # 本文件的客户端是单例，且 ORDER 第一条是「空库渲染」——所以这里必须自己保证有数据，
+    # 否则拿到的是空库实例，/compare 走 empty.html，选择器压根不渲染。
+    seed()                       # 幂等：库里有数据时直接返回
+    c = _boot(seed_data=True)
+    html = c.get("/compare").text
+
+    assert re.search(r'<div class="picker-body" id="pickerBody" hidden>', html), "选择器默认应收起"
+    toggle = re.search(r'<button[^>]*id="pickerToggle"[^>]*>', html)
+    assert toggle, "缺展开/收起按钮"
+    assert 'aria-expanded="false"' in toggle.group(0), "默认必须是 aria-expanded=false"
+    assert 'aria-controls="pickerBody"' in toggle.group(0), "按钮要声明控制哪个区域"
+    assert "展开选择" in html, "收起时按钮文案应提示「展开选择」"
+
+    # 收起状态下也要能看出在比哪几个型号，否则等于把信息藏起来了
+    summary = re.search(r'<p class="picker-summary" id="pickSummary">(.*?)</p>', html, re.S)
+    assert summary, "缺已选摘要"
+    assert "已选" in summary.group(1) and "个" not in summary.group(1).split("：")[0].replace("已选", ""),         summary.group(1)
+
+    css = pathlib.Path(__file__).resolve().parent.parent / "app" / "static" / "app.css"
+    text = css.read_text(encoding="utf-8")
+    head = re.search(r"\.table-wrap \{([^}]*)\}", text)
+    assert head, "找不到 .table-wrap 样式"
+    assert "position: sticky" in head.group(1), "参数表必须整块吸顶"
+    assert "top: 0" in head.group(1), "吸顶要从视口顶部开始（页面页头不是 sticky）"
+
+
 def test_not_found_page_renders():
     c = _boot(seed_data=True)
     r = c.get("/products/99999")
@@ -184,6 +221,9 @@ def test_purge_then_redirect_carries_message():
 ORDER = [
     test_empty_db_pages_render,
     test_pages_render_under_strict_undefined,
+    # 紧跟「全页面渲染」之后：后面的用例会改库（删型号、清日志），
+    # 选择器/吸顶这类「对照真实数据看结构」的断言趁数据完整时跑。
+    test_picker_is_collapsed_by_default_and_table_is_sticky,
     test_not_found_page_renders,
     test_login_failure_branch_renders,
     test_forbidden_page_renders_without_optional_vars,

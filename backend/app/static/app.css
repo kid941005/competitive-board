@@ -96,6 +96,30 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 
 /* ── 型号选择 ── */
 .picker { margin-bottom: 12px; }
+
+/* 折叠头：收起时只占一行（标题 + 已选摘要 + 按钮），把屏幕让给参数表 */
+.picker-head { align-items: center; gap: 12px; margin-bottom: 0; }
+.picker-summary {
+  flex: 1 1 auto; min-width: 0; margin: 0;
+  font-size: 12px; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.picker-summary b { color: var(--text); font-weight: 600; }
+.picker-toggle {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  height: 28px; padding: 0 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line-strong); background: var(--surface);
+  color: var(--text-2); font-size: 12.5px; font-family: var(--font);
+}
+.picker-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.picker-toggle .caret {
+  width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent;
+  border-top: 5px solid currentColor; transition: transform .15s ease;
+}
+.picker-toggle[aria-expanded="true"] .caret { transform: rotate(180deg); }
+.picker-body { padding-top: 10px; }
+.picker-tools { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.picker-tools .picker-search { margin-left: 0; width: 260px; }
 /* 按产品大类分组：气泵吹气、风扇推风是同一个流量，混在一起列会让人以为有两套数据 */
 .cat-group { padding: 2px 0 4px; }
 .cat-group + .cat-group { border-top: 1px solid var(--line-strong); margin-top: 4px; }
@@ -192,8 +216,12 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 
 /* ── 表格 ── */
 .table-wrap {
+  /* 整块吸附在视口顶部：页面往下滚时表格不再"滚走"，
+     而表头（thead th）本来就在块内 sticky，于是产品型号始终留在最上方。
+     用 sticky 而不是 fixed：它仍在文档流里，不会盖住下方内容、也不会跳版。 */
+  position: sticky; top: 0; z-index: 6;
   overflow: auto;
-  max-height: calc(100vh - 300px);
+  max-height: calc(100vh - 16px);
   min-height: 340px;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -617,7 +645,8 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
   body { padding: 0 12px 24px; }
   .ent-label { width: 130px; }
   .metric-col { width: 150px; min-width: 150px; }
-  .table-wrap { max-height: none; }
+  /* 窄屏列表格本身比视口高，整块 sticky 会顶到屏幕外，退回普通流 */
+  .table-wrap { position: static; max-height: none; }
 }
 
 /* ── 批量导入 ── */
@@ -739,4 +768,4 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 }
 .prod-filters .ds-select { height: 30px; }
 #prodFilterHint { color: var(--text-3); }
-.picker-empty { padding: 0 16px 8px; }
+.picker-empty { margin: 6px 0 0; }

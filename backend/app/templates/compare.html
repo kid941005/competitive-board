@@ -5,9 +5,27 @@
 <div id="cfg" data-max="{{ max_compare }}" hidden></div>
 {% include "_header.html" %}
 
-<section class="panel picker">
-  <div class="panel-head with-search">
+<section class="panel picker" id="pickerPanel">
+  {# 折叠头：收起时只留这一行 —— 标题 + 已选摘要 + 展开按钮。
+     型号一多，选择器会占掉整屏，看参数得先滚过它。 #}
+  <div class="panel-head picker-head">
     <h2>选择对比型号</h2>
+    <p class="picker-summary" id="pickSummary">
+      {% if products %}
+      已选 <b>{{ products|length }}</b> / {{ max_compare }}：
+      {% for pr in products %}{{ pr.model }}{% if not loop.last %}、{% endif %}{% endfor %}
+      {% else %}
+      还没选型号
+      {% endif %}
+    </p>
+    <button type="button" class="picker-toggle" id="pickerToggle"
+            aria-expanded="false" aria-controls="pickerBody">
+      <span class="toggle-text">展开选择</span><span class="caret" aria-hidden="true"></span>
+    </button>
+  </div>
+
+  <div class="picker-body" id="pickerBody" hidden>
+  <div class="picker-tools">
     <input type="search" id="chipSearch" class="search picker-search"
            placeholder="搜索公司 / 型号 / 名称…（按 / 聚焦）" autocomplete="off"
            aria-label="搜索型号">
@@ -57,6 +75,7 @@
     <a class="link" href="/compare">重置为默认</a>
     <span class="hint">勾选即刷新，最多 {{ max_compare }} 个型号</span>
   </div>
+  </div>{# /picker-body #}
 </section>
 
 <section class="toolbar">

@@ -104,6 +104,31 @@
 
   syncChipState();
 
+  // ── 选择器折叠 ───────────────────────────────────────────────
+  // 默认收起，把屏幕让给参数表；但同一次会话内记住展开状态 ——
+  // 勾选型号是整页刷新，否则每点一个型号都要重新点开。
+  var pickerBody = document.getElementById("pickerBody");
+  var pickerToggle = document.getElementById("pickerToggle");
+  var PICKER_KEY = "cib.picker.open";
+
+  function setPickerOpen(open) {
+    if (!pickerBody || !pickerToggle) return;
+    pickerBody.hidden = !open;
+    pickerToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    var label = pickerToggle.querySelector(".toggle-text");
+    if (label) label.textContent = open ? "收起选择" : "展开选择";
+    try { sessionStorage.setItem(PICKER_KEY, open ? "1" : "0"); } catch (e) { /* 隐私模式下忽略 */ }
+  }
+
+  if (pickerBody && pickerToggle) {
+    var pickerWasOpen = null;
+    try { pickerWasOpen = sessionStorage.getItem(PICKER_KEY); } catch (e) { /* 同上 */ }
+    if (pickerWasOpen === "1") setPickerOpen(true);
+    pickerToggle.addEventListener("click", function () {
+      setPickerOpen(pickerBody.hidden);
+    });
+  }
+
   // ── 型号搜索 ─────────────────────────────────────────────────
   // 型号一多（几十个往上）靠肉眼在 chips 里找是不现实的。这里只做本地过滤：
   // 数据已经渲染在页面上，不需要请求后端，也不会打断勾选状态。
@@ -157,6 +182,7 @@
       var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
       if (e.key === "/" && !typing) {
         e.preventDefault();
+        if (pickerBody && pickerBody.hidden) setPickerOpen(true);
         chipSearch.focus();
       } else if (e.key === "Escape" && document.activeElement === chipSearch) {
         chipSearch.value = "";
