@@ -78,26 +78,67 @@ esac
 
 say
 say "== 3. 修正属主 =="
-case "$kind" in
-  volume)
-    act docker run --rm -v "$source:/d" alpine chown -R "$TARGET_UID:$TARGET_UID" /d
-    ;;
-  bind)
-    if [[ "$(id -u)" -ne 0 ]]; then
-      say "  bind mount 需要 root 才能改属主，下面这条请手动执行："
-      say "    sudo chown -R $TARGET_UID:$TARGET_UID $source"
-      [[ $APPLY -eq 1 ]] && { say "  （脚本不是以 root 运行，已跳过）"; exit 1; }
-    else
-      act chown -R "$TARGET_UID:$TARGET_UID" "$source"
-    fi
-    ;;
-esac
+# 优先用 docker compose run 复用同一份卷配置。
+# 直接 `docker run -v 卷名:/d` 有个陷阱：卷名写错时 Docker 会**静默创建一个新卷**，
+# chown 成功退出，改的却是一份空卷 —— 命令看起来完全成功，问题一点没解决。
+compose_file=""
+for f in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
+  [[ -f "$f" ]] && { compose_file="$f"; break; }
+done
+
+if [[ -n "$compose_file" ]]; then
+  say "  使用 $compose_file 复用同一份卷配置（避免卷名猜错）"
+  act docker compose run --rm --user root --entrypoint sh "$SERVICE" -c \
+    "chown -R $TARGET_UID:$TARGET_UID /app/data && stat -c '  改后：属主=%u:%g 权限=%a' /app/data"
+else
+  say "  未找到 compose 文件，退回按已识别的挂载操作"
+  case "$kind" in
+    volume)
+      act docker run --rm -v "$source:/d" alpine chown -R "$TARGET_UID:$TARGET_UID" /d
+      ;;
+    bind)
+      if [[ "$(id -u)" -ne 0 ]]; then
+        say "  bind mount 改属主需要 root，请手动执行："
+        say "    sudo chown -R $TARGET_UID:$TARGET_UID $source"
+        [[ $APPLY -eq 1 ]] && { say "  （脚本不是以 root 运行，已跳过）"; exit 1; }
+      else
+        act chown -R "$TARGET_UID:$TARGET_UID" "$source"
+      fi
+      ;;
+  esac
+fi
 
 if [[ $APPLY -eq 0 ]]; then
   say
   say "以上是预演。确认无误后加 --apply 真正执行。"
   exit 0
 fi
+
+say
+say "  复核属主是否真的变了（还是 0:0 说明这个文件系统不支持 chown）："
+after=""
+if [[ -n "$compose_file" ]]; then
+  after=$(docker compose run --rm --user root --entrypoint sh "$SERVICE" -c \
+    'stat -c "%u:%g %a" /app/data' 2>/dev/null || true)
+else
+  after=$(docker run --rm -v "$source:/d" alpine sh -c 'stat -c "%u:%g %a" /d' 2>/dev/null || true)
+fi
+say "  当前 = ${after:-未取到}（期望 $TARGET_UID:$TARGET_UID）"
+case "$after" in
+  "$TARGET_UID:"*)
+    say "  属主已修正"
+    ;;
+  *)
+    say
+    say "  !! 属主没有变成 $TARGET_UID，说明 chown 在这个文件系统上无效。"
+    say "     常见于 SMB/NFS 共享目录（服务端强制映射属主），或 NAS 把卷存在受限文件系统上。"
+    say "     两条出路："
+    say "       a) 让容器以该目录的属主身份运行 —— 在 compose 的 app 服务下加："
+    say "            user: \"<目录属主 uid>:<目录属主 gid>\""
+    say "       b) 把数据目录挪到本地磁盘上的路径（不要用网络共享）"
+    exit 1
+    ;;
+esac
 
 say
 say "== 4. 重启并验证 =="
