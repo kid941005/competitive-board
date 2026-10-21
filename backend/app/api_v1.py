@@ -296,13 +296,29 @@ def _norm_name(name: str) -> str:
     return re.sub(r"[\s\-_.·/\\()（）&]+", "", name or "").casefold()
 
 
-def _resolve_entity_for_create(session: Session, entity_id: int | None,
-                               entity_name: str | None, force: bool) -> tuple[Entity, bool]:
+VALID_ENTITY_KINDS = ("self", "competitor", "customer")
+VALID_ENTITY_TIERS = ("A", "B", "C")
+
+
+def _resolve_entity_for_create(
+    session: Session,
+    entity_id: int | None,
+    entity_name: str | None,
+    force: bool,
+    *,
+    kind: str = "competitor",
+    name_en: str | None = None,
+    region: str | None = None,
+    tier: str = "C",
+) -> tuple[Entity, bool]:
     """返回 (公司, 是否本次新建)。
 
     「命中同名就复用」对建型号是正确的（型号必须挂在已有公司下），但对
     `POST /entities` 就会误导：调用方拿到 201 以为建成了，审计里还多一条
     「新建公司」的假记录。所以要连「是不是真的新建了」一起返回。
+
+    末尾四个关键字参数只对**新建**生效，复用时一律忽略 —— 建型号时顺便建公司
+    走的是默认值（competitor / C），不该因为型号请求里带了什么就改动已有公司。
     """
     if entity_id is not None:
         ent = session.get(Entity, entity_id)
@@ -336,7 +352,7 @@ def _resolve_entity_for_create(session: Session, entity_id: int | None,
             hint="改用它的 entity_id；若确实是另一家，传 force=true",
             details=[_entity_dict(e) for e in similar[:5]],
         )
-    ent = Entity(kind="competitor", name=name, tier="C")
+    ent = Entity(kind=kind, name=name, name_en=name_en, region=region, tier=tier)
     session.add(ent)
     session.flush()
     return ent, True
@@ -438,6 +454,15 @@ class SpecBatch(BaseModel):
 class ImportIn(BaseModel):
     rows: list[dict]
     note: str | None = None
+    dry_run: bool = False
+
+
+class EntityPatch(BaseModel):
+    name: str | None = None
+    kind: str | None = None
+    name_en: str | None = None
+    region: str | None = None
+    tier: str | None = None
     dry_run: bool = False
 
 
@@ -740,7 +765,19 @@ def create_entity(
     if (replayed := _replay(session, key, "POST", "/api/v1/entities")) is not None:
         return replayed
 
-    ent, created = _resolve_entity_for_create(session, None, body.name, body.force)
+    if body.kind not in VALID_ENTITY_KINDS:
+        raise ApiError("VALIDATION_FAILED",
+                       f"kind 只能是 {' / '.join(VALID_ENTITY_KINDS)}", field="kind")
+    if body.tier not in VALID_ENTITY_TIERS:
+        raise ApiError("VALIDATION_FAILED",
+                       f"tier 只能是 {' / '.join(VALID_ENTITY_TIERS)}", field="tier")
+
+    # 以前这里只传了名字，kind/name_en/region/tier 全部被丢弃 —— EntityIn 声明了
+    # 这些字段却不生效，调用方传 kind=self 建出来的仍是 competitor。
+    ent, created = _resolve_entity_for_create(
+        session, None, body.name, body.force,
+        kind=body.kind, name_en=body.name_en, region=body.region, tier=body.tier,
+    )
     dry = _is_dry(request, body)
     data = _entity_dict(ent)
     if dry:
@@ -766,6 +803,92 @@ def create_entity(
     if not dry and created:
         _remember(session, key, "POST", "/api/v1/entities", resp)
     return resp
+
+
+@router.patch("/entities/{entity_id}")
+def patch_entity(
+    entity_id: int,
+    body: EntityPatch,
+    request: Request,
+    principal: Principal = Depends(require_scope("write")),
+    session: Session = Depends(get_session),
+):
+    """改公司元信息：名称、类型（本方/友商/客户）、英文名、地区、档位。
+
+    存在的理由很实际：`POST /entities` 曾经把 kind/name_en/region/tier 全部丢弃
+    （建出来一律是 competitor / C），而没有这个接口，已经建错的公司就只能靠改库。
+    """
+    ent = session.get(Entity, entity_id)
+    if ent is None:
+        raise ApiError("NOT_FOUND", f"公司 id={entity_id} 不存在")
+
+    if body.kind is not None and body.kind not in VALID_ENTITY_KINDS:
+        raise ApiError("VALIDATION_FAILED",
+                       f"kind 只能是 {' / '.join(VALID_ENTITY_KINDS)}", field="kind")
+    if body.tier is not None and body.tier not in VALID_ENTITY_TIERS:
+        raise ApiError("VALIDATION_FAILED",
+                       f"tier 只能是 {' / '.join(VALID_ENTITY_TIERS)}", field="tier")
+
+    before = _entity_dict(ent)
+
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise ApiError("VALIDATION_FAILED", "公司名不能为空", field="name")
+        key = _norm_name(name)
+        for other in session.exec(select(Entity)).all():
+            if other.id != ent.id and _norm_name(other.name) == key:
+                raise ApiError("ENTITY_EXISTS", f"公司名 {name} 已被占用", field="name")
+        ent.name = name
+
+    if body.kind is not None and body.kind != ent.kind:
+        if body.kind == "customer":
+            # 客户不是竞品来源：名下还有型号时改成客户，会让那些型号失去归属
+            owned = session.exec(
+                select(func.count()).select_from(Product).where(Product.entity_id == ent.id)
+            ).one()
+            if owned:
+                raise ApiError(
+                    "VALIDATION_FAILED",
+                    f"该公司下有 {int(owned)} 个型号，不能改成客户",
+                    field="kind",
+                    hint="客户不是竞品来源；要保留型号就不能改成 customer",
+                )
+        ent.kind = body.kind
+
+    if body.name_en is not None:
+        ent.name_en = body.name_en.strip() or None
+    if body.region is not None:
+        ent.region = body.region.strip() or None
+    if body.tier is not None:
+        ent.tier = body.tier
+
+    session.add(ent)
+    after = _entity_dict(ent)
+    changes = [
+        {"field": label, "old": before[key], "new": after[key]}
+        for key, label in (
+            ("name", "名称"), ("kind", "类型"), ("name_en", "英文名"),
+            ("region", "地区"), ("tier", "档位"),
+        )
+        if before[key] != after[key]
+    ]
+
+    if _is_dry(request, body):
+        session.rollback()
+        return ok(after, dry_run=True, hint="预演：未落库")
+    if not changes:
+        session.rollback()
+        return ok(after, hint="没有变化")
+
+    actor, actor_kind = _actor(principal)
+    audit.record(
+        session, actor=actor, actor_kind=actor_kind, action="update", object_type="entity",
+        object_id=ent.id, label=before["name"], changes=changes, origin="api",
+        note="改公司元信息", request_id=uuid.uuid4().hex[:12],
+    )
+    session.commit()
+    return ok(after)
 
 
 @router.post("/products")
@@ -1264,6 +1387,27 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                 "properties": {
                     "q": {"type": "string", "description": "公司名关键词"},
                     "kind": {"type": "string", "enum": ["self", "competitor", "customer"]},
+                },
+            },
+        },
+        {
+            "name": "update_entity",
+            "method": "PATCH", "path": "/api/v1/entities/{entity_id}",
+            "description": (
+                "改公司元信息：名称、类型（self 本方 / competitor 友商 / customer 客户）、"
+                "英文名、地区、档位。只传要改的字段。名下有型号的公司不能改成客户。"
+            ),
+            "scope": "write",
+            "parameters": {
+                "type": "object", "required": ["entity_id"],
+                "properties": {
+                    "entity_id": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["self", "competitor", "customer"]},
+                    "name_en": {"type": "string"},
+                    "region": {"type": "string"},
+                    "tier": {"type": "string", "enum": ["A", "B", "C"]},
+                    "dry_run": {"type": "boolean"},
                 },
             },
         },

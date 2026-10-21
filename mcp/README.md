@@ -82,12 +82,13 @@ printf '%s\n' \
 
 ## 工具清单
 
-从 `/api/v1/tools` 动态拉，当前 13 个：
+从 `/api/v1/tools` 动态拉，当前 14 个：
 
 | 用途 | 工具 |
 |---|---|
 | 摸骨架 | `get_context` |
 | 检索 | `search_products`、`search_companies`、`search_metrics` |
+| 改公司 | `update_entity`（名称 / 类型 self·competitor·customer / 英文名 / 地区 / 档位） |
 | 读详情 | `get_product`、`compare_products`、`get_changes` |
 | 写产品 | `create_product`、`update_product`、`delete_product` |
 | 写参数 | `write_specs`、`bulk_import` |
