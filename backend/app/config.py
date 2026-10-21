@@ -7,7 +7,15 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("CIB_DATA_DIR", BASE_DIR / "data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# 目录的创建与可写性检查交给 db.init_db()：那里能拿到当前 uid 与目录属主，
+# 报错才说得清是「路径不对」还是「没有写权限」。
+# 这里只做一次尽力而为的创建，失败不抛 —— 否则容器里会变成 import 阶段
+# 一句 PermissionError，比 SQLite 的 unable to open database file 更难查。
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 
 # 规格书原文与解析结果落在这里：<doc_id>.<ext> + <doc_id>.json。
 # 单独成常量是因为「写入」（页面路由）与「清理」（datasheet_store）都要用到它。

@@ -32,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:0.9.0
+  ghcr.io/kid941005/competitive-board:0.9.1
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -511,9 +511,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001）、时区、数据卷、健康检查、启动时等待 PostgreSQL、首次启动自动灌示例数据。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 205 项测试，通过才推**。标签有 `0.9.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 211 项测试，通过才推**。标签有 `0.9.1`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本由 `CIB_IMAGE_TAG` 决定，默认 `0.9.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
+版本由 `CIB_IMAGE_TAG` 决定，默认 `0.9.1` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -552,27 +552,27 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:0.9.0
+  ghcr.io/kid941005/competitive-board:0.9.1
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=0.9.0 -t competitive-board:0.9.0 ./backend
+docker build --build-arg APP_VERSION=0.9.1 -t competitive-board:0.9.1 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -e CIB_SEED_DEMO=1 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.9.0
+  competitive-board:0.9.1
 ```
 
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `CIB_IMAGE_TAG` | `0.9.0` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
+| `CIB_IMAGE_TAG` | `0.9.1` | compose 使用的镜像标签；填 `latest` 跟最新，填 `local` 区分本地构建 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
 | `DATABASE_URL` | 空 | 空则用 SQLite；填 `postgresql+psycopg://…` 则用 PG |
 | `CIB_SEED_DEMO` | `1` | 首次启动写入示例数据；库里已有数据自动跳过 |
@@ -610,6 +610,21 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 ### 三个要注意的点
 
 1. **数据目录优先用命名卷，不要 bind mount 宿主目录。** 当前环境是 Windows + Docker Desktop，bind mount 对 SQLite 的 I/O 折损明显，还可能遇到文件锁与权限问题。需要取文件时用 `docker cp`。
+
+   非要 bind mount（比如在 NAS 上把数据放进共享文件夹）时，**宿主目录必须对容器内的 uid 10001 可写**，否则启动即失败：
+
+   ```bash
+   sudo chown -R 10001:10001 /path/to/your/data
+   ```
+
+   否则会看到 `sqlite3.OperationalError: unable to open database file` —— 这句话只有一种写法，却对应三种成因（目录不存在 / 没写权限 / 磁盘满），从日志里分不出来。现在启动时会先自检数据目录，报错正文直接给出当前 uid、目录属主、权限位和上面这条修复命令。
+
+   不想手敲的话，仓库里有一个脚本会自动判断是命名卷还是 bind mount 并修正：
+
+   ```bash
+   bash scripts/fix-data-perms.sh           # 预演，只打印将要执行的动作
+   bash scripts/fix-data-perms.sh --apply   # 执行 + 重启 + 等健康检查
+   ```
 2. **端口默认只绑 `127.0.0.1`。** 对外访问请加反向代理并启用 HTTPS。应用自带登录与双角色权限
    （见上文「账号与权限」），但仍不建议直接暴露公网：初始管理员密码会打印在容器日志里，
    第一次登录后务必先改掉。
@@ -626,7 +641,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.0` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.1` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
@@ -649,13 +664,14 @@ python tests/test_channel_parity.py   # 13 项：四条写入通道的规则一�
 python tests/test_schema.py           #  6 项：表结构迁移（新库 / 老库升级去重 / 版本过新拒启 / 唯一约束兜底）
 python tests/test_retention.py        #  4 项：规格书原文保留（被引用的不删、过期的删、未到期留着）
 python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
+python tests/test_datadir.py          #  6 项：数据目录自检（不可写 / 建不出 / 磁盘满各有各的话）
 python tests/test_search.py           # 13 项：检索（公司名/产品名/型号、多词 AND、通配符转义、matched）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与后端同一套语义）
 # 或 pytest tests/
 ```
 
-共 **205 项**（后端 186 + 前端 19）。覆盖内容：
+共 **211 项**（后端 192 + 前端 19）。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -670,6 +686,7 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 - **表结构与迁移**：全新库补齐索引与版本号、0.7.x 老库带着重复数据升级（合并型号 / 去重参数 / 留审计）、库比代码新时拒绝启动、唯一索引在并发下回 409、同一批内重复项不炸
 - **规格书保留**：被参数引用的永不删、过期且无引用的连原文一起删、未到期保留、`keep_days=0` 关闭清理
 - **登录限速**：第 5 次失败后开始退避、第 6 次返回 429 + `Retry-After`、退避期内正确密码也不放行、成功登录清零、不影响其他账号
+- **数据目录自检**：可写时通过且不留探针文件、不可写时报出 uid/属主/权限位与修复命令、目录建不出与不可写不混成一句、路径是文件时说「不是目录」、磁盘满时报出剩余字节、`init_db` 顺手建出 `datasheets` 子目录
 - **检索**：`q` 命中公司中文名/英文名/型号/产品名、多词按 AND、`%` 与 `_` 按字面量、`matched` 字段、与 `category`/`kind` 叠加、空关键词不过滤
 - **前端过滤**（`test_filter.js`，无 DOM）：大小写、多词 AND、空串、`%` 不具通配含义
 - **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
@@ -725,6 +742,7 @@ backend/
 │                         test_import_export / test_product_edit / test_api_v1
 │                         test_audit / test_labels / test_fixes / test_auth
 │                         test_channel_parity / test_schema / test_retention / test_throttle
+│                         test_datadir
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt
