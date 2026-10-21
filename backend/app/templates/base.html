@@ -13,6 +13,10 @@
 </head>
 <body>
   {% block body %}{% endblock %}
+  <footer class="appfoot">
+    <span>竞品情报看板 · 压电领域友商参数对比</span>
+    <span class="ver" title="当前运行版本，升级后这里会跟着变">v{{ app_version }}</span>
+  </footer>
   <script src="/static/confirm.js?v={{ asset_v }}" defer></script>
   {% block scripts %}{% endblock %}
 </body>

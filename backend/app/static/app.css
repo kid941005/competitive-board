@@ -502,6 +502,17 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 .forbid-hint { color: var(--warn); }
 .forbid-note { color: var(--text-3); font-size: 12px; }
 
+/* ── 页脚 ── */
+/* 只放「看板名 + 版本号」。版本号要能一眼读到 —— 用户报问题时第一句话
+   往往是「我这是哪一版」，省去来回确认。 */
+.appfoot {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  margin-top: 28px; padding: 10px 2px 0;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px; color: var(--text-3);
+}
+.appfoot .ver { font-family: var(--mono); letter-spacing: .02em; }
+
 /* ── 提示条 ── */
 .flash { margin: 0 0 12px; padding: 9px 13px; border-radius: 8px; font-size: 13px; }
 .flash.ok { background: var(--best-bg); color: var(--best-fg); border: 1px solid var(--best-line); }

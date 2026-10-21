@@ -79,6 +79,18 @@ def _metric_id(key: str) -> int:
 
 
 # ── 鉴权与信封 ─────────────────────────────────────────────────────────────
+def test_health_exposes_app_version():
+    """`/health` 的 version 是接口版本（永远 v1），部署到底是哪一版只能看 app_version。"""
+    from app.main import app as _app
+
+    c = TestClient(app)
+    c.__enter__()
+    data = c.get("/api/v1/health").json()["data"]
+    assert data["status"] == "ok"
+    assert data["version"] == "v1"
+    assert data["app_version"] == _app.version, data
+
+
 def test_missing_credentials_is_401_envelope():
     c = TestClient(app)
     c.__enter__()

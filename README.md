@@ -32,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:0.9.7
+  ghcr.io/kid941005/competitive-board:0.9.8
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -157,6 +157,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号；列表按大类分段，支持关键词 + 公司 + 大类筛选；型号详情页可记录**客户采用**（谁在用这款泵） |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 | 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
+| 页脚版本号 | 每页底部显示当前运行的 `vX.Y.Z`（含登录页），`/api/v1/health` 也回 `app_version` |
 
 ### 搜索与筛选
 
@@ -645,9 +646,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 307 项测试，通过才推**。标签有 `0.9.7`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 309 项测试，通过才推**。标签有 `0.9.8`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `0.9.7` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
+版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `0.9.8` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -690,19 +691,19 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:0.9.7
+  ghcr.io/kid941005/competitive-board:0.9.8
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=0.9.7 -t competitive-board:0.9.7 ./backend
+docker build --build-arg APP_VERSION=0.9.8 -t competitive-board:0.9.8 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:0.9.7
+  competitive-board:0.9.8
 ```
 
 ### 配置项在哪改
@@ -713,7 +714,7 @@ docker run -d --name competitive-board \
 
 | 位置 | 当前值 | 作用 |
 |---|---|---|
-| `image:` 的标签 | `0.9.7` | 镜像版本。升级就改这里，再 `docker compose pull` |
+| `image:` 的标签 | `0.9.8` | 镜像版本。升级就改这里，再 `docker compose pull` |
 | `user:` | `10001:10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）改这里，就不必 `chown` 目录；改 `"0:0"` 则以 root 运行 |
 | `ports:` | `127.0.0.1:8000:8000` | 宿主端口。只绑回环，对外访问需反向代理 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
@@ -785,7 +786,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.7` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `0.9.8` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
@@ -799,7 +800,7 @@ python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨�
 python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
 python tests/test_import_export.py    # 14 项：宽表导入、液泵列映射、全量备份导出（含往返）
 python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
-python tests/test_api_v1.py           # 23 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算
+python tests/test_api_v1.py           # 24 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算
 python tests/test_units.py            # 21 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义）
 python tests/test_adoptions.py        # 11 项：客户采用关系（页面 + API、重复拒收、同名复用、审计）
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
@@ -815,7 +816,7 @@ python tests/test_empty_startup.py    #  7 项：空库启动、空状态文案�
 python tests/test_user_profile.py     #  7 项：账号名与显示名可编辑（改名生效、重名拒、审计留旧名）
 python tests/test_mcp_server.py       # 20 项：MCP 适配层（协议、参数分流、真实 stdio 往返）
 python tests/test_entity_meta.py      # 13 项：建公司不丢字段、导入认自家公司、PATCH 改元信息、客户校验、审计
-python tests/test_ui_contract.py      #  8 项：页面渲染契约（StrictUndefined 下全页面、flash 提示、403 页）
+python tests/test_ui_contract.py      #  9 项：页面渲染契约（StrictUndefined 下全页面、页脚版本号、flash 提示、403 页）
 python tests/test_search.py           # 13 项：检索（公司名/产品名/型号、多词 AND、通配符转义、matched）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与后端同一套语义）

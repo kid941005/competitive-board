@@ -545,7 +545,13 @@ class TokenIn(BaseModel):
 # ── 查询面 ─────────────────────────────────────────────────────────────────
 @router.get("/health")
 def health():
-    return ok({"status": "ok", "version": "v1"})
+    """version 是**接口版本**（v1，路径前缀就是这个）；app_version 是**应用版本**。
+
+    两个都返回，是因为「查部署的到底是哪一版」只能靠后者 —— 前者永远等于 v1。
+    """
+    from .main import app as _app
+
+    return ok({"status": "ok", "version": "v1", "app_version": _app.version})
 
 
 @router.get("/context")

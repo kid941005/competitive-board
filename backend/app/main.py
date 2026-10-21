@@ -82,7 +82,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="0.9.7", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="0.9.8", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -95,6 +95,9 @@ app.include_router(admin_router)
 # 静态资源版本号：前端改动后改 app.version 即可让浏览器重新拉取，
 # 避免「代码已修复但用户还跑着缓存里的旧脚本」这种假象。
 templates.env.globals["asset_v"] = app.version
+# 页脚显示的版本号：与 app.version 同源（CI 会校验这个字面值与各 compose/README 一致），
+# 用户报问题时一眼能说出「我这是哪一版」。
+templates.env.globals["app_version"] = app.version
 # 库里存 UTC、界面按部署时区显示：模板里一律用 {{ ts | localtime }}，不要再裸 strftime
 templates.env.filters["localtime"] = fmt_local
 

@@ -96,6 +96,25 @@ def test_pages_render_under_strict_undefined():
     assert not bad, f"以下页面引用了 context 里没有的变量：{bad}"
 
 
+def test_footer_shows_app_version_everywhere():
+    """页脚版本号必须在**所有**页面出现，且等于 app.version。
+
+    它来自模板全局（main.py 里与 app.version 同源），所以登录页（没有 _ctx）也得有；
+    这正是最容易漏的一个渲染点。
+    """
+    from app.main import app as _app
+
+    c = _boot(seed_data=True)
+    login = c.get("/login")          # 未登录页也要有
+    pages = [("/login", login.text)]
+    for path in ("/compare", "/products", "/import", "/admin/settings"):
+        pages.append((path, c.get(path).text))
+
+    for name, html in pages:
+        assert '<footer class="appfoot">' in html, f"{name} 缺页脚"
+        assert f'v{_app.version}' in html, f"{name} 页脚版本号不是 v{_app.version}"
+
+
 def test_not_found_page_renders():
     c = _boot(seed_data=True)
     r = c.get("/products/99999")
@@ -171,6 +190,7 @@ ORDER = [
     test_csrf_failure_page_offers_relogin,
     test_admin_logs_shows_flash,
     test_purge_then_redirect_carries_message,
+    test_footer_shows_app_version_everywhere,
 ]
 
 
