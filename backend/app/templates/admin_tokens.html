@@ -94,12 +94,15 @@
 </section>
 
 <section class="panel notes">
-  <div class="panel-head"><h2>四个约定</h2></div>
+  <div class="panel-head"><h2>五条约定</h2></div>
   <ul class="plainlist">
     <li><b>令牌不走 Cookie</b>，所以不校验 CSRF —— 浏览器那套防护一条都没放松。</li>
     <li><b>明文只显示一次</b>，库里只存 sha256；丢了就吊销重签。</li>
     <li><b>scope 最小化</b>：只读的助手别给 write。admin 隐含全部权限，慎用。</li>
     <li><b>写完可吊销</b>：调用方立刻 401，无需重启服务。</li>
+    <li><b>交给外部 AI 时只给令牌，不要给账号密码</b>：令牌只能做 scope 内的事，能单独吊销；
+      密码能登整个后台、能签发新令牌。同时它的地址必须从外部可达（内网地址与
+      <code>127.0.0.1</code> 在别人机器上不存在），且应走 HTTPS。</li>
   </ul>
 </section>
 {% endblock %}

@@ -94,7 +94,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 查看对比矩阵、参数溯源 | `data:view` | ✓ | ✓ |
 | 导出 CSV / JSON | `data:export` | ✓ | ✓ |
 | 导入规格书、CSV 导入、写入参数 | `data:write` | ✓ | ✗ |
-| 账号管理：新建、改角色、停用、重置密码 | `admin:users` | ✓ | ✗ |
+| 账号管理：新建、改账号名/显示名、改角色、停用、重置密码 | `admin:users` | ✓ | ✗ |
 | 系统参数配置 | `admin:settings` | ✓ | ✗ |
 
 一句话概括：**普通用户是只读的** —— 能看、能按条件筛选、能导出，但改不了任何数据，也进不了管理面。
@@ -126,6 +126,8 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 - Cookie `HttpOnly` + `SameSite=Lax`；HTTPS 部署必须设 `CIB_COOKIE_SECURE=1`
 - 所有非幂等请求校验 CSRF 双重提交令牌（表单字段 `_csrf` 或请求头 `X-CSRF-Token`）
 - 改密码、把管理员降级、停用账号，都会**立即吊销该用户全部会话**
+- **改账号名不吊销会话**：会话按用户 ID 关联，不认账号名，所以管理员改自己的名字不会掉线；
+  但旧账号名**立即无法登录**，新名生效。变更日志里的 `actor` 保留当时的名字（历史就是历史）
 - 登录失败对「账号不存在」与「密码错误」返回同一提示，且都走一次哈希校验，避免时间侧信道枚举账号
 - **登录失败限速**：按「IP + 账号」计数，连续失败 5 次后指数退避（30 秒起，封顶 15 分钟），
   成功即清零；同一 IP 对所有账号的失败总量另设上限（防换着用户名扫）。命中时返回 429 + `Retry-After`。
@@ -340,6 +342,27 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d 
 
 > 令牌走 Bearer 头、不走 Cookie，所以**不校验 CSRF**——浏览器侧的防护一条都没放松。
 
+### 把访问权交给外部 AI 或脚本
+
+需要给的只有两样：
+
+| 给什么 | 例子 | 说明 |
+|---|---|---|
+| 地址 | `https://cib.example.com` | 给根地址即可，不要带 `/api/v1`（那是路径前缀） |
+| 令牌 | `cib_8d42aa34_…` | 在「API 令牌」页签发；明文只显示一次 |
+
+**不要给账号密码。** 密码能登整个后台、能改系统参数、能再签发令牌；令牌只能做 scope 内的事，且可以单独吊销 —— 这就是它存在的理由。
+
+三条硬前提，缺一条对方就用不了：
+
+1. **对方能访问到那个地址。** 内网地址（`192.168.*`、`10.*`、`172.16–31.*`）在别人机器上不存在，除非做了端口映射、VPN 或内网穿透；同一台机器上的 `127.0.0.1` 同理。
+2. **走 HTTPS。** 令牌是明文请求头，HTTP 下等于明文传输。公网部署必须加反向代理并启用证书。
+3. **scope 最小化。** 只读就给 `read`；要替你录数据才加 `write`；`admin` 能签令牌、看全部审计，只在写脚本自用时才给。
+
+按用途分开签（「情报助手」只读、「录入助手」读写），出问题时吊销那一个，其余不受影响。
+
+对方拿到地址与令牌后，第一步应该调 `GET /api/v1/tools` —— 那是机器可读的能力清单（含参数的 JSON Schema），比让人读文档可靠。
+
 ---
 
 ## 变更日志
@@ -506,7 +529,7 @@ python -m app.seed --force
 | POST | `/products/{id}/specs` | 保存参数值 / 条件 / 复核状态 | `data:write` |
 | POST | `/products/{id}/delete` | 删除型号及其参数 | `data:write` |
 | GET | `/admin/users` | 账号管理页 | `admin:users` |
-| POST | `/admin/users/create` · `/{uid}/role` · `/{uid}/toggle` · `/{uid}/password` | 建号 / 改角色 / 停用启用 / 重置密码 | `admin:users` |
+| POST | `/admin/users/create` · `/{uid}/profile` · `/{uid}/role` · `/{uid}/toggle` · `/{uid}/password` | 建号 / 改账号名与显示名 / 改角色 / 停用启用 / 重置密码 | `admin:users` |
 | GET | `/admin/settings` | 系统设置页 | `admin:settings` |
 | POST | `/admin/settings` | 保存系统参数 | `admin:settings` |
 | GET | `/healthz` | 健康检查（容器探针，不鉴权） | — |
@@ -523,7 +546,7 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 218 项测试，通过才推**。标签有 `0.9.3`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 225 项测试，通过才推**。标签有 `0.9.3`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
 版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `0.9.3` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
@@ -688,13 +711,14 @@ python tests/test_retention.py        #  4 项：规格书原文保留（被引�
 python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
 python tests/test_datadir.py          #  6 项：数据目录自检（不可写 / 建不出 / 磁盘满各有各的话）
 python tests/test_empty_startup.py    #  7 项：空库启动、空状态文案、应用模板、幂等、权限
+python tests/test_user_profile.py     #  7 项：账号名与显示名可编辑（改名生效、重名拒、审计留旧名）
 python tests/test_search.py           # 13 项：检索（公司名/产品名/型号、多词 AND、通配符转义、matched）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与后端同一套语义）
 # 或 pytest tests/
 ```
 
-共 **218 项**（后端 199 + 前端 19）。覆盖内容：
+共 **225 项**（后端 206 + 前端 19）。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -709,6 +733,7 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 - **表结构与迁移**：全新库补齐索引与版本号、0.7.x 老库带着重复数据升级（合并型号 / 去重参数 / 留审计）、库比代码新时拒绝启动、唯一索引在并发下回 409、同一批内重复项不炸
 - **规格书保留**：被参数引用的永不删、过期且无引用的连原文一起删、未到期保留、`keep_days=0` 关闭清理
 - **登录限速**：第 5 次失败后开始退避、第 6 次返回 429 + `Retry-After`、退避期内正确密码也不放行、成功登录清零、不影响其他账号
+- **账号改名**：只改显示名不动账号名、改名后旧名立即无法登录而新名可登、重名与非法字符被拒且不落库、没变化不写日志、普通用户 403、管理员改自己名字不掉线且审计的 actor 记旧名
 - **空库启动**：只有表与管理员的空库、空状态分「无字典」与「有字典无产品」两种话术、应用模板只写 20 个指标不建公司、重复应用不重复写、普通用户不能应用模板、幂等判断跟着模式走
 - **数据目录自检**：可写时通过且不留探针文件、不可写时报出 uid/属主/权限位与修复命令、目录建不出与不可写不混成一句、路径是文件时说「不是目录」、磁盘满时报出剩余字节、`init_db` 顺手建出 `datasheets` 子目录
 - **检索**：`q` 命中公司中文名/英文名/型号/产品名、多词按 AND、`%` 与 `_` 按字面量、`matched` 字段、与 `category`/`kind` 叠加、空关键词不过滤
@@ -766,7 +791,7 @@ backend/
 │                         test_import_export / test_product_edit / test_api_v1
 │                         test_audit / test_labels / test_fixes / test_auth
 │                         test_channel_parity / test_schema / test_retention / test_throttle
-│                         test_datadir / test_empty_startup
+│                         test_datadir / test_empty_startup / test_user_profile
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt

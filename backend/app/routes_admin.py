@@ -16,6 +16,7 @@ from .models import SpecMetric
 from .web_shared import _ctx, _perm, _perm_user, _redirect, _rid, templates
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
+MAX_DISPLAY_NAME = 32
 LOG_ACTIONS = (("create", "新建"), ("update", "修改"), ("delete", "删除"), ("import", "导入"))
 LOG_OBJECTS = (
     ("product", "型号"), ("spec", "参数"), ("entity", "公司"),
@@ -103,6 +104,72 @@ def admin_create_user(
     )
     session.commit()
     return _redirect("/admin/users", f"已创建 {name}（{auth.ROLE_LABEL[role]}）")
+
+
+@router.post("/admin/users/{uid}/profile")
+def admin_update_profile(
+    uid: int,
+    username: str = Form(...),
+    display_name: str = Form(default=""),
+    _csrf: None = Depends(auth.verify_csrf),
+    actor: User = Depends(_perm_user(P_USERS)),
+    session: Session = Depends(get_session),
+):
+    """改账号名与显示名。
+
+    账号名就是登录名：改完旧名立即无法登录、新名生效。**当前会话不受影响** ——
+    会话表按 user_id 关联，不认账号名，所以改自己的名字不会被踢出去。
+    历史审计里的 actor 是当时写下的字符串，改名后仍显示旧名，这是对的（历史就是历史）。
+    """
+    # actor 与 target 可能是同一行（管理员改自己）。先取快照：若先改名，
+    # 「谁做的」会被写成新名字，日志与历史对不上。
+    actor_name = actor.username
+    target = session.get(User, uid)
+    if target is None:
+        return _redirect("/admin/users", "账号不存在", "err")
+
+    name = username.strip()
+    if not USERNAME_RE.match(name):
+        return _redirect("/admin/users", "账号名需为 3–32 位字母、数字、下划线、点或短横线", "err")
+    display = display_name.strip()
+    if len(display) > MAX_DISPLAY_NAME:
+        return _redirect("/admin/users", f"显示名最多 {MAX_DISPLAY_NAME} 个字符", "err")
+
+    # 唯一性自己先拦一道：唯一索引也会拦，但那会抛 IntegrityError 变成 500
+    clash = session.exec(select(User).where(User.username == name)).first()
+    if clash is not None and clash.id != target.id:
+        return _redirect("/admin/users", f"账号名 {name} 已被占用", "err")
+
+    old_name, old_display = target.username, (target.display_name or "")
+    changes: list[dict] = []
+    if name != old_name:
+        changes.append({"field": "账号", "old": old_name, "new": name})
+        target.username = name
+    if display != old_display:
+        changes.append({"field": "显示名", "old": old_display or None, "new": display or None})
+        target.display_name = display or None
+
+    if not changes:
+        return _redirect("/admin/users", "账号信息没有变化")
+
+    if len(changes) == 2:
+        note = "同时改了账号名与显示名；旧账号名立即无法登录"
+    elif changes[0]["field"] == "账号":
+        note = "改账号名；旧账号名立即无法登录，当前会话不受影响"
+    else:
+        note = "改显示名"
+
+    session.add(target)
+    audit.record(
+        session, actor=actor_name, action="update", object_type="user",
+        object_id=target.id, label=old_name, changes=changes,
+        note=note, request_id=_rid(),
+    )
+    session.commit()
+
+    if name != old_name:
+        return _redirect("/admin/users", f"{old_name} 已改名为 {name}（下次登录请用新账号名）")
+    return _redirect("/admin/users", f"{target.username} 的显示名已改为 {display or '（空）'}")
 
 
 @router.post("/admin/users/{uid}/role")

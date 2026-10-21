@@ -41,8 +41,13 @@
 <section class="panel">
   <div class="panel-head">
     <h2>账号列表</h2>
-    <span class="hint">共 {{ users|length }} 个，启用中的管理员 {{ active_admin_count }} 名</span>
+    <span class="hint">共 {{ users|length }} 个，启用中的管理员 {{ active_admin_count }} 名 · 「编辑」可改账号名与显示名</span>
   </div>
+
+  <p class="hint users-note">
+    账号名就是<b>登录名</b>，改完旧名立即无法登录、新名生效；显示名只影响右上角与列表的显示。
+    改自己的名字不会掉线（会话按用户 ID 记，不认账号名）。
+  </p>
 
   <div class="table-wrap users-wrap">
     <table class="matrix usertable">
@@ -70,6 +75,18 @@
           <td class="mono dim">{{ u.created_at | localtime('%Y-%m-%d') or '—' }}</td>
           <td class="mono dim">{{ u.last_login_at | localtime('%m-%d %H:%M') or '—' }}</td>
           <td class="rowacts">
+            <details class="pwdreset profileedit">
+              <summary class="link">编辑</summary>
+              <form method="post" action="/admin/users/{{ u.id }}/profile" class="inlinerow">
+                <input type="hidden" name="_csrf" value="{{ csrf }}">
+                <input type="text" name="username" value="{{ u.username }}" maxlength="32"
+                       placeholder="账号名" aria-label="账号名" required>
+                <input type="text" name="display_name" value="{{ u.display_name or '' }}" maxlength="32"
+                       placeholder="显示名（选填）" aria-label="显示名">
+                <button type="submit" class="link">保存</button>
+              </form>
+            </details>
+
             <form method="post" action="/admin/users/{{ u.id }}/role" class="inlinerow">
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <select name="role" aria-label="角色">

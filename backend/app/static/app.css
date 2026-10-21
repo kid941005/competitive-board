@@ -515,6 +515,12 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 .pwdreset summary { cursor: pointer; list-style: none; }
 .pwdreset summary::-webkit-details-marker { display: none; }
 .pwdreset[open] { display: flex; gap: 6px; align-items: center; }
+/* 「编辑」要放账号名 + 显示名两个输入，比重置密码那一行宽。
+   展开时让表单独占下一行 —— 否则「保存」紧挨着后面的「改角色」下拉，
+   看着像是"保存角色"。 */
+.pwdreset.profileedit[open] { flex-direction: column; align-items: flex-start; gap: 6px; }
+.profileedit input[type="text"] { width: 110px; }
+.users-note { padding: 0 16px 10px; line-height: 1.6; }
 .permtable th, .permtable td { padding: 7px 12px; font-size: 12.5px; }
 
 /* ── 系统设置 ── */
