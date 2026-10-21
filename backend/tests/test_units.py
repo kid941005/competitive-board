@@ -223,6 +223,65 @@ def test_import_without_unit_column_mean_is_metric_unit():
         _close(s)
 
 
+# ── 未公开的写法与「单位就是字典单位」─────────────────────────────────────
+def test_temperature_cell_accepts_metric_own_unit():
+    """「0~45 ℃」必须落成 45 ℃。
+
+    ℃ 刻意不在换算表里（℉↔℃ 要偏移量，不是纯因子），于是「认不出的单位就报错」
+    那条护栏把整列温度全拦了下来 —— 单位写的就是字典自己的单位，根本不需要换算。
+    """
+    s = _session()
+    try:
+        rep = import_csv(s, _csv(**{"产品型号": "TEMP-1", "温度范围": "0~45 ℃"}))
+        assert rep.errors == [], rep.errors
+        spec = _spec("TEMP-1", "op_temp_max")
+        assert spec is not None and spec.value_num == 45, spec
+        assert spec.condition == "原文 0~45", spec.condition
+    finally:
+        _close(s)
+
+
+def test_missing_with_parenthetical_note_is_not_an_error():
+    """「待补充（官方仅给风速 1.4–1.8 m/s）」是未公开，不是要解析的数字。
+
+    括注是给人看的补充说明。当成值去解析会报「单位 m/s 认不出」，
+    看起来像数据出错，实际是这格本来就没公开。
+    """
+    s = _session()
+    try:
+        rep = import_csv(s, _csv(**{
+            "产品型号": "MISS-1",
+            "流量L/min": "待补充（官方仅给风速 1.4–1.8 m/s）",
+        }))
+        assert rep.errors == [], rep.errors
+        assert rep.written_specs == 0
+        assert rep.skipped_missing == 1, rep.as_dict()
+        # 整行只有一格「未公开」，不该顺手建出一个空型号
+        assert _product("MISS-1") is None
+
+        # 文本型指标的同类写法相反：原文就是值，括注里有信息，必须存下来
+        rep2 = import_csv(s, _csv(**{
+            "产品型号": "MISS-2", "外形尺寸": "未公开（全系列约 7 cm³）",
+        }))
+        assert rep2.errors == [], rep2.errors
+        assert rep2.written_specs == 1, rep2.as_dict()
+        assert _spec("MISS-2", "size").value_text == "未公开（全系列约 7 cm³）"
+    finally:
+        _close(s)
+
+
+def test_unknown_unit_is_still_rejected():
+    """上面两条放宽不能把护栏拆掉：phon 是真换不了的单位（声压级口径不同），必须报错。"""
+    s = _session()
+    try:
+        rep = import_csv(s, _csv(**{"产品型号": "PHON-1", "噪音": "＜10 phon"}))
+        assert any("phon" in e for e in rep.errors), rep.errors
+        assert rep.written_specs == 0
+        assert _product("PHON-1") is None, "整行只有非法值，不该建出空型号"
+    finally:
+        _close(s)
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

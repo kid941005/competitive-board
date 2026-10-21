@@ -20,7 +20,7 @@ from .models import ADOPTION_STATUS, Adoption, Entity
 _NAME_NOISE = re.compile(r"[\s\-_.·/\\()（）]+")
 
 # 「关联客户（有公开证据）」这类自由文本里，一条记录用这些符号分隔
-_SPLIT = re.compile(r"[；;、\n]+")
+_SPLIT_CHARS = "；;、\n"
 # 「华为（WATCH D2 第三方拆解确认）」→ 名字 = 华为，括注 = 证据
 _PAREN = re.compile(r"^([^（(]+)[（(](.*)[）)]\s*$")
 # 这些是「没有客户证据」的占位写法，不能当成客户名建出实体
@@ -29,6 +29,30 @@ _PLACEHOLDERS = {"待补充", "待定", "无", "暂无", "未知", "—", "-", "
 
 def norm_name(name: str) -> str:
     return _NAME_NOISE.sub("", (name or "").strip()).lower()
+
+
+def _split_outside_parens(text: str) -> list[str]:
+    """按 ；/;、/、/换行 切分，但**括号里的分隔符不切**。
+
+    「传音控股（Infinix NOTE 60 已量产上机；另 Infinix GT 50 Pro 压电液冷 6.5 mL/min）」
+    是一家公司加一段证据。按「；」硬切会切出两个假客户：一个名字被截断（括注没闭合）、
+    一个以「另…）」开头 —— 两个都会在客户档案里各建一份，还都挂着采用记录。
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in text or "":
+        if ch in "（(":
+            depth += 1
+        elif ch in "）)":
+            depth = max(0, depth - 1)
+        elif ch in _SPLIT_CHARS and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
 
 
 def find_by_name(session: Session, name: str) -> Entity | None:
@@ -102,7 +126,7 @@ def split_customer_text(text: str) -> list[tuple[str, str | None]]:
     """把「华为（WATCH D2 拆解确认）；欧姆龙（HeartGuide 2019）」拆成
     [(客户名, 证据或 None), ...]。占位写法（待补充 / 无）直接丢掉。"""
     out: list[tuple[str, str | None]] = []
-    for chunk in _SPLIT.split(text or ""):
+    for chunk in _split_outside_parens(text):
         piece = chunk.strip().strip("。.")
         if not piece or piece.lower() in _PLACEHOLDERS:
             continue

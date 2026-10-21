@@ -321,6 +321,28 @@ def test_etag_changes_when_adoption_is_added():
     assert [a["customer"] for a in second.json()["data"]["adoptions"]] == ["ETag 客户"]
 
 
+def test_customer_text_splits_only_outside_parentheses():
+    """「；」在括号里时不能切 —— 那是同一家公司的证据，不是第二个客户。
+
+    真实数据里就有这一格：
+    `传音控股（Infinix NOTE 60 已量产上机；另 Infinix GT 50 Pro 压电液冷 6.5 mL/min）`
+    按「；」硬切会切出两个假客户：一个名字被截断（括注没闭合）、一个以「另…）」开头，
+    两条采用记录都挂上去，客户档案里凭空多两行。
+    """
+    from app.adoptions import split_customer_text
+
+    got = split_customer_text(
+        "传音控股（Infinix NOTE 60 已量产上机；另 Infinix GT 50 Pro 压电液冷 6.5 mL/min）"
+    )
+    assert got == [
+        ("传音控股", "Infinix NOTE 60 已量产上机；另 Infinix GT 50 Pro 压电液冷 6.5 mL/min")
+    ], got
+
+    # 括号外的分隔符照旧要切（「、」「；」都算）
+    many = split_customer_text("小米、OPPO；鱼跃（同上）")
+    assert [n for n, _ in many] == ["小米", "OPPO", "鱼跃"], many
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

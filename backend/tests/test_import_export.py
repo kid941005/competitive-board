@@ -339,6 +339,31 @@ def test_export_all_requires_export_permission():
     assert v.get("/export-all.xlsx").status_code == 200, "viewer 本来就有 data:export"
 
 
+def test_company_with_parenthetical_merges_into_existing():
+    """「村田制作所（Murata）」要认成已有的「村田制作所」，不能凭空多出一家。
+
+    README 承诺「公司名忽略空格、标点、大小写与括注」，实现却只去掉了括号字符、
+    把括注里的内容留在名字里 —— 于是同一次导入会造出重复公司，
+    对比页上同一家友商出现两次、型号被拆到两行。
+    """
+    c = _client()
+    with Session(engine) as s:
+        if s.exec(select(Entity).where(Entity.name == "村田制作所")).first() is None:
+            s.add(Entity(kind="competitor", name="村田制作所", name_en="Murata"))
+            s.commit()
+
+    data = _xlsx([WIDE_HEAD, ["村田制作所（Murata）", "MZB-MERGE-1", "压电气泵", 0.4, 3000, "", "", "",
+                              "", "", "", "", "", "", "", "", ""]])
+    rep = _post(c, "merge.xlsx", data,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert rep["errors"] == [], rep["errors"]
+    assert rep["created_entities"] == 0, f"括注让公司重复建档了：{rep}"
+
+    with Session(engine) as s:
+        names = [e.name for e in s.exec(select(Entity).where(Entity.name.like("村田%"))).all()]
+    assert names == ["村田制作所"], names
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

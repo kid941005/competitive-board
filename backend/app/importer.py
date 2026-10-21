@@ -118,6 +118,11 @@ MISSING_TOKENS = {
     "—", "-", "–", "/", "na", "n/a", "none", "null",
 }
 
+# 带说明的未公开写法：`待补充（官方仅给风速 1.4–1.8 m/s）`。括注是给读表的人看的，
+# 不是可登记的值 —— 把它当成「要解析的数字」会白白报一条错，还会让人以为漏了数据。
+# 只认「以缺失词开头、后面只剩括注」，避免把「无刷电机」这类正常值判成未公开。
+_MISSING_PREFIXES = ("待补充", "待定", "待确认", "未公开", "未提供", "未披露", "暂无")
+
 # 单元格里的数字：可能是 0.155、50,000、1,420、-3
 _NUM = r"[-+]?\d+(?:[.,]\d+)?"
 _RE_RANGE = re.compile(rf"(?P<a>{_NUM})\s*[~～\-–—至]\s*(?P<b>{_NUM})")
@@ -181,6 +186,17 @@ class ImportReport:
 
 def _norm_key(s: str) -> str:
     return re.sub(r"[\s\-_.·/\\()（）]+", "", (s or "").strip()).lower()
+
+
+# 括注里的补充说明：「村田制作所（Murata）」「LEE Ventus（原 TTP Ventus）」。
+# 表头归一不能去掉它（「关联客户（有公开证据）」是完整列名），但**公司名匹配必须去掉** ——
+# 否则「村田制作所（Murata）」与库里已有的「村田制作所」认不出是一家，
+# 同一次导入就会凭空多出一家重复公司，对比页上同一家友商出现两次。
+_RE_PAREN = re.compile(r"[（(][^（()）]*[)）]")
+
+
+def _entity_key(name: str) -> str:
+    return _norm_key(_RE_PAREN.sub("", name or ""))
 
 
 def _scope_message(where: str, metric: SpecMetric, category: str) -> str:
@@ -300,6 +316,23 @@ def _unit_token(text: str) -> str:
     return (m.group(0) if m else "").strip()
 
 
+def _norm_unit(unit: str) -> str:
+    return (unit or "").strip().lower().replace(" ", "")
+
+
+def _is_missing(text: str) -> bool:
+    """「待补充」及其带括注说明的写法都算未公开（见 `_MISSING_PREFIXES`）。"""
+    t = text.strip()
+    if t.lower() in MISSING_TOKENS:
+        return True
+    for token in _MISSING_PREFIXES:
+        if t.startswith(token):
+            rest = t[len(token):].lstrip()
+            if not rest or rest[0] in "（(":
+                return True
+    return False
+
+
 def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
     """解析一个指标格。
 
@@ -308,7 +341,15 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
     - 数值型指标 → 取数字（区间取上限）+ 换算到字典单位；换算不了就报错，不猜
     """
     text = (raw or "").strip()
-    if text.lower() in MISSING_TOKENS:
+    if metric.value_type == "number":
+        # 数值型才按「待补充（说明）」判未公开 —— 否则那串说明会被当成要解析的值，
+        # 报一条「单位 m/s 认不出」，看起来像数据出错。
+        missing = _is_missing(text)
+    else:
+        # 文本型（外形尺寸这类）原文就是值：「未公开（全系列约 7 cm³）」
+        # 里的括注是有用信息，不能一并丢掉。
+        missing = text.lower() in MISSING_TOKENS
+    if missing:
         return Cell(missing=True)
 
     if metric.value_type != "number":
@@ -346,8 +387,10 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
     # 单位优先级：单元格自带的 > 列头声明的 > 指标字典的。
     # 单元格写了单位但认不出来（如把「3.3 Vrms」填进静压列）必须报错 ——
     # 退回列头单位会把它当成 3.3 Pa 静默落库，是「差 1000 倍」那类错的同一族。
+    # 例外：写的就是字典自己的单位（℃ 不在换算表里，因为 ℉↔℃ 需要偏移量）。
+    # 同单位不需要换算，判它「认不出」等于把整列温度数据全拦下来。
     token = _unit_token(text)
-    if token and units.unit_dimension(token) is None:
+    if token and units.unit_dimension(token) is None and _norm_unit(token) != _norm_unit(metric.unit):
         return Cell(error=f"单位「{token}」认不出，没法换算成 {metric.unit}")
     src_unit = token or column_unit or metric.unit
     conv = units.convert(num, src_unit, metric.unit)
@@ -460,7 +503,7 @@ def import_rows(
     missing_reported: set[str] = set()
 
     entity_cache: dict[str, Entity] = {
-        _norm_key(e.name): e for e in session.exec(select(Entity)).all()
+        _entity_key(e.name): e for e in session.exec(select(Entity)).all()
     }
     # 键带 entity_id：两家友商都有同名型号时，只按型号做键会把值写到别人名下
     product_cache: dict[tuple[int, str], Product] = {
@@ -552,13 +595,13 @@ def import_rows(
                 report.add_error(f"{where}：没有任何可写入的值，整行跳过")
             continue
 
-        entity = entity_cache.get(_norm_key(ent_name))
+        entity = entity_cache.get(_entity_key(ent_name))
         if entity is None:
             kind = "self" if ent_name.strip() == config.SELF_COMPANY_NAME else "competitor"
             entity = Entity(kind=kind, name=ent_name)
             session.add(entity)
             session.flush()
-            entity_cache[_norm_key(ent_name)] = entity
+            entity_cache[_entity_key(ent_name)] = entity
             report.created_entities += 1
 
         product = product_cache.get((entity.id, model.strip().lower()))
