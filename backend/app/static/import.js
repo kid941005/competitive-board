@@ -118,7 +118,8 @@
           ["无变化跳过", r.skipped_unchanged || 0],
           ["单位换算", r.converted_units || 0],
           ["客户采用", (r.adoptions_added || []).length],
-          ["报错行数", (r.errors || []).length],
+          ["报错行数", (r.errors || []).length +
+            (r.errors_truncated ? "（另有 " + r.errors_truncated + " 条未列出）" : "")],
         ];
         grid.innerHTML = cells.map(function (c) {
           return '<div class="rcell"><span class="rk">' + esc(c[0]) + '</span>' +

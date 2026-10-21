@@ -18,7 +18,7 @@ from sqlmodel import Session, select
 
 from . import auth, config
 from .auth import AuthSession, User
-from .models import Entity, Product
+from .models import PRODUCT_STATUSES, Entity, Product
 from .timeutil import fmt_local
 
 BASE = Path(__file__).resolve().parent
@@ -26,8 +26,6 @@ BASE = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 # 库里存 UTC、界面按部署时区显示：模板里一律用 {{ ts | localtime }}，不要裸 strftime
 templates.env.filters["localtime"] = fmt_local
-
-PRODUCT_STATUSES: tuple[str, ...] = ("active", "eol", "rumored")
 
 def _perm(perm: str):
     """要求某权限位的依赖，同时把 (user, auth_session) 交给路由用。"""
@@ -112,9 +110,6 @@ def _find_product(session: Session, entity_id: int, model: str) -> Product | Non
         if (p.model or "").strip().casefold() == target:
             return p
     return None
-
-
-PRODUCT_STATUSES: tuple[str, ...] = ("active", "eol", "rumored")
 
 
 def _validate_status(status: str | None) -> str:

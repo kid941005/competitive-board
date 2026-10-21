@@ -370,14 +370,9 @@ def adoption_create(
     if status not in ADOPTION_STATUS:
         return _redirect(f"/products/{product_id}", f"状态「{status}」不可识别", "err")
 
-    year_val: int | None = None
-    if (year or "").strip():
-        try:
-            year_val = int((year or "").strip())
-        except ValueError:
-            return _redirect(f"/products/{product_id}", f"年份「{year}」不是数字", "err")
-        if year_val < 2000 or year_val > 2100:
-            return _redirect(f"/products/{product_id}", f"年份 {year_val} 看着不对", "err")
+    year_val, year_err = adoptions.validate_year(year)
+    if year_err:
+        return _redirect(f"/products/{product_id}", year_err, "err")
 
     # 「按名字找客户、没有就建档」只实现一次（app/adoptions.py）—— 页面、API、
     # 表格导入三个入口共用，否则归一规则会各走一样（一处复用、一处新建）。
@@ -396,6 +391,9 @@ def adoption_create(
             changes=[{"field": "类型", "old": "", "new": "客户"}],
             note="记客户采用情况时顺手建档", request_id=_rid(),
         )
+
+    if (why := adoptions.reject_self_adoption(product, customer)) is not None:
+        return _redirect(f"/products/{product_id}", why, "err")
 
     exists = session.exec(
         select(Adoption).where(

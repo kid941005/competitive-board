@@ -41,7 +41,16 @@ from . import adoptions, audit, auth, config, search, settings_store, tokens, un
 from .compare import format_number, metrics_for_categories
 from .db import get_session
 from .importer import import_rows
-from .models import ADOPTION_STATUS, Adoption, ApiIdempotency, Entity, Product, ProductSpec, SpecMetric
+from .models import (
+    ADOPTION_STATUS,
+    PRODUCT_STATUSES,
+    Adoption,
+    ApiIdempotency,
+    Entity,
+    Product,
+    ProductSpec,
+    SpecMetric,
+)
 from .numeric import clamp_confidence
 from .sanitize import safe_url
 from .selection import _matrix_payload, _parse_ids
@@ -208,6 +217,13 @@ def _adoption_dict(a: Adoption, session: Session) -> dict:
     }
 
 
+def _adoptions_of(session: Session, product_id: int) -> list[Adoption]:
+    """某个型号的采用记录（原始行）。用于 ETag 与响应体，两者必须同源。"""
+    return list(session.exec(
+        select(Adoption).where(Adoption.product_id == product_id)
+    ).all())
+
+
 def _adoptions_payload(
     session: Session, *, product_id: int | None = None, customer_id: int | None = None
 ) -> list[dict]:
@@ -282,13 +298,21 @@ def _actor(principal: Principal) -> tuple[str, str]:
     return principal.name, ("token" if principal.kind == "token" else "user")
 
 
-def _etag(p: Product, specs: list[ProductSpec]) -> str:
+def _etag(p: Product, specs: list[ProductSpec], adoptions: list[Adoption] | None = None) -> str:
+    """表示指纹。**必须覆盖响应体里的所有字段** —— 少了哪一块，
+    条件请求就会把「内容其实变了」当成「没变」，返回 304 给客户端一份旧数据。"""
     raw = "|".join([
         str(p.id), p.model or "", p.name or "", p.category or "", p.status or "",
         p.datasheet_url or "", p.note or "", p.launch_date.isoformat() if p.launch_date else "",
         *[
             f"{s.metric_id}:{s.value_num}:{s.value_text}:{s.condition}:{s.verified}"
             for s in sorted(specs, key=lambda x: x.metric_id or 0)
+        ],
+        # 客户采用也算资源的一部分（GET 详情里带着它），所以要进指纹
+        *[
+            f"a{a.id}:{a.customer_id}:{a.status}:{a.year}:{a.note or ''}:"
+            f"{a.updated_at.isoformat() if a.updated_at else ''}"
+            for a in sorted(adoptions or [], key=lambda x: x.id or 0)
         ],
     ])
     return 'W/"' + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16] + '"'
@@ -317,9 +341,6 @@ def _check_category(category: str | None) -> str:
             hint="可选：" + "、".join(f"{c}（{label}）" for c, label in config.CATEGORY_LABEL.items()),
         )
     return category
-
-
-PRODUCT_STATUSES = ("active", "eol", "rumored")
 
 
 def _check_status(status: str | None) -> str:
@@ -729,8 +750,9 @@ def get_product(
         _spec_dict(s, metrics[s.metric_id]) for s in specs if s.metric_id in metrics
     ]
     payload["missing_metrics"] = [m.key for m in pool if m.key not in present]
-    payload["adoptions"] = _adoptions_payload(session, product_id=product_id)
-    etag = _etag(product, specs)          # 原来算了两遍
+    adoptions = _adoptions_of(session, product_id)
+    payload["adoptions"] = [_adoption_dict(a, session) for a in adoptions]
+    etag = _etag(product, specs, adoptions)   # 与响应体同源，不再漏 adoptions
     return ok(payload, etag=etag, headers={"ETag": etag})
 
 
@@ -773,7 +795,13 @@ def create_adoption(
     if product is None:
         raise ApiError("NOT_FOUND", f"型号 id={body.product_id} 不存在")
 
+    year, year_err = adoptions.validate_year(body.year)
+    if year_err:
+        raise ApiError("VALIDATION_FAILED", year_err, field="year")
+
     customer = _resolve_customer(session, body.customer_id, body.customer_name)
+    if (why := adoptions.reject_self_adoption(product, customer)) is not None:
+        raise ApiError("VALIDATION_FAILED", why, field="customer_id")
     dup = session.exec(
         select(Adoption).where(
             Adoption.customer_id == customer.id, Adoption.product_id == product.id
@@ -788,7 +816,7 @@ def create_adoption(
 
     row = Adoption(
         customer_id=customer.id, product_id=product.id, status=body.status,
-        year=body.year, note=(body.note or "").strip() or None,
+        year=year, note=(body.note or "").strip() or None,
     )
     session.add(row)
     session.flush()
@@ -821,6 +849,12 @@ def patch_adoption(
     if body.status is not None and body.status not in ADOPTION_STATUS:
         raise ApiError("VALIDATION_FAILED",
                        f"status 只能是 {' / '.join(ADOPTION_STATUS)}", field="status")
+
+    year_err_msg = None
+    if body.year is not None:
+        _, year_err_msg = adoptions.validate_year(body.year)
+        if year_err_msg:
+            raise ApiError("VALIDATION_FAILED", year_err_msg, field="year")
 
     before = _adoption_dict(row, session)
     if body.status is not None:
@@ -1162,7 +1196,8 @@ def patch_product(
     before_meta = audit.product_snapshot(product)
 
     specs = _specs_of(session, product_id)
-    current_etag = _etag(product, specs)
+    adoptions_rows = _adoptions_of(session, product_id)
+    current_etag = _etag(product, specs, adoptions_rows)
     if if_match and if_match.strip() != current_etag:
         raise ApiError(
             "CONFLICT_VERSION",
@@ -1199,6 +1234,8 @@ def patch_product(
     session.add(product)
     dry = _is_dry(request, body)
     data = _product_dict(product, session.get(Entity, product.entity_id))
+    # 与 GET 保持同一形状：同一个资源，两种响应不该字段不一样
+    data["adoptions"] = [_adoption_dict(a, session) for a in adoptions_rows]
     if dry:
         session.rollback()
         return ok(data, dry_run=True, hint="预演：未落库")

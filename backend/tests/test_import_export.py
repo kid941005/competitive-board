@@ -279,6 +279,27 @@ def test_liquid_row_uses_flow_and_pressure_columns():
     assert abs(names["pressure_liquid"] - 1200) < 1e-6, names
 
 
+def test_import_errors_are_capped():
+    """系统性错误只报前 200 条 —— 5000 行全错不该回一个几 MB 的 JSON。"""
+    c = _client()
+    rows = [["错行公司", f"BADCAP-{i}", "压电陶瓷", 1.0] + [""] * 13 for i in range(260)]
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["企业名称", "产品型号", "产品类别", "流量L/min"])
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    rep = _post(c, "cap.xlsx", buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert len(rep["errors"]) == 200, len(rep["errors"])
+    assert rep["errors_truncated"] == 60, rep["errors_truncated"]
+    assert rep["written_specs"] == 0
+
+
 # ── 全量备份导出 ───────────────────────────────────────────────────────────
 def test_export_all_has_three_sheets_and_is_reimportable():
     """「导出全部」= 备份包：参数宽表 + 参数明细 + 客户采用。

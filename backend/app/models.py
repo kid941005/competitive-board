@@ -106,6 +106,15 @@ class ProductSpec(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+# 产品状态的合法取值与中文名。原来这一组在 web_shared 里定义了两遍、
+# api_v1 里又写了一遍 —— 同一个枚举三份副本，加一个状态必然漏改一处。
+PRODUCT_STATUSES: tuple[str, ...] = ("active", "eol", "rumored")
+PRODUCT_STATUS_LABELS: dict[str, str] = {
+    "active": "在售",
+    "eol": "停产",
+    "rumored": "传闻",
+}
+
 # 客户采用的进度档位。放在模型层：页面（routes_products）、接口（api_v1）、
 # 导出都要用同一套中文名，各写一份必然会漂。
 ADOPTION_STATUS: dict[str, str] = {

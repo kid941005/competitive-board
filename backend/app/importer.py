@@ -146,8 +146,20 @@ class ImportReport:
     # 关联客户里没法结构化、只写进备注的原文
     adoptions_skipped: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # 条数封顶：错在「表头/单位」这种系统性问题上时，几万行会刷出几万条同样的报错，
+    # 响应体膨胀到 MB 级、界面也渲染不动。只留前 MAX_ERRORS 条 + 一个被截断的计数。
+    errors_truncated: int = 0
     # 逐项变更明细（供审计日志使用）：{model, metric, old, new}
     details: list[dict] = field(default_factory=list)
+
+    MAX_ERRORS = 200
+
+    def add_error(self, message: str) -> None:
+        """记录一条错误；超过上限只累加计数。所有报错都必须走这里。"""
+        if len(self.errors) < self.MAX_ERRORS:
+            self.errors.append(message)
+        else:
+            self.errors_truncated += 1
 
     def as_dict(self) -> dict:
         return {
@@ -163,6 +175,7 @@ class ImportReport:
             "adoptions_added": self.adoptions_added,
             "adoptions_skipped": self.adoptions_skipped,
             "errors": self.errors,
+            "errors_truncated": self.errors_truncated,
         }
 
 
@@ -434,7 +447,7 @@ def import_rows(
                 col = match_column(str(key))
                 present.add(col.header if col else str(key).strip())
     if not {"企业名称", "产品型号"} <= present:
-        report.errors.append(
+        report.add_error(
             "没认到表头。模板已改为宽表：表头必须同时包含「企业名称」与「产品型号」，"
             "并包含各指标列（如「流量L/min」「静压Pa」）。请重新下载模板。"
         )
@@ -483,7 +496,7 @@ def import_rows(
         model = row.get("产品型号", "")
         ent_name = row.get("企业名称", "") or "未分组"
         if not model:
-            report.errors.append(f"{where}：产品型号为空，整行跳过")
+            report.add_error(f"{where}：产品型号为空，整行跳过")
             continue
 
         category_raw = row.get("产品类别", "")
@@ -492,7 +505,7 @@ def import_rows(
             category = resolve_category(category_raw)
             if category is None:
                 options = "、".join(config.CATEGORY_LABEL.values())
-                report.errors.append(
+                report.add_error(
                     f"{where}：产品类别「{category_raw}」不可识别，整行跳过。可选：{options}"
                 )
                 continue
@@ -508,7 +521,7 @@ def import_rows(
             if metric is None:
                 if raw.strip() and col.metric_key not in missing_reported:
                     missing_reported.add(col.metric_key)
-                    report.errors.append(
+                    report.add_error(
                         f"「{col.header}」列有值，但指标字典里没有 {col.metric_key}，该列已忽略"
                     )
                 continue
@@ -521,10 +534,10 @@ def import_rows(
                     report.skipped_missing += 1
                 continue
             if cell.error:
-                report.errors.append(f"{tag}：{cell.error}，已跳过")
+                report.add_error(f"{tag}：{cell.error}，已跳过")
                 continue
             if category and not metric_applies(metric, category):
-                report.errors.append(_scope_message(tag, metric, category))
+                report.add_error(_scope_message(tag, metric, category))
                 continue
             pending.append((col, metric, cell, raw))
 
@@ -536,7 +549,7 @@ def import_rows(
             # 整行都是「待补充/空白」= 这一款确实什么都没公开，合法状态，静默跳过。
             # 只有在这一行**因为报错**才变得没东西可写时，才补一句总结。
             if len(report.errors) > errors_before:
-                report.errors.append(f"{where}：没有任何可写入的值，整行跳过")
+                report.add_error(f"{where}：没有任何可写入的值，整行跳过")
             continue
 
         entity = entity_cache.get(_norm_key(ent_name))
@@ -557,7 +570,7 @@ def import_rows(
             report.created_products += 1
         elif category:
             if product.category and product.category != category:
-                report.errors.append(
+                report.add_error(
                     f"{where}：型号 {model} 已属「{config.category_label(product.category)}」，"
                     f"与表中「{config.category_label(category)}」冲突，整行跳过"
                 )
@@ -580,12 +593,12 @@ def import_rows(
                     metric = resolved
                     cell = parse_cell(raw, metric, col.unit)
                     if cell.missing or cell.error:
-                        report.errors.append(
+                        report.add_error(
                             f"{where} {model} · {metric.name}：{cell.error or '没有可写入的值'}，已跳过"
                         )
                         continue
                 if not metric_applies(metric, product.category):
-                    report.errors.append(_scope_message(f"{where} {model}", metric, product.category))
+                    report.add_error(_scope_message(f"{where} {model}", metric, product.category))
                     continue
             tag = f"{where} {model} · {metric.name}"
             if cell.note:

@@ -15,8 +15,6 @@ from .compare import build_matrix, completeness, diff_count, metrics_for_categor
 from .config import category_label
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 
-# 首屏默认只放 4 列：横向可读性优先；想多看几个可以自己勾到 max_compare。
-DEFAULT_VIEW_MAX = 4
 
 def _load(session: Session):
     entities = session.exec(select(Entity)).all()
@@ -95,7 +93,8 @@ def _parse_ids(
         pid = int(chunk)
         if pid in valid and pid not in out:
             out.append(pid)
-    return out[:limit] or _default_selection(products, preferred_cat)
+    # 回落也要带 limit：否则 CIB_MAX_COMPARE=2 时，一个非法的 ?p= 会给出 4 列
+    return out[:limit] or _default_selection(products, preferred_cat, limit)
 
 
 def _matrix_payload(session: Session, ids: list[int], sset: dict, loaded=None) -> dict:

@@ -66,6 +66,38 @@ def resolve_customer(
     return ent
 
 
+YEAR_MIN, YEAR_MAX = 2000, 2100
+
+
+def validate_year(raw: object) -> tuple[int | None, str | None]:
+    """年份只收 2000–2100 的整数；空串表示「不知道」，允许。
+
+    页面表单与 /api/v1 必须同一套判断 —— 之前页面做范围检查、接口不做，
+    同一条数据在两条通道下合法性不同。
+    """
+    text = ("" if raw is None else str(raw)).strip()
+    if not text:
+        return None, None
+    try:
+        year = int(text)
+    except ValueError:
+        return None, f"年份「{text}」不是数字"
+    if not (YEAR_MIN <= year <= YEAR_MAX):
+        return None, f"年份 {year} 不在 {YEAR_MIN}–{YEAR_MAX} 之间"
+    return year, None
+
+
+def reject_self_adoption(product, customer) -> str | None:
+    """同一家公司的型号被自己「采用」没有意义，且会污染「谁在用这款泵」。
+
+    返回错误说明，没有问题时返回 None。导入的「关联客户」列也走这里 ——
+    否则表里写一句「村田」，就会给村田自己的泵记一条采用记录。
+    """
+    if product is not None and customer is not None and product.entity_id == customer.id:
+        return f"{customer.name} 是这款泵的厂商自己，不能记为客户采用"
+    return None
+
+
 def split_customer_text(text: str) -> list[tuple[str, str | None]]:
     """把「华为（WATCH D2 拆解确认）；欧姆龙（HeartGuide 2019）」拆成
     [(客户名, 证据或 None), ...]。占位写法（待补充 / 无）直接丢掉。"""
@@ -101,6 +133,9 @@ def add_from_text(
             customer = resolve_customer(session, customer_name=name)
         except (ValueError, LookupError):
             skipped.append(f"客户「{name}」无法建档")
+            continue
+        if (why := reject_self_adoption(product, customer)) is not None:
+            skipped.append(why)
             continue
         dup = session.exec(
             select(Adoption).where(

@@ -272,6 +272,55 @@ def test_api_delete_adoption():
     assert c.get(f"/api/v1/adoptions?product_id={p.id}", headers=h).json()["data"] == []
 
 
+def test_api_rejects_self_adoption():
+    """厂商自己的型号被自己「采用」没有意义，会污染「谁在用这款泵」。"""
+    c = _client()
+    h = _token(c)
+    p = _product("mp6-pp")
+    r = c.post("/api/v1/adoptions",
+               json={"product_id": p.id, "customer_name": "巴特尔斯微技术",
+                     "status": "sample"}, headers=h)
+    assert r.status_code == 422, r.text
+    assert "厂商自己" in r.json()["error"]["message"]
+
+
+def test_api_rejects_out_of_range_year():
+    """年份范围在接口与页面必须同一套判断（曾经只有页面校验）。"""
+    c = _client()
+    h = _token(c)
+    p = _product("mp6-pp")
+    r = c.post("/api/v1/adoptions",
+               json={"product_id": p.id, "customer_name": "年份测试客户",
+                     "status": "sample", "year": 1500}, headers=h)
+    assert r.status_code == 422, r.text
+    assert "2000" in r.json()["error"]["message"]
+
+    listed = c.get(f"/api/v1/adoptions?product_id={p.id}", headers=h).json()["data"]
+    assert listed == [], "被拒的记录不能落库"
+
+
+def test_etag_changes_when_adoption_is_added():
+    """ETag 必须覆盖响应体里的所有字段 —— 加了采用记录却不变，条件请求会拿到旧数据。"""
+    c = _client()
+    h = _token(c)
+    p = _product("mp6-liq")
+    first = c.get(f"/api/v1/products/{p.id}", headers=h)
+    etag_before = first.headers["ETag"]
+
+    created = c.post("/api/v1/adoptions",
+                     json={"product_id": p.id, "customer_name": "ETag 客户",
+                           "status": "sample"}, headers=h)
+    assert created.status_code == 201, created.text
+
+    second = c.get(f"/api/v1/products/{p.id}", headers=h)
+    assert second.headers["ETag"] != etag_before, "采用记录变了，ETag 也该变"
+
+    # 条件请求：拿旧 ETag 应当拿到 200 + 新内容，而不是 304（304 需要服务端自己实现，
+    # 这里至少保证 ETag 已变，客户端不会误判）
+    assert second.status_code == 200
+    assert [a["customer"] for a in second.json()["data"]["adoptions"]] == ["ETag 客户"]
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
