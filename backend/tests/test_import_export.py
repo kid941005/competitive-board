@@ -26,15 +26,16 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _wide import wide_csv, wide_headers
 from app.db import engine, init_db
 from app.main import app
-from app.models import Entity, Product, ProductSpec
+from app.models import Entity, Product, ProductSpec, SpecMetric
 from app.seed import seed
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from sqlmodel import Session, select
 
-HEADER = ["型号", "友商", "大类", "指标", "数值", "单位", "条件", "来源链接", "置信度"]
+WIDE_HEAD = wide_headers()
 _state: dict[str, object] = {}
 
 
@@ -77,17 +78,17 @@ def _post(c: TestClient, name: str, data: bytes, mime: str) -> dict:
     return r.json()
 
 
-# ── Excel 导入 ─────────────────────────────────────────────────────────────
+# ── 导入（宽表：一行一个型号）─────────────────────────────────────────────
 def test_import_xlsx_creates_company_product_and_specs():
     c = _client()
     data = _xlsx([
-        HEADER,
-        ["XL-100", "表格测试甲", "压电气泵", "空气流量", 0.42, "L/min", "@15Vpp", "https://x/1.pdf", 0.9],
-        ["XL-100", "表格测试甲", "压电气泵", "静压", 8.6, "kPa", "@15Vpp", "https://x/1.pdf", 0.9],
+        WIDE_HEAD,
+        ["表格测试甲", "XL-100", "压电气泵", 0.42, 8600, "", "", "", "", "", "", "", "",
+         "https://x/1.pdf", 0.9, "", "静压@15Vpp"],
     ])
     rep = _post(c, "t.xlsx", data,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    assert rep["rows_read"] == 2, rep
+    assert rep["rows_read"] == 1, rep
     assert rep["created_entities"] == 1 and rep["created_products"] == 1, rep
     assert rep["written_specs"] == 2 and rep["errors"] == [], rep
 
@@ -102,24 +103,42 @@ def test_import_xlsx_creates_company_product_and_specs():
 
 
 def test_csv_and_xlsx_share_the_same_validation():
-    """同一个坏行（指标不在字典）在两种格式下都必须被拦。"""
-    c = _client()
-    csv_text = "型号,友商,大类,指标,数值\nCSV-1,表格测试乙,压电气泵,不存在的指标,1\n"
-    rep_csv = _post(c, "t.csv", csv_text.encode("utf-8"), "text/csv")
+    """跨维度单位（把 kPa 写进流量列）在 CSV 与 Excel 下都必须被拦住。
 
-    data = _xlsx([["型号", "友商", "大类", "指标", "数值"],
-                  ["XL-2", "表格测试丙", "压电气泵", "不存在的指标", 1]])
+    这条守的是「Excel 与 CSV 只在读文件那一步分叉」，不是各写一套校验。
+    """
+    c = _client()
+    text = wide_csv({"企业名称": "表格测试乙", "产品型号": "CSV-1", "产品类别": "压电气泵",
+                     "流量L/min": "1.5 kPa"})
+    rep_csv = _post(c, "t.csv", text.encode("utf-8"), "text/csv")
+
+    data = _xlsx([WIDE_HEAD,
+                  ["表格测试丙", "XL-2", "压电气泵", "1.5 kPa", "", "", "", "", "", "", "",
+                   "", "", "", "", "", ""]])
     rep_xlsx = _post(c, "t.xlsx", data,
                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     assert rep_csv["written_specs"] == 0 and rep_xlsx["written_specs"] == 0
-    assert "不在指标字典中" in rep_csv["errors"][0]
-    assert "不在指标字典中" in rep_xlsx["errors"][0]
+    assert "跨维度" in rep_csv["errors"][0], rep_csv["errors"]
+    assert "跨维度" in rep_xlsx["errors"][0], rep_xlsx["errors"]
+
+
+def test_unknown_column_is_ignored_not_guessed():
+    """表里多出来的列（不在字典里的指标）直接忽略 —— 宽表按列头认指标，认不出就当没写。"""
+    c = _client()
+    text = (
+        "企业名称,产品型号,产品类别,流量L/min,瞎编的指标\n"
+        "表格测试己,UNK-1,压电气泵,0.7,3\n"
+    )
+    rep = _post(c, "t.csv", text.encode("utf-8"), "text/csv")
+    assert rep["written_specs"] == 1, rep
+    assert rep["errors"] == [], rep
 
 
 def test_unknown_category_is_rejected_not_guessed():
     c = _client()
-    data = _xlsx([HEADER, ["BAD-1", "表格测试丁", "压电陶瓷", "空气流量", 1.0, "L/min"]])
+    data = _xlsx([WIDE_HEAD, ["表格测试丁", "BAD-1", "压电陶瓷", 1.0, "", "", "", "", "",
+                              "", "", "", "", "", "", "", ""]])
     rep = _post(c, "t.xlsx", data,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     assert rep["written_specs"] == 0
@@ -129,7 +148,8 @@ def test_unknown_category_is_rejected_not_guessed():
 def test_category_conflict_on_existing_product_is_skipped():
     """mp6-liq 是液泵，表里按气泵写必须报错 —— 否则参数会落到错误的指标体系。"""
     c = _client()
-    data = _xlsx([HEADER, ["mp6-liq", "巴特尔斯微技术", "压电气泵", "空气流量", 0.5, "L/min"]])
+    data = _xlsx([WIDE_HEAD, ["巴特尔斯微技术", "mp6-liq", "压电气泵", 0.5, "", "", "", "",
+                              "", "", "", "", "", "", "", "", ""]])
     rep = _post(c, "t.xlsx", data,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     assert rep["written_specs"] == 0
@@ -137,20 +157,24 @@ def test_category_conflict_on_existing_product_is_skipped():
 
 
 def test_missing_required_header_reports_clearly():
+    """缺「产品型号」等于读不出来 —— 报错要说清模板已经改成宽表，别让人瞎猜。"""
     c = _client()
-    data = _xlsx([["型号", "友商"], ["X-1", "某公司"]])
+    data = _xlsx([["企业名称", "流量L/min"], ["某公司", 1.0]])
     rep = _post(c, "t.xlsx", data,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     assert rep["written_specs"] == 0
-    assert any("缺少必需列" in e for e in rep["errors"])
+    assert any("宽表" in e for e in rep["errors"]), rep["errors"]
 
 
-def test_blank_value_counts_as_not_disclosed():
+def test_placeholder_value_counts_as_not_disclosed():
+    """「待补充」是表里最高频的值，必须当成未公开跳过，而不是报错或写 0。"""
     c = _client()
-    data = _xlsx([HEADER, ["BL-1", "表格测试戊", "压电气泵", "空气流量", None, "L/min"]])
+    data = _xlsx([WIDE_HEAD, ["表格测试戊", "BL-1", "压电气泵", "待补充", "待补充", "", "", "",
+                              "", "", "", "", "", "", "", "", ""]])
     rep = _post(c, "t.xlsx", data,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    assert rep["skipped_missing"] == 1 and rep["written_specs"] == 0
+    assert rep["errors"] == [], rep
+    assert rep["skipped_missing"] >= 2 and rep["written_specs"] == 0
 
 
 def test_unsupported_extension_rejected():
@@ -167,8 +191,8 @@ def test_xlsx_template_is_downloadable_and_parsable():
     assert r.status_code == 200
     wb = load_workbook(io.BytesIO(r.content))
     assert "参数导入" in wb.sheetnames
-    head = [wb["参数导入"].cell(1, i).value for i in range(1, 10)]
-    assert head[:5] == ["型号", "友商", "大类", "指标", "数值"]
+    head = [wb["参数导入"].cell(1, i).value for i in range(1, 6)]
+    assert head == ["企业名称", "产品型号", "产品类别", "流量L/min", "静压Pa"], head
     assert "填写说明" in wb.sheetnames
 
 
@@ -229,6 +253,69 @@ def test_export_xlsx_respects_permission():
     assert v.get("/export.xlsx").status_code == 200
     assert v.get("/products").status_code == 403
     assert v.get("/import").status_code == 403
+
+
+def test_liquid_row_uses_flow_and_pressure_columns():
+    """液泵也用「流量L/min」「静压Pa」两列填，导入时落到 µL/min 与 mbar。
+
+    业务方的表只有一套流量/静压列（一行一个型号），不会为液泵换表头；
+    所以这两列按「物理量」映射：液泵 → 液体流量(µL/min) / 背压(mbar)，其余 → 空气流量 / 静压。
+    """
+    c = _client()
+    data = _xlsx([WIDE_HEAD, ["液泵测试公司", "LIQ-1", "压电液泵", 0.0035, 120000, "", "", "",
+                              "", "", "", "", "", "", "", "", ""]])
+    rep = _post(c, "t.xlsx", data,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert rep["errors"] == [], rep["errors"]
+    assert rep["written_specs"] == 2, rep
+
+    with Session(engine) as s:
+        prod = s.exec(select(Product).where(Product.model == "LIQ-1")).first()
+        names = {
+            s.get(SpecMetric, sp.metric_id).key: sp.value_num
+            for sp in s.exec(select(ProductSpec).where(ProductSpec.product_id == prod.id)).all()
+        }
+    assert abs(names["flow_liquid"] - 3500) < 1e-6, names
+    assert abs(names["pressure_liquid"] - 1200) < 1e-6, names
+
+
+# ── 全量备份导出 ───────────────────────────────────────────────────────────
+def test_export_all_has_three_sheets_and_is_reimportable():
+    """「导出全部」= 备份包：参数宽表 + 参数明细 + 客户采用。
+
+    最关键的一条是**能再导入**：导出后不改一行，重新导进去应当「无变化」，
+    否则这份备份就只是看起来像备份。
+    """
+    c = _client()
+    r = c.get("/export-all.xlsx")
+    assert r.status_code == 200, r.text[:200]
+    wb = load_workbook(io.BytesIO(r.content))
+    assert wb.sheetnames == ["参数导入", "参数明细", "客户采用", "说明"], wb.sheetnames
+
+    ws = wb["参数导入"]
+    assert [x.value for x in ws[1]][:5] == ["企业名称", "产品型号", "产品类别", "流量L/min", "静压Pa"]
+    assert ws.max_row > 1, "全量导出不该是空表"
+
+    # 拿导出的文件原样再导入：应该是全部「无变化」，一条也不写
+    rep = _post(c, "backup.xlsx", r.content,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert rep["errors"] == [], rep["errors"]
+    assert rep["written_specs"] == 0, f"往返不该改动数据，实际写入 {rep['written_specs']}"
+    assert rep["skipped_unchanged"] > 0
+
+
+def test_export_all_requires_export_permission():
+    c = _client()
+    csrf = _csrf(c)
+    c.post("/admin/users/create", data={
+        "username": "nogetexp", "password": "ViewerPass123",
+        "display_name": "无导出", "role": "viewer", "_csrf": csrf,
+    }, follow_redirects=False)
+    v = TestClient(app)
+    v.__enter__()
+    v.post("/login", data={"username": "nogetexp", "password": "ViewerPass123"},
+           follow_redirects=False)
+    assert v.get("/export-all.xlsx").status_code == 200, "viewer 本来就有 data:export"
 
 
 # ── 运行器 ─────────────────────────────────────────────────────────────────

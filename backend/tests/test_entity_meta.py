@@ -77,10 +77,11 @@ def test_import_creates_self_company_by_name():
     seed(metrics_only=True)      # 只建指标字典，不建任何公司
 
     r = c.post("/api/v1/import", json={"rows": [
-        {"型号": "OWN-1", "友商": config.SELF_COMPANY_NAME,
-         "大类": "压电气泵", "指标": "flow_air", "数值": "0.5"},
-        {"型号": "RIVAL-1", "友商": "导入友商",
-         "大类": "压电气泵", "指标": "flow_air", "数值": "0.6"},
+        # 宽表：一行一个型号，指标是列
+        {"企业名称": config.SELF_COMPANY_NAME, "产品型号": "OWN-1",
+         "产品类别": "压电气泵", "流量L/min": "0.5"},
+        {"企业名称": "导入友商", "产品型号": "RIVAL-1",
+         "产品类别": "压电气泵", "流量L/min": "0.6"},
     ]})
     assert r.status_code == 200, r.text[:300]
     assert r.json()["data"]["created_entities"] == 2, r.json()["data"]

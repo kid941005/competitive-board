@@ -29,6 +29,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _wide import wide_headers
 from app import schema
 from app.db import engine as app_engine
 from app.db import init_db
@@ -260,15 +261,20 @@ def test_batch_with_duplicate_items_does_not_break():
     assert len(rows) == 1 and rows[0].value_num == 0.12
 
 
-def test_import_file_with_repeated_metric_row_is_merged():
+def test_import_file_with_same_model_twice_keeps_one_spec():
+    """同一份文件里同一个型号写了两行：后者覆盖前者，不能撞唯一索引。
+
+    宽表时代这条仍然重要 —— 复制粘贴时很容易把一行贴两遍，而
+    `(product_id, metric_id)` 上的唯一索引一旦被撞，整批都会回滚。
+    """
     with Session(app_engine) as s:
         rep = import_rows(
             s,
-            [{"型号": "DUPD-1", "友商": "重复行测试", "大类": "压电气泵",
-              "指标": "空气流量", "数值": "0.5"},
-             {"型号": "DUPD-1", "友商": "重复行测试", "大类": "压电气泵",
-              "指标": "空气流量", "数值": "0.6"}],
-            ["型号", "友商", "大类", "指标", "数值"],
+            [{"企业名称": "重复行测试", "产品型号": "DUPD-1", "产品类别": "压电气泵",
+              "流量L/min": "0.5"},
+             {"企业名称": "重复行测试", "产品型号": "DUPD-1", "产品类别": "压电气泵",
+              "流量L/min": "0.6"}],
+            wide_headers(),
         )
         assert rep.errors == [], rep.errors
         p = s.exec(select(Product).where(Product.model == "DUPD-1")).first()

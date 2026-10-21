@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _wide import wide_csv
 from app.compare import (
     build_matrix,
     compare_key,
@@ -21,7 +22,7 @@ from app.compare import (
 )
 from app.importer import import_csv
 from app.models import Entity, Product, ProductSpec, SpecMetric
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 
 # ── 夹具 ───────────────────────────────────────────────────────────────────
@@ -204,64 +205,83 @@ def test_metrics_for_categories_multi_select():
     assert [m.key for m in got] == ["c", "p"]
 
 
-# ── CSV 导入 ───────────────────────────────────────────────────────────────
-def _mem_session() -> Session:
+# ── 表格导入（宽表）────────────────────────────────────────────────────────
+def _import_session() -> Session:
+    """导入用的内存库。
+
+    宽表的列头直接绑指标 key，所以这里必须放**真实**的字典项（不能用合成指标），
+    否则列头找不到对应指标，任何断言都测不到东西。
+    """
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine)
     s = Session(engine)
-    s.add(SpecMetric(id=1, key="insertion_loss", category="射频性能", name="插入损耗",
-                     unit="dB", value_type="number", better="lower", precision=2))
-    s.add(SpecMetric(id=2, key="package", category="封装结构", name="封装形式",
-                     unit="", value_type="text", better="na", precision=0))
+    s.add(SpecMetric(id=1, key="flow_air", category="气动与流体", name="空气流量",
+                     unit="L/min", value_type="number", better="higher", precision=3,
+                     applies_to="pump_air"))
+    s.add(SpecMetric(id=2, key="pressure_air", category="气动与流体", name="静压",
+                     unit="kPa", value_type="number", better="higher", precision=2,
+                     applies_to="pump_air"))
+    s.add(SpecMetric(id=3, key="drive_voltage", category="驱动与功耗", name="驱动电压",
+                     unit="V", value_type="text", better="na", precision=0,
+                     applies_to="pump_air"))
     s.add(Entity(id=1, kind="competitor", name="华芯微电子"))
     s.commit()
     return s
 
 
 def test_import_csv_ok():
-    s = _mem_session()
-    csv_text = (
-        "型号,友商,指标,数值,单位,条件,来源链接,置信度\n"
-        "SX-2400,华芯微电子,插入损耗,1.80,dB,@2.4GHz,https://x/1.pdf,0.95\n"
-        "SX-2400,华芯微电子,封装形式,SMD 1411,,,,0.9\n"
-    )
-    rep = import_csv(s, csv_text)
-    assert rep.errors == []
+    s = _import_session()
+    text = wide_csv({
+        "企业名称": "华芯微电子", "产品型号": "SX-2400", "产品类别": "压电气泵",
+        "流量L/min": "0.7", "静压Pa": "1420", "来源链接": "https://x/1.pdf", "置信度": "0.95",
+    })
+    rep = import_csv(s, text)
+    assert rep.errors == [], rep.errors
     assert rep.written_specs == 2
     assert rep.created_products == 1
+    # 列头单位 Pa → 字典单位 kPa
+    assert rep.converted_units == 1, rep.conversions
 
 
-def test_import_csv_unknown_metric_is_error_not_created():
-    s = _mem_session()
-    csv_text = "型号,友商,指标,数值\nSX-1,华芯微电子,瞎编的指标,3\n"
-    rep = import_csv(s, csv_text)
+def test_import_csv_unknown_column_is_ignored():
+    s = _import_session()
+    text = (
+        "企业名称,产品型号,产品类别,流量L/min,瞎编的指标\n"
+        "华芯微电子,SX-1,压电气泵,0.5,3\n"
+    )
+    rep = import_csv(s, text)
+    assert rep.written_specs == 1, rep.as_dict()
+    assert rep.errors == []
+
+
+def test_import_csv_missing_required_header():
+    s = _import_session()
+    rep = import_csv(s, "产品型号,流量L/min\nSX-1,0.5\n")
     assert rep.written_specs == 0
-    assert len(rep.errors) == 1
-    assert "不在指标字典中" in rep.errors[0]
-
-
-def test_import_csv_missing_required_column():
-    s = _mem_session()
-    rep = import_csv(s, "型号,友商\nSX-1,华芯微电子\n")
-    assert rep.written_specs == 0
-    assert any("缺少必需列" in e for e in rep.errors)
+    assert any("宽表" in e for e in rep.errors), rep.errors
 
 
 def test_import_csv_empty_value_skipped():
-    s = _mem_session()
-    csv_text = "型号,友商,指标,数值\nSX-1,华芯微电子,插入损耗,\n"
-    rep = import_csv(s, csv_text)
-    assert rep.skipped_missing == 1
+    """「待补充」算未公开：跳过不写、计入 skipped_missing；真空白只是「这列没用到」，不计。"""
+    s = _import_session()
+    text = wide_csv({"企业名称": "华芯微电子", "产品型号": "SX-1", "产品类别": "压电气泵",
+                     "流量L/min": "待补充"})
+    rep = import_csv(s, text)
+    assert rep.skipped_missing == 1, rep.as_dict()
     assert rep.written_specs == 0
-
-
-def test_import_csv_text_metric_rejects_number_silently_ok():
-    """文本型指标传数值，应接受并把原文存进 value_text。"""
-    s = _mem_session()
-    csv_text = "型号,友商,指标,数值\nSX-1,华芯微电子,封装形式,SMD 1109\n"
-    rep = import_csv(s, csv_text)
     assert rep.errors == []
-    assert rep.written_specs == 1
+
+
+def test_import_csv_text_metric_keeps_original_text():
+    """文本型指标（驱动电压）存原文，但电压口径会被统一成 Vpp。"""
+    s = _import_session()
+    text = wide_csv({"企业名称": "华芯微电子", "产品型号": "SX-1", "产品类别": "压电气泵",
+                     "驱动电压": "±25V"})
+    rep = import_csv(s, text)
+    assert rep.errors == [], rep.errors
+    assert rep.written_specs == 1, rep.as_dict()
+    spec = s.exec(select(ProductSpec).where(ProductSpec.metric_id == 3)).first()
+    assert spec is not None and spec.value_text == "50 Vpp", spec.value_text
 
 
 # ── 运行器 ─────────────────────────────────────────────────────────────────

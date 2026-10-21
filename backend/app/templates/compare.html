@@ -117,6 +117,7 @@
     {% if can_export %}
     <a class="btn sm" href="/export.xlsx?p={{ selected|join(',') }}">导出 Excel</a>
     <a class="btn ghost sm" href="/export.csv?p={{ selected|join(',') }}">CSV</a>
+    <a class="btn ghost sm" href="/export-all.xlsx" title="所有型号的全部参数 + 客户采用，可直接再导入">导出全部（备份）</a>
     {% endif %}
     <a class="btn ghost sm" href="/api/matrix?p={{ selected|join(',') }}" target="_blank" rel="noopener">JSON</a>
   </div>

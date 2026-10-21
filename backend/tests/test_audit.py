@@ -28,6 +28,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _wide import wide_csv
 from app import audit
 from app.db import engine, init_db
 from app.main import app
@@ -213,8 +214,8 @@ def _import(csv_text: str) -> dict:
 
 def test_import_records_each_item():
     _clear_logs()
-    _import("型号,友商,大类,指标,数值\nIMP-A,导入日志甲,压电气泵,空气流量,0.9\n"
-            "IMP-A,导入日志甲,压电气泵,静压,3.3\n")
+    _import(wide_csv({"企业名称": "导入日志甲", "产品型号": "IMP-A", "产品类别": "压电气泵",
+                      "流量L/min": "0.9", "静压Pa": "3300"}))
 
     rows = _logs(action="import", object_type="spec")
     assert len(rows) == 2, f"两项参数应各记一条，实际 {len(rows)}"
@@ -228,9 +229,11 @@ def test_import_records_each_item():
 
 def test_import_overwrite_records_old_value():
     _clear_logs()
-    _import("型号,友商,大类,指标,数值\nIMP-B,导入日志乙,压电气泵,空气流量,0.9\n")
+    _import(wide_csv({"企业名称": "导入日志乙", "产品型号": "IMP-B", "产品类别": "压电气泵",
+                      "流量L/min": "0.9"}))
     _clear_logs()
-    _import("型号,友商,大类,指标,数值\nIMP-B,导入日志乙,压电气泵,空气流量,0.95\n")
+    _import(wide_csv({"企业名称": "导入日志乙", "产品型号": "IMP-B", "产品类别": "压电气泵",
+                      "流量L/min": "0.95"}))
 
     change = _changes(_logs(action="import")[0])[0]
     assert change["old"] == "0.9" and change["new"] == "0.95"

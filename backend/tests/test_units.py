@@ -26,6 +26,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _wide import wide_csv
 from app import units
 from app.db import engine, init_db
 from app.importer import import_csv
@@ -48,9 +49,14 @@ def _close(s: Session) -> None:
     s.close()
 
 
-def _csv(*rows: str) -> str:
-    head = "型号,友商,大类,指标,数值,单位,条件,来源链接,置信度"
-    return "\n".join([head, *rows]) + "\n"
+def _csv(**cells) -> str:
+    """按宽表拼一行（一行一个型号，指标是列）。"""
+    return wide_csv({"企业名称": "单位测试公司", "产品类别": "压电气泵", **cells})
+
+
+def _product(model: str) -> Product | None:
+    with Session(engine) as s:
+        return s.exec(select(Product).where(Product.model == model)).first()
 
 
 def _spec(model: str, metric_key: str) -> ProductSpec | None:
@@ -164,7 +170,7 @@ def test_voltage_dc_is_not_doubled():
 def test_csv_import_converts_unit():
     s = _session()
     try:
-        rep = import_csv(s, _csv("IMP-A,单位测试公司,压电气泵,空气流量,1100,mL/min,,,1.0"))
+        rep = import_csv(s, _csv(**{"产品型号": "IMP-A", "流量L/min": "1100 mL/min"}))
         s.commit()
         assert not rep.errors, rep.errors
         assert rep.converted_units == 1
@@ -179,10 +185,10 @@ def test_csv_import_converts_unit():
 def test_csv_import_rejects_cross_dimension_unit():
     s = _session()
     try:
-        rep = import_csv(s, _csv("IMP-B,单位测试公司,压电气泵,空气流量,1.5,kPa,,,1.0"))
+        rep = import_csv(s, _csv(**{"产品型号": "IMP-B", "流量L/min": "1.5 kPa"}))
         s.commit()
         assert rep.errors and "跨维度" in rep.errors[0], rep.errors
-        assert _spec("IMP-B", "flow_air") is None, "跨维度的行不能落库"
+        assert _product("IMP-B") is None, "整行只有非法值，连型号都不该建出来"
     finally:
         _close(s)
 
@@ -190,9 +196,11 @@ def test_csv_import_rejects_cross_dimension_unit():
 def test_csv_import_normalizes_voltage_text():
     s = _session()
     try:
-        rep = import_csv(s, _csv(
-            "IMP-C,单位测试公司,压电气泵,驱动电压,±25V,,Square wave,,",
-            "IMP-D,单位测试公司,压电气泵,驱动电压,3.3Vrms,,,,",
+        rep = import_csv(s, wide_csv(
+            {"企业名称": "单位测试公司", "产品类别": "压电气泵",
+             "产品型号": "IMP-C", "驱动电压": "±25V"},
+            {"企业名称": "单位测试公司", "产品类别": "压电气泵",
+             "产品型号": "IMP-D", "驱动电压": "3.3Vrms"},
         ))
         s.commit()
         spec = _spec("IMP-C", "drive_voltage")
@@ -207,7 +215,7 @@ def test_csv_import_normalizes_voltage_text():
 def test_import_without_unit_column_mean_is_metric_unit():
     s = _session()
     try:
-        rep = import_csv(s, _csv("IMP-E,单位测试公司,压电气泵,空气流量,0.7,,,,"))
+        rep = import_csv(s, _csv(**{"产品型号": "IMP-E", "流量L/min": "0.7"}))
         s.commit()
         assert not rep.errors and rep.converted_units == 0
         assert abs((_spec("IMP-E", "flow_air").value_num or 0) - 0.7) < 1e-12

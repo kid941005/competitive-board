@@ -349,8 +349,12 @@ def test_import_accepts_native_json_types():
     c.__enter__()
     h = _h()
     rows = [
-        {"型号": "JSN-1", "友商": "JSON 导入测试", "大类": "压电气泵", "指标": "静压", "数值": 3.5},
-        {"型号": "JSN-1", "友商": "JSON 导入测试", "大类": "压电气泵", "指标": "瞎写", "数值": 1},
+        # 宽表：一行一个型号；静压列的头写着 Pa，传 3500 应落成 3.5 kPa
+        {"企业名称": "JSON 导入测试", "产品型号": "JSN-1", "产品类别": "压电气泵",
+         "静压Pa": 3500},
+        # 坏行：大类认不出 → 整行跳过并报错
+        {"企业名称": "JSON 导入测试", "产品型号": "JSN-BAD", "产品类别": "压电陶瓷",
+         "静压Pa": 1000},
     ]
     r = c.post("/api/v1/import", json={"rows": rows}, headers=h)
     assert r.status_code == 200, r.text
@@ -367,8 +371,8 @@ def test_import_dry_run_rolls_back_everything():
     c = TestClient(app)
     c.__enter__()
     h = _h()
-    rows = [{"型号": "JSN-DRY", "友商": "不该出现的公司", "大类": "压电气泵",
-             "指标": "静压", "数值": 1}]
+    rows = [{"企业名称": "不该出现的公司", "产品型号": "JSN-DRY", "产品类别": "压电气泵",
+             "静压Pa": 1000}]
     r = c.post("/api/v1/import", json={"rows": rows, "dry_run": True}, headers=h)
     assert r.json()["data"]["written_specs"] == 1
     assert not c.get("/api/v1/products?q=JSN-DRY", headers=h).json()["data"]

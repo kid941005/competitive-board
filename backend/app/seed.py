@@ -50,17 +50,17 @@ METRICS = [
     ("self_priming", "气动与流体", "自吸", "", "text", "na", 0, 370, False, "pump_liquid", ""),
     ("media", "气动与流体", "可泵介质", "", "text", "na", 0, 380, False, "pump_liquid", ""),
     # 驱动与功耗
-    ("resonance", "驱动与功耗", "谐振频率", "kHz", "text", "na", 0, 400, False, "pump_air", "厂商多以区间给出，按文本记录"),
+    ("resonance", "驱动与功耗", "谐振频率", "kHz", "text", "na", 0, 400, False, "pump_air,pump_liquid,fan", "厂商多以区间给出，按文本记录"),
     ("drive_voltage", "驱动与功耗", "驱动电压", "V", "text", "na", 0, 410, False, "pump_air,pump_liquid,fan", "区间值按原文记录，交直流见溯源"),
     ("power_mw", "驱动与功耗", "功耗", "mW", "number", "lower", 0, 420, True, "pump_air,pump_liquid,fan", ""),
-    ("noise_dba", "驱动与功耗", "噪音", "dB(A)", "number", "lower", 1, 430, False, "pump_air,fan", "气泵厂商普遍不公开此项"),
+    ("noise_dba", "驱动与功耗", "噪音", "dB(A)", "number", "lower", 1, 430, False, "pump_air,pump_liquid,fan", "气泵厂商普遍不公开此项"),
     # 物理与可靠性（器件类通用；材料牌号不在本看板范围内）
     ("size", "物理与可靠性", "外形尺寸", "mm", "text", "na", 0, 500, False, "pump_air,pump_liquid,fan", ""),
     ("thickness", "物理与可靠性", "厚度", "mm", "number", "lower", 2, 510, True, "fan", "固态散热的核心竞争力维度"),
     ("weight_g", "物理与可靠性", "重量", "g", "number", "lower", 1, 520, False, "pump_air,pump_liquid,fan", ""),
     ("heat_w", "物理与可靠性", "散热能力", "W", "number", "higher", 1, 530, False, "fan", "单颗可带走的热功耗"),
-    ("op_temp_max", "物理与可靠性", "工作温度上限", "℃", "number", "higher", 0, 540, False, "pump_air,pump_liquid", ""),
-    ("lifetime_h", "物理与可靠性", "寿命", "h", "number", "higher", 0, 550, False, "pump_air,pump_liquid", ""),
+    ("op_temp_max", "物理与可靠性", "工作温度上限", "℃", "number", "higher", 0, 540, False, "pump_air,pump_liquid,fan", ""),
+    ("lifetime_h", "物理与可靠性", "寿命", "h", "number", "higher", 0, 550, False, "pump_air,pump_liquid,fan", ""),
     ("wetted_material", "物理与可靠性", "接触介质材质", "", "text", "na", 0, 560, False, "pump_liquid", ""),
 ]
 

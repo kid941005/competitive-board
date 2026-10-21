@@ -154,7 +154,8 @@ def convert(value: float, src_unit: str, dst_unit: str) -> Converted:
             value, ok=False, converted=False,
             reason=f"「{src_unit}」是{_CN_DIM[ds]}，「{dst_unit}」是{_CN_DIM[dd]}，跨维度不能换算",
         )
-    out = value * fs / fd
+    # 12 位有效数字：0.0035 L/min → 3500 µL/min 不带上 1e-13 的浮点尾巴
+    out = float(f"{value * fs / fd:.12g}")
     return Converted(out, ok=True, converted=True, note=_APPROX.get((s, ds)))
 
 

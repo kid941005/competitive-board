@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from sqlmodel import Session, select
 
-from . import settings_store
+from . import backup, settings_store
 from .auth import P_EXPORT, P_VIEW, AuthSession, User
 from .compare import better_label
 from .config import category_label
@@ -232,6 +232,27 @@ def export_xlsx(
         io.BytesIO(matrix_xlsx(data)),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=spec-compare-{stamp}.xlsx"},
+    )
+
+
+@router.get("/export-all.xlsx")
+def export_all(
+    _pair=Depends(_perm(P_EXPORT)),
+    session: Session = Depends(get_session),
+):
+    """导出全部数据（备份用）：参数宽表（可再导入）+ 参数明细 + 客户采用。
+
+    与 `/export.xlsx` 的区别是「范围」而不是「格式」：那边只导当前选中的几个型号，
+    是拿来对比的报表；这里不管选择状态，把库里所有型号所有参数都倒出来。
+    """
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    return StreamingResponse(
+        io.BytesIO(backup.export_all_xlsx(session)),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=competitive-board-backup-{stamp}.xlsx"
+        },
     )
 
 

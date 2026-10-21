@@ -37,7 +37,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
-from . import audit, auth, config, search, settings_store, tokens, units
+from . import adoptions, audit, auth, config, search, settings_store, tokens, units
 from .compare import format_number, metrics_for_categories
 from .db import get_session
 from .importer import import_rows
@@ -228,26 +228,15 @@ def _resolve_customer(
 ) -> Entity:
     """按 id 或按名字找客户；名字不存在就建一个 kind=customer 的公司。
 
-    同名公司已经存在（哪怕它是友商）就复用，不新建：客户档案重复比少一条采用
-    记录难收拾得多。kind 不改 —— 一家既是友商又是客户的情况，这里保持原类型。
+    归一与建档逻辑在 app/adoptions.py —— 页面、接口、表格导入必须同一套规则，
+    否则会出现「页面上复用了、接口又新建一份」的重复客户档案。
     """
-    if customer_id:
-        ent = session.get(Entity, customer_id)
-        if ent is None:
-            raise ApiError("NOT_FOUND", f"客户 id={customer_id} 不存在")
-        return ent
-    name = (customer_name or "").strip()
-    if not name:
-        raise ApiError("VALIDATION_FAILED", "customer_id 与 customer_name 至少给一个",
-                       field="customer_name")
-    key = re.sub(r"[\s\-_.·/\\()（）]+", "", name).lower()
-    for ent in session.exec(select(Entity)).all():
-        if re.sub(r"[\s\-_.·/\\()（）]+", "", ent.name or "").lower() == key:
-            return ent
-    ent = Entity(kind="customer", name=name)
-    session.add(ent)
-    session.flush()
-    return ent
+    try:
+        return adoptions.resolve_customer(session, customer_id, customer_name)
+    except LookupError as exc:
+        raise ApiError("NOT_FOUND", str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError("VALIDATION_FAILED", str(exc), field="customer_name") from exc
 
 
 def _metric_dict(m: SpecMetric) -> dict:
@@ -354,7 +343,6 @@ def _clean_model(model: str | None) -> str:
 
 
 def _norm_name(name: str) -> str:
-    import re
 
     return re.sub(r"[\s\-_.·/\\()（）&]+", "", name or "").casefold()
 
@@ -1803,8 +1791,9 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
             "name": "bulk_import",
             "method": "POST", "path": "/api/v1/import",
             "description": (
-                "按行导入参数，与页面上的 Excel/CSV 导入共用同一套校验（指标必须在字典里、"
-                "必须适用于该大类、值与条件不变则跳过）。支持 dry_run 预演。"
+                "按行导入型号与参数（宽表：一行一个型号），与页面上的 Excel/CSV 导入共用"
+                "同一套校验（列头单位会换算、指标必须适用该大类、值不变则跳过）。"
+                "支持 dry_run 预演。"
             ),
             "scope": "ingest",
             "parameters": {
@@ -1813,8 +1802,10 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "rows": {
                         "type": "array",
                         "description": (
-                            "每行一个对象，键用中文表头：型号、友商、大类、指标、数值、"
-                            "条件、来源链接、置信度。缺列的可在不同行出现。"
+                            "每行一个型号。键用中文表头：企业名称、产品型号、产品类别、"
+                            "流量L/min、静压Pa、驱动电压……来源链接、置信度、"
+                            "关联客户（有公开证据）、口径与备注。列头带单位就按单位换算"
+                            "（静压Pa 的 50000 → 50 kPa）；空值或「待补充」= 未公开。"
                         ),
                         "items": {"type": "object"},
                     },

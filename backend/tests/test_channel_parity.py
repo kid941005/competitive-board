@@ -38,6 +38,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _wide import wide_headers
 from app.audit import AuditLog, parse_changes
 from app.compare import format_number, metric_applies
 from app.db import engine, init_db
@@ -160,9 +161,9 @@ def test_import_rejects_metric_from_another_category():
     with Session(engine) as s:
         rep = import_rows(
             s,
-            [{"型号": "XCAT-1", "友商": "跨类测试", "大类": "压电气泵",
-              "指标": "液体流量", "数值": "8000"}],
-            ["型号", "友商", "大类", "指标", "数值"],
+            [{"企业名称": "跨类测试", "产品型号": "XCAT-1", "产品类别": "压电气泵",
+              "厚度mm": "2"}],
+            wide_headers(),
         )
         assert rep.written_specs == 0, "跨大类指标不该写库"
         assert any("不适用" in e for e in rep.errors), rep.errors
@@ -306,31 +307,34 @@ def test_import_query_count_does_not_scale_with_rows():
         if statement.lstrip().upper().startswith("SELECT"):
             counter["select"] += 1
 
-    rows = []
-    for i in range(10):
-        for key in ("flow_air", "pressure_air", "resonance", "power_mw", "size"):
-            rows.append({"型号": f"PERF-{i}", "友商": "性能测试", "大类": "压电气泵",
-                         "指标": key, "数值": "1.0"})
+    rows = [
+        {"企业名称": "性能测试", "产品型号": f"PERF-{i}", "产品类别": "压电气泵",
+         "流量L/min": "1.0", "静压Pa": "1000", "谐振频率": "25 kHz",
+         "功耗": "50", "外形尺寸": "20×20×2 mm"}
+        for i in range(10)
+    ]
 
     event.listen(engine, "before_cursor_execute", _hook)
     try:
         with Session(engine) as s:
-            rep = import_rows(s, rows, ["型号", "友商", "大类", "指标", "数值"])
+            rep = import_rows(s, rows, wide_headers())
     finally:
         event.remove(engine, "before_cursor_execute", _hook)
 
-    assert rep.written_specs == len(rows), rep.as_dict()
-    # 旧实现每行一次 select(ProductSpec)：50 行 → 50 条 SELECT，总量约 2 条/行。
+    assert rep.written_specs == len(rows) * 5, rep.as_dict()
+    # 宽表一行写 5 格，10 行 = 50 格。旧实现每格一次 select(ProductSpec)：
     # 现在按型号预加载，SELECT 只随「不同型号数」增长（10 个型号 ≈ 14 条）。
-    assert counter["select"] <= 15, f"50 行导入用了 {counter['select']} 条 SELECT"
-    assert counter["n"] <= 2 * len(rows), f"50 行导入共用了 {counter['n']} 条 SQL"
+    assert counter["select"] <= 15, f"10 行导入用了 {counter['select']} 条 SELECT"
+    # 每格必然有一条 INSERT，所以总量按「写入格数」而不是「行数」衡量；
+    # 这条防的是「每格再来一次 SELECT」——那会把 50 格变成 100+ 条查询。
+    assert counter["n"] <= 2 * rep.written_specs, f"共用 {counter['n']} 条 SQL"
 
 
 # ── N-11 重复导入是安全的 ─────────────────────────────────────────────────
 def test_reimport_unchanged_row_is_noop():
-    rows = [{"型号": "IDEMP-1", "友商": "幂等测试", "大类": "压电气泵",
-             "指标": "空气流量", "数值": "0.42", "条件": "@15Vpp"}]
-    headers = ["型号", "友商", "大类", "指标", "数值", "条件"]
+    rows = [{"企业名称": "幂等测试", "产品型号": "IDEMP-1", "产品类别": "压电气泵",
+             "流量L/min": "0.42"}]
+    headers = wide_headers()
     with Session(engine) as s:
         first = import_rows(s, rows, headers)
         assert first.written_specs == 1, first.as_dict()
@@ -363,9 +367,9 @@ def test_import_error_line_number_matches_file():
     wb = Workbook()
     ws = wb.active
     ws.append(["某某公司型号参数表"])                                # 第 1 行：标题
-    ws.append(["型号", "友商", "大类", "指标", "数值"])              # 第 2 行：表头
-    ws.append(["LINE-1", "行号测试", "压电气泵", "空气流量", "0.5"])  # 第 3 行：正常
-    ws.append(["", "行号测试", "压电气泵", "空气流量", "0.6"])        # 第 4 行：型号为空
+    ws.append(["企业名称", "产品型号", "产品类别", "流量L/min"])       # 第 2 行：表头
+    ws.append(["行号测试", "LINE-1", "压电气泵", "0.5"])               # 第 3 行：正常
+    ws.append(["行号测试", "", "压电气泵", "0.6"])                     # 第 4 行：型号为空
     buf = io.BytesIO()
     wb.save(buf)
 

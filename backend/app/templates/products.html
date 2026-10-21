@@ -44,6 +44,11 @@
   <div class="panel-head">
     <h2>全部型号</h2>
     <span class="hint" id="prodCount">{{ rows|length }} 个型号 · 点击「编辑」改元信息与参数</span>
+    {% if can_export %}
+    <a class="btn ghost sm" href="/export-all.xlsx" title="所有型号的全部参数 + 客户采用">
+      导出全部（备份）
+    </a>
+    {% endif %}
   </div>
 
   <div class="filters prod-filters">

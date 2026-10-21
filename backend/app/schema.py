@@ -30,7 +30,7 @@ from . import audit
 from .models import Product, ProductSpec, SpecMetric
 
 # 当前代码期望的表结构版本。加一版就在这里改一个数字，并在 MIGRATIONS 末尾追加一步。
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 _VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -241,6 +241,36 @@ def _v3_adoption_index(session: Session) -> None:
     conn.execute(text(UX_ADOPTION))
 
 
+# v4：把这四个指标放宽到覆盖全部三个大类。
+# 依据是业务方实际登记的数据 —— 风扇与液泵同样有谐振频率、温度上限、寿命、噪音，
+# 原来只标了 pump_air（噪音到 fan），于是导入时被「不适用于该大类」整格拦掉。
+_WIDEN_APPLIES = {
+    "resonance": "pump_air,pump_liquid,fan",
+    "op_temp_max": "pump_air,pump_liquid,fan",
+    "lifetime_h": "pump_air,pump_liquid,fan",
+    "noise_dba": "pump_air,pump_liquid,fan",
+}
+
+
+def _v4_widen_applies_to(session: Session) -> None:
+    """把通用的驱动/可靠性指标放宽到三个大类（只改 applies_to，不动数值）。"""
+    changed: list[str] = []
+    for metric in session.exec(select(SpecMetric)).all():
+        target = _WIDEN_APPLIES.get(metric.key)
+        if target and metric.applies_to != target:
+            changed.append(f"{metric.key}: {metric.applies_to} → {target}")
+            metric.applies_to = target
+            session.add(metric)
+    session.flush()
+    if changed:
+        audit.record(
+            session, actor="system", actor_kind="system", action="update",
+            object_type="metric", label="指标字典", origin="migration",
+            changes=[{"field": "适用大类", "old": "按气泵限定", "new": "气泵+液泵+风扇"}],
+            note="；".join(changed),
+        )
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -252,6 +282,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline（建表由 create_all 完成）", _v1_baseline),
     Migration(2, "型号与参数加唯一索引（先合并存量重复）", _v2_unique_indexes),
     Migration(3, "合并风量/静压两套指标、删掉真空度、客户采用关系唯一索引", _v3_adoption_index),
+    Migration(4, "谐振频率/温度/寿命/噪音放宽到三个大类", _v4_widen_applies_to),
 )
 
 

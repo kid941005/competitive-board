@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,7 +10,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Upl
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlmodel import Session, select
 
-from . import audit, auth, config, settings_store
+from . import adoptions, audit, auth, config, settings_store
 from .auth import P_WRITE, AuthSession, User
 from .compare import format_number, metrics_for_categories
 from .config import category_label
@@ -34,10 +33,6 @@ from .web_shared import (
 )
 
 SHEET_EXT = {".xlsx", ".xlsm", ".csv", ".txt"}
-
-# 公司名归一：与导入建公司用同一套规则（忽略空格、标点、大小写），
-# 否则「村田制作所」和「村田制作所 」会各建一份客户档案。
-_NAME_NOISE = re.compile(r"[\s\-_.·/\\()（）]+")
 
 router = APIRouter()
 
@@ -76,19 +71,19 @@ def import_page(
 
 
 def _import_columns() -> list[tuple[str, str, str]]:
+    """导入页的「列说明」表。宽表：一行一个型号，指标是列。"""
     return [
-        ("型号", "必填", "已存在则更新该型号参数；不存在则新建型号"),
-        ("友商", "建议填", "公司名称；已存在则复用（忽略空格/标点/大小写）"),
-        ("大类", "建议填", "只能填：" + "、".join(config.CATEGORY_LABEL.values())),
-        ("指标", "必填", "指标中文名或 key，必须在指标字典中存在，否则该行跳过"),
-        ("数值", "必填", "数值型填数字；文本型填原文；留空表示未公开，跳过"),
-        ("单位", "建议填",
-         "这一列的值，如 mL/min、mbar、Vp。填了就换算到指标字典的单位（mL/min → L/min、"
-         "Vp → Vpp ×2、±25V → 50 Vpp）；单位认不出或跨维度（把 kPa 填进流量行）该行报错跳过；"
-         "不填视为已是字典单位"),
-        ("条件", "可空", "如 @15Vpp，会出现在溯源浮层"),
-        ("来源链接", "可空", "越具体越好，便于逐项复核"),
+        ("企业名称", "必填", "公司名称；已存在则复用（忽略空格/标点/大小写/括注），不存在则新建"),
+        ("产品型号", "必填", "同公司内唯一；已存在则更新参数，不存在则新建型号"),
+        ("产品类别", "建议填", "只能填：" + "、".join(config.CATEGORY_LABEL.values())),
+        ("指标列", "可空", "流量L/min、静压Pa、谐振频率、驱动电压、功耗、噪音、外形尺寸、"
+                         "重量、温度范围、寿命（另有液泵/风扇补充列）；留空或「待补充」= 未公开"),
+        ("列头单位", "固定", "会被换算成系统口径：静压Pa 的 50,000 → 50 kPa、"
+                          "液体流量µL/min、背压mbar、厚度mm、散热能力W；不用自己换算"),
+        ("来源链接", "可空", "整行共用一条来源，越具体越好"),
         ("置信度", "可空", "0~1，缺省 1.0"),
+        ("关联客户（有公开证据）", "可空", "多家用「；」分隔；导入时拆成客户采用记录（状态=传闻）"),
+        ("口径与备注", "可空", "写进型号备注，如「静压@19.5Vdc」"),
     ]
 
 
@@ -351,10 +346,6 @@ def _adoptions_of(session: Session, product_id: int, ent_by_id: dict) -> list[di
     return out
 
 
-def _norm_company(name: str) -> str:
-    return _NAME_NOISE.sub("", (name or "").strip()).lower()
-
-
 @router.post("/products/{product_id}/adoptions")
 def adoption_create(
     product_id: int,
@@ -388,30 +379,23 @@ def adoption_create(
         if year_val < 2000 or year_val > 2100:
             return _redirect(f"/products/{product_id}", f"年份 {year_val} 看着不对", "err")
 
-    customer: Entity | None = None
-    if customer_id:
-        customer = session.get(Entity, customer_id)
-        if customer is None:
-            return _redirect(f"/products/{product_id}", f"客户 id={customer_id} 不存在", "err")
-    else:
-        name = (customer_name or "").strip()
-        if not name:
-            return _redirect(f"/products/{product_id}", "请选择客户或填写客户名称", "err")
-        key = _norm_company(name)
-        for e in session.exec(select(Entity)).all():
-            if _norm_company(e.name) == key:
-                customer = e
-                break
-        if customer is None:
-            customer = Entity(kind="customer", name=name)
-            session.add(customer)
-            session.flush()
-            audit.record(
-                session, actor=user.username, action="create", object_type="entity",
-                object_id=customer.id, label=name, origin="web",
-                changes=[{"field": "类型", "old": "", "new": "客户"}],
-                note="记客户采用情况时顺手建档", request_id=_rid(),
-            )
+    # 「按名字找客户、没有就建档」只实现一次（app/adoptions.py）—— 页面、API、
+    # 表格导入三个入口共用，否则归一规则会各走一样（一处复用、一处新建）。
+    new_customer = bool(not customer_id
+                        and adoptions.find_by_name(session, customer_name or "") is None)
+    try:
+        customer = adoptions.resolve_customer(session, customer_id or None, customer_name)
+    except LookupError as exc:
+        return _redirect(f"/products/{product_id}", str(exc), "err")
+    except ValueError:
+        return _redirect(f"/products/{product_id}", "请选择客户或填写客户名称", "err")
+    if new_customer:
+        audit.record(
+            session, actor=user.username, action="create", object_type="entity",
+            object_id=customer.id, label=customer.name, origin="web",
+            changes=[{"field": "类型", "old": "", "new": "客户"}],
+            note="记客户采用情况时顺手建档", request_id=_rid(),
+        )
 
     exists = session.exec(
         select(Adoption).where(

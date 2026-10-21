@@ -25,6 +25,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _wide import wide_headers
 from app import settings_store, tokens
 from app.audit import AuditLog
 from app.db import engine, init_db
@@ -67,11 +68,13 @@ def _metric_id(session: Session, key: str) -> int:
 def test_import_same_model_two_companies():
     _c()
     rows = [
-        {"型号": "SHARED-1", "友商": "甲测试公司", "大类": "压电气泵", "指标": "空气流量", "数值": "0.5"},
-        {"型号": "SHARED-1", "友商": "乙测试公司", "大类": "压电气泵", "指标": "空气流量", "数值": "0.9"},
+        {"企业名称": "甲测试公司", "产品型号": "SHARED-1", "产品类别": "压电气泵",
+         "流量L/min": "0.5"},
+        {"企业名称": "乙测试公司", "产品型号": "SHARED-1", "产品类别": "压电气泵",
+         "流量L/min": "0.9"},
     ]
     with Session(engine) as s:
-        import_rows(s, rows, ["型号", "友商", "大类", "指标", "数值"])
+        import_rows(s, rows, wide_headers())
         found = s.exec(select(Product).where(Product.model == "SHARED-1")).all()
         assert len(found) == 2, f"两家公司同型号应建 2 条，实际 {len(found)} 条"
 
@@ -90,32 +93,36 @@ def test_import_same_model_two_companies():
 # ── F-03 置信度 ────────────────────────────────────────────────────────────
 def test_import_confidence_zero_and_clamp():
     _c()
+    # 宽表：一行一个型号。置信度是整行一个值，所以这里拆成两行不同型号，
+    # 故意违反一下「越小越好」的直觉 —— 0 与 5 才是要测的边界。
     rows = [
-        {"型号": "CONF-1", "友商": "置信测试", "大类": "压电气泵", "指标": "静压", "数值": "1.2", "置信度": "0"},
-        {"型号": "CONF-1", "友商": "置信测试", "大类": "压电气泵", "指标": "空气流量", "数值": "0.8", "置信度": "5"},
+        {"企业名称": "置信测试", "产品型号": "CONF-1", "产品类别": "压电气泵",
+         "流量L/min": "0.8", "置信度": "0"},
+        {"企业名称": "置信测试", "产品型号": "CONF-2", "产品类别": "压电气泵",
+         "流量L/min": "0.9", "置信度": "5"},
     ]
     with Session(engine) as s:
-        import_rows(s, rows, ["型号", "友商", "大类", "指标", "数值", "置信度"])
-        product = s.exec(select(Product).where(Product.model == "CONF-1")).first()
-        press = s.exec(
-            select(ProductSpec).where(
-                ProductSpec.product_id == product.id, ProductSpec.metric_id == _metric_id(s, "pressure_air")
-            )
-        ).first()
-        flow = s.exec(
-            select(ProductSpec).where(
-                ProductSpec.product_id == product.id, ProductSpec.metric_id == _metric_id(s, "flow_air")
-            )
-        ).first()
-    assert press.confidence == 0.0, f"置信度 0 应原样落库，实际 {press.confidence}"
-    assert flow.confidence == 1.0, f"置信度 5 应被钳到 1.0，实际 {flow.confidence}"
+        import_rows(s, rows, wide_headers())
+        mid = _metric_id(s, "flow_air")
+        confs = {}
+        for model in ("CONF-1", "CONF-2"):
+            product = s.exec(select(Product).where(Product.model == model)).first()
+            spec = s.exec(
+                select(ProductSpec).where(
+                    ProductSpec.product_id == product.id, ProductSpec.metric_id == mid
+                )
+            ).first()
+            confs[model] = spec.confidence
+    assert confs["CONF-1"] == 0.0, f"置信度 0 应原样落库，实际 {confs['CONF-1']}"
+    assert confs["CONF-2"] == 1.0, f"置信度 5 应被钳到 1.0，实际 {confs['CONF-2']}"
 
 
 # ── F-04 覆盖后应回到未复核 ────────────────────────────────────────────────
 def test_import_resets_verified():
     _c()
-    rows = [{"型号": "VER-1", "友商": "复核测试", "大类": "压电气泵", "指标": "空气流量", "数值": "0.7"}]
-    headers = ["型号", "友商", "大类", "指标", "数值"]
+    rows = [{"企业名称": "复核测试", "产品型号": "VER-1", "产品类别": "压电气泵",
+             "流量L/min": "0.7"}]
+    headers = wide_headers()
     with Session(engine) as s:
         import_rows(s, rows, headers)
         product = s.exec(select(Product).where(Product.model == "VER-1")).first()
@@ -127,7 +134,7 @@ def test_import_resets_verified():
         s.add(spec)
         s.commit()
 
-        rows[0]["数值"] = "0.72"
+        rows[0]["流量L/min"] = "0.72"
         import_rows(s, rows, headers)
         s.refresh(spec)
     assert spec.value_num == 0.72
