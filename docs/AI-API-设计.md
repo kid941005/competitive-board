@@ -188,9 +188,31 @@ Authorization: Bearer cib_<prefix>_<secret>
 | `audit` 变更日志 | 追查历史改动 | 让 Agent 在写之前先看「这项参数之前被谁改过」 |
 | `metric_key` 稳定标识 | 写参数只认 key | 指标改名不影响历史调用 |
 
-### 接 MCP 的方式（已预留，未实现）
+### 接 MCP 的方式（已实现：`mcp/cib_mcp.py`）
 
-`/api/v1/tools` 的每一项都能一对一映射成 MCP tool：`name` → tool name，`description` → description，`parameters` → inputSchema，`method+path` → 内部 HTTP 调用。届时只需写一个薄适配层，**业务代码零改动**。
+`/api/v1/tools` 的每一项一对一映射成 MCP tool：`name` → tool name，`description` → description，
+`parameters` → inputSchema，`method+path` → 内部 HTTP 调用。**业务代码零改动**，一共 400 行。
+
+实现时有四处是踩过才知道的：
+
+| 问题 | 处理 |
+|---|---|
+| 路径占位符没声明成 `required` | 从 `path` 里抽 `{product_id}` 补进 `inputSchema.required`，否则模型不知道要传，白跑一轮 |
+| `dry_run` 放 body 还是 query | 放 **query** —— 服务端 `_is_dry` 先查 query，这是明确生效的路径；body 要看具体模型有没有该字段 |
+| `?confirm=true` 这类内联 query | 路径替换前先 `partition("?")`，否则会被 `{id}` 替换吃掉 |
+| 日志打到 stdout | **致命**。stdout 是协议通道，混一行客户端就 parse 失败；日志一律走 stderr |
+
+另外两处刻意的取舍：
+
+- **默认禁用系统代理**。设了 `http_proxy` 的机器上，urllib 会把 `127.0.0.1` 与 `192.168.*`
+  也送进代理然后超时，表现得像「看板没起来」。内网访问必须绕开，要代理时显式设
+  `CIB_USE_ENV_PROXY=1`。
+- **不透传 `If-Match`**。乐观并发锁只在直接调 HTTP 时用；AI 是串行对话，「先 GET 再 PATCH」够了。
+  为它引入一层「参数名 → HTTP 头」的映射不划算。
+
+顺带补了清单本身的两处缺失：`update_product` 原来只有 path、没说要传什么，
+`bulk_import` **完全没有 parameters** —— 直接吃 `/tools` 的 function-calling 客户端同样会调不通，
+不只是 MCP 的问题。
 
 ---
 

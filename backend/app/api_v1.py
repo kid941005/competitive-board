@@ -1288,6 +1288,10 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
             "method": "GET", "path": "/api/v1/products/{product_id}",
             "description": "型号详情：全部参数、缺失项、完整度、ETag。",
             "scope": "read",
+            "parameters": {
+                "type": "object", "required": ["product_id"],
+                "properties": {"product_id": {"type": "integer"}},
+            },
         },
         {
             "name": "compare_products",
@@ -1332,8 +1336,24 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
         {
             "name": "update_product",
             "method": "PATCH", "path": "/api/v1/products/{product_id}",
-            "description": "改型号元信息。传 If-Match 防覆盖；已有参数时不能改大类。",
+            "description": (
+                "改型号元信息（只传要改的字段，未传的不动）。已有参数时不能换大类。"
+                "并发保护靠 HTTP 的 If-Match 头，本清单不透传；先 GET 再 PATCH 即可。"
+            ),
             "scope": "write",
+            "parameters": {
+                "type": "object", "required": ["product_id"],
+                "properties": {
+                    "product_id": {"type": "integer"},
+                    "model": {"type": "string", "description": "型号；同公司内必须唯一"},
+                    "name": {"type": "string", "description": "产品名"},
+                    "category": {"type": "string", "enum": list(config.CATEGORY_LABEL)},
+                    "status": {"type": "string", "enum": ["active", "eol", "rumored"]},
+                    "datasheet_url": {"type": "string", "description": "规格书链接，只收 http(s)"},
+                    "note": {"type": "string"},
+                    "dry_run": {"type": "boolean"},
+                },
+            },
         },
         {
             "name": "write_specs",
@@ -1366,8 +1386,26 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
         {
             "name": "bulk_import",
             "method": "POST", "path": "/api/v1/import",
-            "description": "按行导入参数（与 Excel 导入同规则），支持 dry_run。",
+            "description": (
+                "按行导入参数，与页面上的 Excel/CSV 导入共用同一套校验（指标必须在字典里、"
+                "必须适用于该大类、值与条件不变则跳过）。支持 dry_run 预演。"
+            ),
             "scope": "ingest",
+            "parameters": {
+                "type": "object", "required": ["rows"],
+                "properties": {
+                    "rows": {
+                        "type": "array",
+                        "description": (
+                            "每行一个对象，键用中文表头：型号、友商、大类、指标、数值、"
+                            "条件、来源链接、置信度。缺列的可在不同行出现。"
+                        ),
+                        "items": {"type": "object"},
+                    },
+                    "note": {"type": "string", "description": "写进来源记录的批次说明"},
+                    "dry_run": {"type": "boolean"},
+                },
+            },
         },
         {
             "name": "get_change_log",
@@ -1391,8 +1429,12 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
         {
             "name": "delete_product",
             "method": "DELETE", "path": "/api/v1/products/{product_id}?confirm=true",
-            "description": "删除型号及其全部参数，不可撤销。",
+            "description": "删除型号及其全部参数，不可撤销。删除前建议先 GET 确认是哪个型号。",
             "scope": "write",
+            "parameters": {
+                "type": "object", "required": ["product_id"],
+                "properties": {"product_id": {"type": "integer"}},
+            },
         },
     ]
     return ok({

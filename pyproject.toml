@@ -11,6 +11,7 @@
 target-version = "py312"
 line-length = 110
 extend-exclude = ["backend/data"]
+# mcp/ 是独立的 stdio 适配层，不在 backend 包内，但同样纳入 F/E9/B 检查
 
 [tool.ruff.lint]
 select = ["F", "E9", "B"]

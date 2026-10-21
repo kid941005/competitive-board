@@ -79,7 +79,7 @@ jobs:
       # 只开 F/E9/B 三条（见 pyproject.toml）：抓未使用导入、未定义名、常见陷阱。
       # 不做行宽与风格检查 —— 本项目注释密度高，强制 88 列会压缩「为什么」的说明。
       - name: 静态检查
-        run: python -m ruff check backend/app backend/tests
+        run: python -m ruff check backend/app backend/tests mcp
 
       # 每个测试文件独立进程：它们都在导入期设置 CIB_DATA_DIR，
       # 同一个进程里跑会共用临时目录而互相污染
