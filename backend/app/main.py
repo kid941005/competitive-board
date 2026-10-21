@@ -36,16 +36,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from . import api_v1, audit, auth, config, datasheet_store, settings_store
+from .db import engine, init_db
+from .models import Entity
 from .routes_admin import router as admin_router
 from .routes_auth import router as auth_router
 from .routes_compare import router as compare_router
 from .routes_datasheet import router as datasheet_router
 from .routes_products import router as products_router
-from .web_shared import BASE, templates
-from .db import engine, init_db
-from .models import Entity
 from .timeutil import fmt_local
-
+from .web_shared import BASE, templates
 
 # 用户不存在时也走一次哈希校验，避免通过响应时间枚举账号
 

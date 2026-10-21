@@ -4,7 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}竞品参数对比{% endblock %}</title>
-  {% if csrf %}<meta name="csrf-token" content="{{ csrf }}">{% endif %}
+  {# 登录页、403、错误页天然没有会话，也就没有 CSRF 令牌 —— 这几个渲染点不传 csrf。
+     用 is defined 而不是直接取，否则换成 StrictUndefined 时会在这里炸。
+     需要令牌的页面由 _ctx() 统一注入，忘记传的后果是表单里渲染成空、提交时校验失败，
+     不会静默放行。 #}
+  {% if csrf is defined and csrf %}<meta name="csrf-token" content="{{ csrf }}">{% endif %}
   <link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
 </head>
 <body>

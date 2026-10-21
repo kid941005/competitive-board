@@ -41,7 +41,8 @@
 ### 写入面 `write`
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| POST | `/api/v1/entities` | 新建公司（近名会 409，`force=true` 放行） |
+| POST | `/api/v1/entities` | 新建公司（近名会 409，`force=true` 放行）；`kind`/`name_en`/`region`/`tier` 都会生效 |
+| PATCH | `/api/v1/entities/{id}` | 改公司元信息：名称、类型（本方/友商/客户）、英文名、地区、档位 |
 | POST | `/api/v1/products` | 新建型号（公司可传 id 或 name） |
 | PATCH | `/api/v1/products/{id}` | 改型号元信息（支持 `If-Match`） |
 | POST | `/api/v1/specs/batch` | **批量写参数**，逐项返回成败 |

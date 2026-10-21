@@ -29,16 +29,16 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy import create_engine, text  # noqa: E402
-from sqlmodel import Session, SQLModel, select  # noqa: E402
-
-from app import schema  # noqa: E402
-from app.db import engine as app_engine, init_db  # noqa: E402
-from app.importer import import_rows  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models import AuditLog, Entity, Product, ProductSpec, SpecMetric  # noqa: E402
-from app.seed import seed  # noqa: E402
+from app import schema
+from app.db import engine as app_engine
+from app.db import init_db
+from app.importer import import_rows
+from app.main import app
+from app.models import AuditLog, Entity, Product, ProductSpec, SpecMetric
+from app.seed import seed
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
+from sqlmodel import Session, SQLModel, select
 
 _state: dict[str, object] = {}
 
@@ -233,7 +233,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {name}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {name}  {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

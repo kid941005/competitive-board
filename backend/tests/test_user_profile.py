@@ -25,12 +25,11 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi.testclient import TestClient  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
-
-from app.db import engine, init_db  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models import AuditLog, User  # noqa: E402
+from app.db import engine, init_db
+from app.main import app
+from app.models import AuditLog, User
+from fastapi.testclient import TestClient
+from sqlmodel import Session, select
 
 ADMIN_PW = "AdminPass123"
 VIEWER_PW = "ViewerPass123"
@@ -182,7 +181,7 @@ def test_no_change_writes_no_audit():
 
 
 def test_viewer_cannot_rename():
-    admin, viewer = _boot()
+    _, viewer = _boot()   # admin 这里用不到，只要 viewer 已登录
     uid = _uid("wang")
     r = _post_profile(viewer, uid, "hacked", "")
     # 页面层：无 admin:users 权限 → 403 页面（不是静默成功）
@@ -235,7 +234,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {fn.__name__}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {fn.__name__}  {type(e).__name__}: {e}")
     print(f"\n{len(ORDER) - failed}/{len(ORDER)} passed")

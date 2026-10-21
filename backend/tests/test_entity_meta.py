@@ -23,12 +23,13 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi.testclient import TestClient  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
-
-from app.db import engine, init_db  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models import AuditLog, Entity, Product  # noqa: E402
+from app import config
+from app.db import engine, init_db
+from app.main import app
+from app.models import AuditLog, Entity, Product
+from app.seed import seed
+from fastapi.testclient import TestClient
+from sqlmodel import Session, select
 
 ADMIN_PW = "AdminPass123"
 _state: dict[str, object] = {}
@@ -65,25 +66,53 @@ def _audits(entity_id: int) -> list[AuditLog]:
         ).all())
 
 
+# ── 导入时的公司类型 ───────────────────────────────────────────────────────
+def test_import_creates_self_company_by_name():
+    """导入表的列名叫「友商」，但自家参数也会走同一条路 —— 按名字判成 self。
+
+    回归：`import_rows` 曾经一律 `Entity(kind="competitor")`，于是导入自家产品时
+    左蓝微被建成竞争对手，对比页把它归到友商那一栏。
+    """
+    c = _boot()
+    seed(metrics_only=True)      # 只建指标字典，不建任何公司
+
+    r = c.post("/api/v1/import", json={"rows": [
+        {"型号": "OWN-1", "友商": config.SELF_COMPANY_NAME,
+         "大类": "压电气泵", "指标": "flow_air", "数值": "0.5"},
+        {"型号": "RIVAL-1", "友商": "导入友商",
+         "大类": "压电气泵", "指标": "flow_air", "数值": "0.6"},
+    ]})
+    assert r.status_code == 200, r.text[:300]
+    assert r.json()["data"]["created_entities"] == 2, r.json()["data"]
+
+    ents = _entities()
+    assert ents[config.SELF_COMPANY_NAME]["kind"] == "self", "自家公司被建成了友商"
+    assert ents["导入友商"]["kind"] == "competitor"
+
+
 # ── 建实体：字段必须真的生效 ───────────────────────────────────────────────
 def test_create_entity_keeps_all_fields():
-    """回归点：以前 kind/name_en/region/tier 会被静默丢弃。"""
+    """回归点：以前 kind/name_en/region/tier 会被静默丢弃。
+
+    不用「左蓝微」——上一条用例已经建过它，命中同名会走「复用」分支，
+    测不到新建时的字段透传。
+    """
     c = _boot()
     r = c.post("/api/v1/entities", json={
-        "name": "左蓝微", "kind": "self", "name_en": "SAPPLAND",
+        "name": "字段透传公司", "kind": "self", "name_en": "FIELD-TEST",
         "region": "中国", "tier": "A",
     })
     assert r.status_code in (200, 201), r.text[:300]
     data = r.json()["data"]
     assert data["kind"] == "self", f"kind 被丢弃了，实际 {data['kind']}"
-    assert data["name_en"] == "SAPPLAND"
+    assert data["name_en"] == "FIELD-TEST"
     assert data["region"] == "中国"
     assert data["tier"] == "A"
 
     # 再查一遍，确认落库而不只是响应里好看
-    got = _entities()["左蓝微"]
+    got = _entities()["字段透传公司"]
     assert (got["kind"], got["name_en"], got["region"], got["tier"]) == (
-        "self", "SAPPLAND", "中国", "A")
+        "self", "FIELD-TEST", "中国", "A")
 
 
 def test_create_entity_defaults_stay_competitor():
@@ -204,6 +233,7 @@ def test_manifest_lists_update_entity():
 
 
 ORDER = [
+    test_import_creates_self_company_by_name,
     test_create_entity_keeps_all_fields,
     test_create_entity_defaults_stay_competitor,
     test_create_entity_rejects_bad_kind,
@@ -228,7 +258,7 @@ def main() -> int:
         except AssertionError as exc:
             failed += 1
             print(f"  FAIL  {fn.__name__}  {exc}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failed += 1
             print(f"  ERROR {fn.__name__}  {type(exc).__name__}: {exc}")
     print(f"\n{len(ORDER) - failed}/{len(ORDER)} passed")

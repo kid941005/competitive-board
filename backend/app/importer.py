@@ -366,7 +366,10 @@ def import_rows(
         ent_name = row.get("友商", "") or "未分组"
         entity = entity_cache.get(_norm_key(ent_name))
         if entity is None:
-            entity = Entity(kind="competitor", name=ent_name)
+            # 表头叫「友商」，但导入自家参数时这一列填的就是本方 —— 一律按友商建，
+            # 左蓝微会在对比页里被归到竞争对手那一栏。按名字判一次即可。
+            kind = "self" if ent_name.strip() == config.SELF_COMPANY_NAME else "competitor"
+            entity = Entity(kind=kind, name=ent_name)
             session.add(entity)
             session.flush()
             entity_cache[_norm_key(ent_name)] = entity

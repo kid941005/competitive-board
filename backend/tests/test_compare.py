@@ -12,17 +12,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
-
-from app.compare import (  # noqa: E402
+from app.compare import (
     build_matrix,
     compare_key,
     completeness,
     format_number,
     metrics_for_categories,
 )
-from app.importer import import_csv  # noqa: E402
-from app.models import Entity, Product, ProductSpec, SpecMetric  # noqa: E402
+from app.importer import import_csv
+from app.models import Entity, Product, ProductSpec, SpecMetric
+from sqlmodel import Session, SQLModel, create_engine
 
 
 # ── 夹具 ───────────────────────────────────────────────────────────────────
@@ -276,7 +275,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {name}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {name}  {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

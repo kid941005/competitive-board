@@ -23,12 +23,11 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlmodel import Session, select  # noqa: E402
-
-from app import datasheet_store  # noqa: E402
-from app.config import DATASHEET_DIR  # noqa: E402
-from app.db import engine, init_db  # noqa: E402
-from app.models import Entity, Product, ProductSpec, SpecMetric, SpecSource  # noqa: E402
+from app import datasheet_store
+from app.config import DATASHEET_DIR
+from app.db import engine, init_db
+from app.models import Entity, Product, ProductSpec, SpecMetric, SpecSource
+from sqlmodel import Session, select
 
 
 def _drop(doc_id: str, *, ext: str = ".pdf", age_days: int = 0, size: int = 1024) -> Path:
@@ -116,7 +115,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {name}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {name}  {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

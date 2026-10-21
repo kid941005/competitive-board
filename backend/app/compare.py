@@ -87,12 +87,18 @@ def build_matrix(
     by_key: dict[tuple[int, int], ProductSpec] = {
         (s.product_id, s.metric_id): s for s in specs
     }
+    # 未落库的对象没有 id，拿它当 key 会把所有新行并成一格 —— 与其静默错配，
+    # 不如直接报错。放在循环外：一次校验就够，不必每个格子都判一遍；
+    # 也不用 assert —— python -O 会把 assert 整个剥掉，那时错误变成「KeyError: None」。
+    for product in products:
+        if product.id is None:
+            raise ValueError("build_matrix 收到了未持久化的产品（id 为 None）")
+
     rows: list[Row] = []
 
     for metric in metrics:
         row = Row(metric=metric)
         for product in products:
-            assert product.id is not None
             spec = by_key.get((product.id, metric.id))
             if spec is None:
                 cell = Cell(

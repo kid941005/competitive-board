@@ -24,12 +24,11 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from app import search  # noqa: E402
-from app.db import init_db  # noqa: E402
-from app.main import app  # noqa: E402
-from app.seed import seed  # noqa: E402
+from app import search
+from app.db import init_db
+from app.main import app
+from app.seed import seed
+from fastapi.testclient import TestClient
 
 _state: dict[str, object] = {}
 
@@ -188,7 +187,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {name}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {name}  {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

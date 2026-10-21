@@ -38,19 +38,18 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy import event  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
-
-from app.audit import AuditLog, parse_changes  # noqa: E402
-from app.compare import format_number, metric_applies  # noqa: E402
-from app.db import engine, init_db  # noqa: E402
-from app.importer import import_rows, import_xlsx  # noqa: E402
-from app.main import app  # noqa: E402
-from app.selection import _default_selection  # noqa: E402
-from app.models import Entity, Product, ProductSpec, SpecMetric, SpecSource  # noqa: E402
-from app.seed import seed  # noqa: E402
-from app.timeutil import fmt_local  # noqa: E402
+from app.audit import AuditLog, parse_changes
+from app.compare import format_number, metric_applies
+from app.db import engine, init_db
+from app.importer import import_rows, import_xlsx
+from app.main import app
+from app.models import Entity, Product, ProductSpec, SpecMetric, SpecSource
+from app.seed import seed
+from app.selection import _default_selection
+from app.timeutil import fmt_local
+from fastapi.testclient import TestClient
+from sqlalchemy import event
+from sqlmodel import Session, select
 
 _state: dict[str, object] = {}
 
@@ -427,7 +426,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {name}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {name}  {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

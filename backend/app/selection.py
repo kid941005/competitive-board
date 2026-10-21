@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from sqlmodel import Session, select
 
-from .compare import build_matrix, completeness, diff_count, metrics_for_categories
 from . import config
+from .compare import build_matrix, completeness, diff_count, metrics_for_categories
 from .config import category_label
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 

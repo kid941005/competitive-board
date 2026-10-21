@@ -573,7 +573,7 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 257 项测试，通过才推**。标签有 `0.9.5`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 266 项测试，通过才推**。标签有 `0.9.5`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
 版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `0.9.5` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
@@ -740,14 +740,15 @@ python tests/test_datadir.py          #  6 项：数据目录自检（不可写 
 python tests/test_empty_startup.py    #  7 项：空库启动、空状态文案、应用模板、幂等、权限
 python tests/test_user_profile.py     #  7 项：账号名与显示名可编辑（改名生效、重名拒、审计留旧名）
 python tests/test_mcp_server.py       # 20 项：MCP 适配层（协议、参数分流、真实 stdio 往返）
-python tests/test_entity_meta.py      # 12 项：建公司不丢字段、PATCH 改元信息、客户校验、审计
+python tests/test_entity_meta.py      # 13 项：建公司不丢字段、导入认自家公司、PATCH 改元信息、客户校验、审计
+python tests/test_ui_contract.py      #  8 项：页面渲染契约（StrictUndefined 下全页面、flash 提示、403 页）
 python tests/test_search.py           # 13 项：检索（公司名/产品名/型号、多词 AND、通配符转义、matched）
 node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
 node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与后端同一套语义）
 # 或 pytest tests/
 ```
 
-共 **257 项**（后端 238 + 前端 19）。覆盖内容：
+共 **266 项**（后端 247 + 前端 19）。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限、修饰语降权、别名不重复计数、多页页码
@@ -762,6 +763,7 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 - **表结构与迁移**：全新库补齐索引与版本号、0.7.x 老库带着重复数据升级（合并型号 / 去重参数 / 留审计）、库比代码新时拒绝启动、唯一索引在并发下回 409、同一批内重复项不炸
 - **规格书保留**：被参数引用的永不删、过期且无引用的连原文一起删、未到期保留、`keep_days=0` 关闭清理
 - **登录限速**：第 5 次失败后开始退避、第 6 次返回 429 + `Retry-After`、退避期内正确密码也不放行、成功登录清零、不影响其他账号
+- **页面渲染契约**：用 `StrictUndefined` 渲染全部页面（漏传变量直接 500，而不是静默渲染成空）、空库页、404 页、登录失败分支、403 页的可选变量、CSRF 失效页的「重新登录」入口、清理日志后的「已清理 N 条」提示真的显示
 - **公司元信息**：`POST /entities` 的 kind/name_en/region/tier 真的生效（曾经被静默丢弃）、`PATCH /entities` 改类型与档位、重名被拒、名下有型号不能改成客户、`dry_run` 不落库、没变化不写日志、审计 label 留旧名
 - **MCP 适配层**：协议版本协商与回退、通知不产生响应、未知方法 -32601、`/tools` 映射成 `inputSchema` 且路径占位符自动补成 required、GET 参数进 query 而写操作 `dry_run` 进 query 其余进 body、`?confirm=true` 这类内联 query 不被吃掉、成功时剥掉 `request_id`、失败置 `isError`、令牌错与连不上各有各的话、**stdout 只有协议消息**（混一行日志就等于客户端 parse 失败）、一行坏 JSON 不会让进程退出
 - **账号改名**：只改显示名不动账号名、改名后旧名立即无法登录而新名可登、重名与非法字符被拒且不落库、没变化不写日志、普通用户 403、管理员改自己名字不掉线且审计的 actor 记旧名
@@ -824,7 +826,7 @@ backend/
 │                         test_channel_parity / test_schema / test_retention / test_throttle
 │                         test_datadir / test_empty_startup / test_user_profile
 │                         test_mcp_server（测 mcp/ 那一层，走真实 stdio + 假 API）
-│                         test_entity_meta
+│                         test_entity_meta / test_ui_contract
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt

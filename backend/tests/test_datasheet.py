@@ -12,12 +12,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.datasheet import (  # noqa: E402
+from app.datasheet import (
     extract_candidates,
     metric_aliases,
     normalize_text,
 )
-from app.models import SpecMetric  # noqa: E402
+from app.models import SpecMetric
 
 
 def _m(key: str, name: str, unit: str, **kw) -> SpecMetric:
@@ -212,7 +212,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {name}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {name}  {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

@@ -29,8 +29,8 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from .db import engine, init_db
 from . import config
+from .db import engine, init_db
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 
 # ── 指标字典 ───────────────────────────────────────────────────────────────

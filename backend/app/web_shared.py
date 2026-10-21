@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import Path
-
 from urllib.parse import quote
 
 from fastapi import Depends, HTTPException

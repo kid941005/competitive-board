@@ -42,8 +42,8 @@ from .db import get_session
 from .importer import import_rows
 from .models import ApiIdempotency, Entity, Product, ProductSpec, SpecMetric
 from .numeric import clamp_confidence
-from .selection import _matrix_payload, _parse_ids
 from .sanitize import safe_url
+from .selection import _matrix_payload, _parse_ids
 from .timeutil import iso_utc
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
@@ -1386,7 +1386,7 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                 "type": "object",
                 "properties": {
                     "q": {"type": "string", "description": "公司名关键词"},
-                    "kind": {"type": "string", "enum": ["self", "competitor", "customer"]},
+                    "kind": {"type": "string", "enum": list(VALID_ENTITY_KINDS)},
                 },
             },
         },
@@ -1403,10 +1403,10 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                 "properties": {
                     "entity_id": {"type": "integer"},
                     "name": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["self", "competitor", "customer"]},
+                    "kind": {"type": "string", "enum": list(VALID_ENTITY_KINDS)},
                     "name_en": {"type": "string"},
                     "region": {"type": "string"},
-                    "tier": {"type": "string", "enum": ["A", "B", "C"]},
+                    "tier": {"type": "string", "enum": list(VALID_ENTITY_TIERS)},
                     "dry_run": {"type": "boolean"},
                 },
             },

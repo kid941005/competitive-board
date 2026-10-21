@@ -4,6 +4,9 @@
 # E9 ：语法级错误（如 break 在循环外），这类错误在 import 前就该拦下
 # B  ：常见陷阱（可变默认值、循环里闭包、raise 丢 cause…）
 #
+# I    ：import 排序（同一块内）。不涉及风格争论，纯粹减少「同一模块两处 import」这类摩擦
+# RUF100：无效的 noqa 注释 —— 注释写着忽略某规则、而那条规则并未启用，比没有注释更容易误导
+#
 # 刻意不含 E501（行宽）与 W（空行风格）：本项目注释密度高，强制 88 列会把
 # 「为什么这样做」的解释挤成多行，信息密度反而下降。
 
@@ -14,6 +17,6 @@ extend-exclude = ["backend/data"]
 # mcp/ 是独立的 stdio 适配层，不在 backend 包内，但同样纳入 F/E9/B 检查
 
 [tool.ruff.lint]
-select = ["F", "E9", "B"]
+select = ["F", "E9", "B", "I", "RUF100"]
 # B008：FastAPI 的 Depends()/Query() 就是写在默认值里的，属官方惯用法
 ignore = ["B008"]

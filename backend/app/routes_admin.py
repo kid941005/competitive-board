@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlmodel import Session, select
 
-from . import audit, auth, seed as seed_module, settings_store, tokens
+from . import audit, auth, settings_store, tokens
+from . import seed as seed_module
 from .auth import P_SETTINGS, P_USERS, AuthSession, User
 from .db import get_session
 from .models import SpecMetric
@@ -26,7 +27,7 @@ LOG_OBJECTS = (
 router = APIRouter()
 
 def _active_admin_count(session: Session) -> int:
-    rows = session.exec(select(User).where(User.role == "admin", User.is_active == True)).all()  # noqa: E712
+    rows = session.exec(select(User).where(User.role == "admin", User.is_active == True)).all()
     return len(rows)
 
 
@@ -387,6 +388,10 @@ def admin_logs_page(
     pair: tuple[User, AuthSession] = Depends(_perm(P_USERS)),
     session: Session = Depends(get_session),
     days: int = Query(default=7, ge=1, le=3650),
+    # 清理日志的 POST 会带 ?ok=已清理 N 条 重定向回来，模板里也有 {% if ok %}，
+    # 但这里原先没接这两个参数 —— 于是那句提示永远不显示。
+    ok: str | None = Query(default=None),
+    err: str | None = Query(default=None),
     actor: str | None = Query(default=None),
     action: str | None = Query(default=None),
     object_type: str | None = Query(default=None),
@@ -426,6 +431,8 @@ def admin_logs_page(
             object_options=LOG_OBJECTS,
             origin_options=(("web", "页面"), ("datasheet", "规格书"), ("import", "表格导入"), ("api", "API")),
             retention=sset.get("audit.retention_days"),
+            ok=ok,
+            err=err,
         ),
     )
 
@@ -527,7 +534,7 @@ def admin_apply_metrics_template(
     before = len(session.exec(select(SpecMetric)).all())
     try:
         result = seed_module.seed(metrics_only=True)
-    except Exception as exc:  # noqa: BLE001 - 数据库问题时给出可读的原因
+    except Exception as exc:
         return _redirect("/admin/settings", f"写入失败：{exc}", "err")
 
     if result.get("skipped"):

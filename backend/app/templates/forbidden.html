@@ -8,12 +8,15 @@
     当前身份为 <b>{{ role_label }}</b>，没有执行该操作所需的权限
     <code>{{ required }}</code>。
   </p>
-  {% if hint %}
+  {# hint 与 user 都是可选变量：权限不足（已登录）时两者都不传，
+     会话校验失败时传 hint。用 is defined 判断，否则换成 StrictUndefined 会在这里炸。
+     user 缺省即「没有可信身份」，此时给一个重新登录的入口。 #}
+  {% if hint is defined and hint %}
   <p class="forbid-hint">{{ hint }}</p>
   {% endif %}
   <p>
     <a href="/compare">返回参数对比</a>
-    {% if not user %}· <a href="/login">重新登录</a>{% endif %}
+    {% if not (user is defined and user) %}· <a href="/login">重新登录</a>{% endif %}
   </p>
   <p class="forbid-note">需要更高权限请联系管理员调整账号角色。</p>
 </main>

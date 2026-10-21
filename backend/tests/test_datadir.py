@@ -28,7 +28,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import db  # noqa: E402
+from app import db
 
 
 class _Patched:
@@ -77,7 +77,7 @@ def test_unwritable_dir_reports_uid_owner_and_fix():
     d = _fresh_dir()
     d.mkdir(parents=True)
 
-    def deny(self, data=b""):  # noqa: ANN001, ANN202
+    def deny(self, data=b""):
         raise PermissionError(13, "Permission denied")
 
     with _Patched(Path, "write_bytes", deny):
@@ -89,7 +89,7 @@ def test_unwritable_dir_reports_uid_owner_and_fix():
 def test_missing_parent_not_creatable_says_so():
     d = _fresh_dir()
 
-    def deny(self, parents=False, exist_ok=False):  # noqa: ANN001, ANN202
+    def deny(self, parents=False, exist_ok=False):
         raise PermissionError(13, "Permission denied")
 
     with _Patched(Path, "mkdir", deny):
@@ -141,7 +141,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {name}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {name}  {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

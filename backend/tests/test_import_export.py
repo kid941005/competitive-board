@@ -26,14 +26,13 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi.testclient import TestClient  # noqa: E402
-from openpyxl import Workbook, load_workbook  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
-
-from app.db import engine, init_db  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models import Entity, Product, ProductSpec  # noqa: E402
-from app.seed import seed  # noqa: E402
+from app.db import engine, init_db
+from app.main import app
+from app.models import Entity, Product, ProductSpec
+from app.seed import seed
+from fastapi.testclient import TestClient
+from openpyxl import Workbook, load_workbook
+from sqlmodel import Session, select
 
 HEADER = ["型号", "友商", "大类", "指标", "数值", "单位", "条件", "来源链接", "置信度"]
 _state: dict[str, object] = {}
@@ -243,7 +242,7 @@ def main() -> int:
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {name}  {e}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failed += 1
             print(f"  ERROR {name}  {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

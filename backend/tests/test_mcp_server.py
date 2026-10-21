@@ -27,7 +27,7 @@ MCP_SCRIPT = ROOT / "mcp" / "cib_mcp.py"
 
 sys.path.insert(0, str(ROOT / "mcp"))
 
-import cib_mcp  # noqa: E402
+import cib_mcp
 
 TOKEN = "cib_test_tok"
 
@@ -89,7 +89,7 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         return False
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         path, _, query = self.path.partition("?")
         if path == "/api/v1/tools":
             self._send(200, {"ok": True, "data": {"tools": TOOLS},
@@ -113,7 +113,7 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "没有"}})
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if self._denied():
             return
         length = int(self.headers.get("Content-Length") or 0)
@@ -124,7 +124,7 @@ class _Handler(BaseHTTPRequestHandler):
             "meta": {"dry_run": "dry_run=true" in self.path, "request_id": "aaa"},
         })
 
-    def do_DELETE(self) -> None:  # noqa: N802
+    def do_DELETE(self) -> None:
         if self._denied():
             return
         path, _, query = self.path.partition("?")
@@ -398,7 +398,7 @@ def main() -> int:
         except AssertionError as exc:
             failed += 1
             print(f"  FAIL  {fn.__name__}  {exc}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failed += 1
             print(f"  ERROR {fn.__name__}  {type(exc).__name__}: {exc}")
     print(f"\n{len(ORDER) - failed}/{len(ORDER)} passed")
