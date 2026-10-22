@@ -40,7 +40,7 @@ import urllib.parse
 import urllib.request
 
 SERVER_NAME = "competitive-board"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.0.1"
 
 # 支持的协议版本，新的在前。客户端请求哪个就回哪个，都不认时回最新的。
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")

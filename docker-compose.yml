@@ -25,7 +25,7 @@ x-logging: &default-logging
 services:
   app:
     # 镜像由 GitHub Actions 构建并发布（见 .github/workflows/build-image.yml）
-    image: ghcr.io/kid941005/competitive-board:1.0.0
+    image: ghcr.io/kid941005/competitive-board:1.0.1
     container_name: competitive-board
     restart: unless-stopped
     logging: *default-logging

@@ -14,4 +14,4 @@ services:
       args:
         # 与 docker-compose.yml 里 image 那行的版本号保持一致，避免镜像内
         # LABEL 与 app.version 脱节。改版本时两个文件都要改（CI 会校验）。
-        APP_VERSION: "1.0.0"
+        APP_VERSION: "1.0.1"
