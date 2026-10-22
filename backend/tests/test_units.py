@@ -232,11 +232,26 @@ def test_temperature_cell_accepts_metric_own_unit():
     """
     s = _session()
     try:
-        rep = import_csv(s, _csv(**{"产品型号": "TEMP-1", "温度范围": "0~45 ℃"}))
+        rep = import_csv(s, _csv(**{"产品型号": "TEMP-1", "温度范围": "-40~+85 ℃"}))
         assert rep.errors == [], rep.errors
-        spec = _spec("TEMP-1", "op_temp_max")
-        assert spec is not None and spec.value_num == 45, spec
-        assert spec.condition == "原文 0~45", spec.condition
+        hi = _spec("TEMP-1", "op_temp_max")
+        lo = _spec("TEMP-1", "op_temp_min")
+        assert hi is not None and hi.value_num == 85, hi
+        # 温度是范围：一格落两格，下限不能丢（-40 与 0 的低温能力差 40 ℃）
+        assert lo is not None and lo.value_num == -40, lo
+        assert hi.condition == "原文 -40~+85" and lo.condition == hi.condition
+    finally:
+        _close(s)
+
+
+def test_single_temperature_value_writes_only_upper_bound():
+    """单点温度（如「60 ℃」）没有下限可推，只写上限 —— 不硬凑成 60~60。"""
+    s = _session()
+    try:
+        rep = import_csv(s, _csv(**{"产品型号": "TEMP-2", "温度范围": "60 ℃"}))
+        assert rep.errors == [], rep.errors
+        assert _spec("TEMP-2", "op_temp_max").value_num == 60
+        assert _spec("TEMP-2", "op_temp_min") is None
     finally:
         _close(s)
 
@@ -280,6 +295,23 @@ def test_unknown_unit_is_still_rejected():
         assert _product("PHON-1") is None, "整行只有非法值，不该建出空型号"
     finally:
         _close(s)
+
+
+def test_parse_range_reads_both_ends():
+    """「原文 -40~+85」这类文字要能取出 (下限, 上限)，顺序反了也要归位。
+
+    三条通道（表格导入、规格书确认写入、v5 迁移）都靠它，解析口径必须只有一处。
+    """
+    from app import range_pair
+
+    assert range_pair.parse_range("原文 -40~+85") == (-40.0, 85.0)
+    assert range_pair.parse_range("原文 +85~-40") == (-40.0, 85.0), "原文顺序反了也要归位"
+    assert range_pair.parse_range("0至60") == (0.0, 60.0)
+    assert range_pair.parse_range("原文 0~+65（使用）／-40~+65（存储）") == (0.0, 65.0)
+    assert range_pair.parse_range("≥0.7 L/min") is None, "没有区间不能硬解析"
+    assert range_pair.parse_range(None) is None
+    assert range_pair.lower_metric_key("op_temp_max") == "op_temp_min"
+    assert range_pair.lower_metric_key("flow_air") is None
 
 
 # ── 运行器 ─────────────────────────────────────────────────────────────────

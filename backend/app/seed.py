@@ -59,7 +59,10 @@ METRICS = [
     ("thickness", "物理与可靠性", "厚度", "mm", "number", "lower", 2, 510, True, "fan", "固态散热的核心竞争力维度"),
     ("weight_g", "物理与可靠性", "重量", "g", "number", "lower", 1, 520, False, "pump_air,pump_liquid,fan", ""),
     ("heat_w", "物理与可靠性", "散热能力", "W", "number", "higher", 1, 530, False, "fan", "单颗可带走的热功耗"),
-    ("op_temp_max", "物理与可靠性", "工作温度上限", "℃", "number", "higher", 0, 540, False, "pump_air,pump_liquid,fan", ""),
+    # 工作温度天生是范围：只存上限，低温能力（-40 与 0 的差别）就全丢了。
+    # 拆成两格，两端各按自己的方向比：下限越低越好、上限越高越好。
+    ("op_temp_min", "物理与可靠性", "工作温度下限", "℃", "number", "lower", 0, 535, False, "pump_air,pump_liquid,fan", "越低越耐低温"),
+    ("op_temp_max", "物理与可靠性", "工作温度上限", "℃", "number", "higher", 0, 540, False, "pump_air,pump_liquid,fan", "越高越耐高温"),
     ("lifetime_h", "物理与可靠性", "寿命", "h", "number", "higher", 0, 550, False, "pump_air,pump_liquid,fan", ""),
     ("wetted_material", "物理与可靠性", "接触介质材质", "", "text", "na", 0, 560, False, "pump_liquid", ""),
 ]
@@ -83,6 +86,7 @@ ALIASES = {
     "thickness": "厚度, thickness",
     "weight_g": "重量, 质量, weight",
     "heat_w": "散热能力, 散热功率, heat dissipation",
+    "op_temp_min": "工作温度下限, 最低工作温度, 低温, min operating temperature",
     "op_temp_max": "工作温度, 工作温度上限, 环境温度, operating temperature",
     "lifetime_h": "寿命, 使用寿命, lifetime, life",
     "wetted_material": "接触介质材质, 润湿材料, 材质, wetted material",
@@ -238,7 +242,7 @@ def _clear(session: Session) -> None:
 def seed(force: bool = False, metrics_only: bool = False) -> dict[str, int]:
     """写入压电领域的内置数据。
 
-    metrics_only=True 时只写指标字典（17 个指标，含适用大类），
+    metrics_only=True 时只写指标字典（18 个指标，含适用大类），
     不建任何公司、型号、参数 —— 这是「空库」最常用的入口：
     看板的行来自字典，没有字典什么都渲染不出来，但用户往往不想要示例公司。
     """

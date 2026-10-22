@@ -26,11 +26,11 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlmodel import Session, select
 
-from . import audit
+from . import audit, range_pair
 from .models import Product, ProductSpec, SpecMetric
 
 # 当前代码期望的表结构版本。加一版就在这里改一个数字，并在 MIGRATIONS 末尾追加一步。
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 _VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -271,6 +271,69 @@ def _v4_widen_applies_to(session: Session) -> None:
         )
 
 
+# v5：工作温度本来就是范围，只存上限会把低温能力丢掉（-40 与 0 的差别全在
+# 「测试条件」的文字里，对比页看不出来）。补「工作温度下限」并从原文回填。
+_TEMP_MIN_METRIC = dict(
+    key="op_temp_min", category="物理与可靠性", name="工作温度下限", unit="℃",
+    value_type="number", better="lower", precision=0, display_order=535,
+    is_key_metric=False, applies_to="pump_air,pump_liquid,fan",
+)
+
+def _v5_temperature_range(session: Session) -> None:
+    """温度拆成下限 + 上限两格，并从「测试条件」里已有的原文回填下限。
+
+    回填只读 `condition`（形如 `原文 -40~+85`），不动上限、不动来源与置信度；
+    已经有下限的型号跳过，重复执行不会重复插。
+    """
+    hi_metric = session.exec(
+        select(SpecMetric).where(SpecMetric.key == "op_temp_max")
+    ).first()
+    metric = session.exec(
+        select(SpecMetric).where(SpecMetric.key == "op_temp_min")
+    ).first()
+    created = False
+    # 空库（连 op_temp_max 都没有）不在这里建指标：字典由 seed 一次写全，
+    # 提前插一条会让 seed 的「已有指标就跳过」守卫把整套字典跳过。
+    if metric is None and hi_metric is not None:
+        metric = SpecMetric(**_TEMP_MIN_METRIC)
+        session.add(metric)
+        session.flush()
+        created = True
+    backfilled = 0
+    if hi_metric is not None and metric is not None:
+        have = {
+            sp.product_id
+            for sp in session.exec(
+                select(ProductSpec).where(ProductSpec.metric_id == metric.id)
+            ).all()
+        }
+        for spec in session.exec(
+            select(ProductSpec).where(ProductSpec.metric_id == hi_metric.id)
+        ).all():
+            if spec.product_id in have:
+                continue
+            rng = range_pair.parse_range(spec.condition)
+            if rng is None:
+                continue
+            session.add(ProductSpec(
+                product_id=spec.product_id, metric_id=metric.id,
+                value_num=rng[0], condition=spec.condition,
+                source_id=spec.source_id, confidence=spec.confidence,
+                verified=spec.verified,
+            ))
+            backfilled += 1
+    session.flush()
+
+    if created or backfilled:
+        audit.record(
+            session, actor="system", actor_kind="system", action="create",
+            object_type="metric", label="工作温度下限", origin="migration",
+            changes=[{"field": "工作温度", "old": "只存上限", "new": "下限 + 上限两格"}],
+            note=(("新增指标；" if created else "")
+                  + f"从「测试条件」原文回填 {backfilled} 个型号的下限"),
+        )
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -283,6 +346,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(2, "型号与参数加唯一索引（先合并存量重复）", _v2_unique_indexes),
     Migration(3, "合并风量/静压两套指标、删掉真空度、客户采用关系唯一索引", _v3_adoption_index),
     Migration(4, "谐振频率/温度/寿命/噪音放宽到三个大类", _v4_widen_applies_to),
+    Migration(5, "工作温度拆成下限+上限两个指标（并从原文回填下限）", _v5_temperature_range),
 )
 
 

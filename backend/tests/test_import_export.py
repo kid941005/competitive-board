@@ -408,6 +408,32 @@ def test_source_link_does_not_overwrite_manual_datasheet_url():
     assert p.datasheet_url == "https://example.com/official.pdf", p.datasheet_url
 
 
+def test_temperature_range_survives_export_round_trip():
+    """导出要把温度写回区间（`-40~85`），再导入时两端都命中「无变化」。
+
+    只导上限就会把范围压成单点：备份文件看起来没问题，恢复后低温能力没了。
+    """
+    c = _client()
+    text = wide_csv({"企业名称": "温度往返公司", "产品型号": "TEMP-EXP-1",
+                     "产品类别": "压电气泵", "温度范围": "-40~+85 ℃"})
+    rep = _post(c, "te.csv", text.encode("utf-8"), "text/csv")
+    assert rep["written_specs"] == 2, rep
+
+    r = c.get("/export-all.xlsx")
+    ws = load_workbook(io.BytesIO(r.content))["参数导入"]
+    head = [x.value for x in ws[1]]
+    mi, ti = head.index("产品型号") + 1, head.index("温度范围") + 1
+    cells = [ws.cell(row=i, column=ti).value for i in range(2, ws.max_row + 1)
+             if ws.cell(row=i, column=mi).value == "TEMP-EXP-1"]
+    assert cells == ["-40~+85"], f"原文怎么写就怎么导回去，实际 {cells}"
+
+    again = wide_csv({"企业名称": "温度往返公司", "产品型号": "TEMP-EXP-1",
+                      "产品类别": "压电气泵", "温度范围": str(cells[0])})
+    back = _post(c, "back.csv", again.encode("utf-8"), "text/csv")
+    assert back["written_specs"] == 0, back
+    assert back["skipped_unchanged"] == 2, back
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from . import adoptions, config, units
+from . import adoptions, config, range_pair, units
 from .compare import metric_applies
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 from .numeric import clamp_confidence, parse_number
@@ -49,6 +49,7 @@ class WideColumn:
     metric_key: str = ""
     unit: str = ""         # 表头声明的单位，换算用；空 = 按指标字典的单位理解
     quantity: str = ""     # 按「物理量」映射指标：同一个流量列，液泵落到 µL/min 那一项
+    range_min_key: str = ""  # 范围列（如「温度范围」）的**下限**写到哪个指标
     width: int = 14
 
 
@@ -68,7 +69,9 @@ WIDE_COLUMNS: tuple[WideColumn, ...] = (
     WideColumn("噪音", "metric", metric_key="noise_dba", width=8),
     WideColumn("外形尺寸", "metric", metric_key="size", width=24),
     WideColumn("重量", "metric", metric_key="weight_g", width=8),
-    WideColumn("温度范围", "metric", metric_key="op_temp_max", width=12),
+    # 温度是范围：一格同时落「下限」与「上限」两个指标，否则低温能力就丢了
+    WideColumn("温度范围", "metric", metric_key="op_temp_max", unit="℃",
+               range_min_key=range_pair.RANGE_PAIRS["op_temp_max"], width=12),
     WideColumn("寿命", "metric", metric_key="lifetime_h", width=8),
     WideColumn("来源链接", "meta", "source", width=46),
     WideColumn("置信度", "meta", "confidence", width=8),
@@ -303,6 +306,7 @@ class Cell:
 
     missing: bool = False
     value_num: float | None = None
+    value_min: float | None = None   # 区间下限（「-40~+85」→ -40），范围列拆两格用
     value_text: str | None = None
     condition: str | None = None
     converted: bool = False
@@ -338,7 +342,8 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
 
     - 「待补充」/空 → missing，不算错误
     - 文本型指标 → 原样保留（电压走 units.normalize_voltage_text 统一口径）
-    - 数值型指标 → 取数字（区间取上限）+ 换算到字典单位；换算不了就报错，不猜
+    - 数值型指标 → 取数字（区间两端都留：上限给本格、下限给 value_min）
+      + 换算到字典单位；换算不了就报错，不猜
     """
     text = (raw or "").strip()
     if metric.value_type == "number":
@@ -360,15 +365,18 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
                         review=vt.note if vt.needs_review else None)
         return Cell(value_text=text)
 
-    # 数值型：区间（0~45 ℃）取上限，原文进测试条件
+    # 数值型：区间（-40~+85 ℃）两端都留着 —— 上限给本格，下限给 value_min
+    # （「温度范围」这类范围列要把一格拆成两格，只留上限等于丢掉低温能力）。
     condition = None
+    lo: float | None = None
     rng = _RE_RANGE.search(text)
     if rng:
         a = parse_number(rng.group("a"))
         b = parse_number(rng.group("b"))
         if a is None or b is None:
             return Cell(error=f"「{text}」区间里的数字认不出来")
-        num = b if b >= a else a
+        num = max(a, b)
+        lo = min(a, b)
         condition = f"原文 {rng.group('a')}~{rng.group('b')}"
     else:
         numbers = _RE_NUM.findall(text)
@@ -396,11 +404,16 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
     conv = units.convert(num, src_unit, metric.unit)
     if not conv.ok:
         return Cell(error=f"「{text}」{conv.reason}")
+    lo_out = None
+    if lo is not None:
+        lo_conv = units.convert(lo, src_unit, metric.unit)
+        if lo_conv.ok:
+            lo_out = lo_conv.value
     if conv.converted:
-        condition = condition or None
-        return Cell(value_num=conv.value, condition=condition, converted=True,
+        return Cell(value_num=conv.value, value_min=lo_out, condition=condition,
+                    converted=True,
                     note=f"{text} → {_fmt(conv.value)} {metric.unit}" + (f"（{conv.note}）" if conv.note else ""))
-    return Cell(value_num=conv.value, condition=condition)
+    return Cell(value_num=conv.value, value_min=lo_out, condition=condition)
 
 
 # ── 导入 ───────────────────────────────────────────────────────────────────
@@ -556,7 +569,7 @@ def import_rows(
         # 先把这一行的指标格都解析完，再决定要不要建档。
         # 一行如果全是「跨大类 / 单位非法 / 待补充」，不该顺手建出一个空型号 ——
         # 旧长表时代就是这样防的，宽表不能因为「一行就是一个型号」就退回去。
-        pending: list[tuple[WideColumn, SpecMetric, Cell, str]] = []
+        pending: list[tuple[WideColumn, SpecMetric, Cell, str, bool]] = []
         errors_before = len(report.errors)
         for col in columns:
             raw = row.get(col.header, "")
@@ -582,7 +595,18 @@ def import_rows(
             if category and not metric_applies(metric, category):
                 report.add_error(_scope_message(tag, metric, category))
                 continue
-            pending.append((col, metric, cell, raw))
+            pending.append((col, metric, cell, raw, False))
+
+            # 范围列（温度）一格落两格：下限另起一条。上限那条已经报过换算与待确认，
+            # 这条只负责把下限写进去，所以不带 note/review，免得多算一次。
+            if col.range_min_key and cell.value_min is not None:
+                lo_metric = metrics.get(col.range_min_key)
+                if lo_metric is not None and (not category or metric_applies(lo_metric, category)):
+                    pending.append((
+                        col, lo_metric,
+                        Cell(value_num=cell.value_min, condition=cell.condition),
+                        raw, True,
+                    ))
 
         cust_text = row.get("关联客户（有公开证据）", "")
         note_text = row.get("口径与备注", "")
@@ -638,9 +662,11 @@ def import_rows(
                 product.datasheet_url = src_row.url
                 session.add(product)
 
-        for col, metric, cell, raw in pending:
-            # 行里没写大类时，只能等型号解析出来再映射指标与判适用性
-            if not category:
+        for col, metric, cell, raw, fixed in pending:
+            # 行里没写大类时，只能等型号解析出来再映射指标与判适用性。
+            # 范围列拆出来的下限那一条指标已经定死，不能再按大类重映射，
+            # 否则会被换回上限指标，两格写成同一个值。
+            if not category and not fixed:
                 resolved = metric_for_column(col, metrics, product.category)
                 if resolved is not None and resolved.key != metric.key:
                     metric = resolved
@@ -777,7 +803,7 @@ TEMPLATE_TIPS: list[tuple[str, str]] = [
     ("指标列", "一格一个指标，留空或写「待补充」表示未公开，跳过不写。"),
     ("列头单位", "列头写的单位会被换算成系统口径：流量L/min、静压Pa（50,000 会落成 50 kPa）、"
               "液体流量µL/min、背压mbar、厚度mm、散热能力W。不要自己换算，按原表填。"),
-    ("数字写法", "千分位逗号可以（50,000）；区间取上限（0~45 ℃ → 45）；「待补充」= 未公开。"),
+    ("数字写法", "千分位逗号可以（50,000）；温度范围落成下限+上限两格（-40~+85 ℃ → -40 与 85），其他指标区间取上限；「待补充」= 未公开。"),
     ("文本列", "谐振频率 / 驱动电压 / 外形尺寸 / 自吸 / 可泵介质 / 接触介质材质 按原文填，"
             "驱动电压会统一成「数值 + 口径」（Vp→Vpp 乘 2，Vrms 不猜）。"),
     ("来源链接", "整行共用一条来源，越具体越好，便于逐项复核。"),

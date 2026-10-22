@@ -203,6 +203,53 @@ def test_v3_merges_fan_metrics_and_drops_vacuum():
         assert len(specs) == 3, f"真空度那条应被删除，实际剩 {len(specs)} 条"
 
 
+# ── 5. v5：温度拆成下限 + 上限 ──────────────────────────────────────────────
+def test_v5_splits_temperature_range_into_min_and_max():
+    """老库只存了上限，「-40~+85」的下限只活在「测试条件」文字里 —— 迁移要补出来。
+
+    -40 与 0 的低温能力差 40 ℃，但对比页上只有「上限」一行，看不出来。
+    回填必须**从 condition 里的原文**取数，并且不能动上限。
+    """
+    engine = _temp_engine("v5.db")
+    SQLModel.metadata.create_all(engine)
+    schema.migrate(engine)   # 先推到当前版本，再退回 4 模拟老库
+    with Session(engine) as s:
+        s.add(Entity(id=1, kind="competitor", name="甲"))
+        s.add(SpecMetric(id=1, key="op_temp_max", category="g", name="工作温度上限",
+                         unit="℃", value_type="number", better="higher", precision=0,
+                         applies_to="pump_air"))
+        s.add(Product(id=10, entity_id=1, model="P1", category="pump_air"))
+        s.add(Product(id=11, entity_id=1, model="P2", category="pump_air"))
+        s.commit()
+        s.add(ProductSpec(product_id=10, metric_id=1, value_num=85,
+                          condition="原文 -40~+85"))
+        s.add(ProductSpec(product_id=11, metric_id=1, value_num=45,
+                          condition="原文 0~45"))
+        s.commit()
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE schema_meta SET value = '4' WHERE key = 'version'"))
+
+    result = schema.migrate(engine)
+    assert any(step.startswith("v5") for step in result["applied"]), result
+
+    with Session(engine) as s:
+        lo = s.exec(select(SpecMetric).where(SpecMetric.key == "op_temp_min")).first()
+        assert lo is not None, "迁移应补出「工作温度下限」"
+        assert lo.better == "lower", "下限是越低越好"
+        assert "pump_air" in (lo.applies_to or "")
+        vals = {(sp.product_id, sp.metric_id): sp.value_num
+                for sp in s.exec(select(ProductSpec)).all()}
+        assert vals[(10, lo.id)] == -40, vals
+        assert vals[(11, lo.id)] == 0, vals
+        assert vals[(10, 1)] == 85, "上限不该被改动"
+        assert vals[(11, 1)] == 45
+
+    # 幂等：再跑一次不多插一条下限
+    schema.migrate(engine)
+    with Session(engine) as s:
+        assert len(s.exec(select(ProductSpec)).all()) == 4
+
+
 # ── 4. 库比代码新 ──────────────────────────────────────────────────────────
 def test_database_newer_than_code_refuses_to_start():
     engine = _temp_engine("future.db")

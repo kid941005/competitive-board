@@ -8,7 +8,7 @@
      而不是只显示一句「还没有产品数据」。
   2. **幂等判断的对象必须跟着模式变**。`seed()` 原来一律看「有没有实体」
      来判断要不要跳过；只写字典时库里永远没有实体，于是每点一次就再插
-     17 个指标。现在按「这次要写的东西」判断。
+     18 个指标。现在按「这次要写的东西」判断。
 
 覆盖：
   - 空库启动后只有表结构与管理员，没有任何业务数据
@@ -98,7 +98,7 @@ def test_apply_template_writes_metrics_without_entities():
                data={"_csrf": _csrf()}, follow_redirects=False)
     assert r.status_code == 303, r.status_code
     metrics, entities, products = _counts()
-    assert metrics == 17, f"应写入 17 个指标（v3 合并风量与静压、删掉真空度后），实际 {metrics}"
+    assert metrics == 18, f"应写入 18 个指标（v3 合并风量与静压、v5 拆出温度下限后），实际 {metrics}"
     assert entities == 0, f"不该创建任何公司，实际 {entities}"
     assert products == 0, f"不该创建任何型号，实际 {products}"
 
@@ -119,7 +119,7 @@ def test_apply_template_is_idempotent():
 def test_state_with_dictionary_but_no_products():
     html = _client().get("/compare").text
     assert "还没有任何产品数据" in html
-    assert "17 个指标" in html
+    assert "18 个指标" in html
     assert "这是一个空库" not in html, "字典已经在了，不该再说空库"
 
 
@@ -128,7 +128,7 @@ def test_metrics_only_gate_checks_metrics_not_entities():
     """库里已有指标、没有任何实体时，再跑 metrics_only 应当跳过。
 
     这是最容易回归的一条：gate 若仍按 Entity 判断，这个场景永远判不出
-    「已写过」，点一次模板就多 17 个指标。
+    「已写过」，点一次模板就多 18 个指标。
     """
     with Session(engine) as s:
         assert len(s.exec(select(Entity)).all()) == 0, "前提：这个场景下没有实体"

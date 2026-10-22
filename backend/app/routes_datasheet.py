@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from . import audit, auth, config, settings_store
+from . import audit, auth, config, range_pair, settings_store
 from .auth import P_VIEW, P_WRITE, AuthSession, User
 from .compare import metric_applies, metrics_for_categories
 from .config import category_label
@@ -373,6 +373,32 @@ def api_ds_commit(
             session.add(created)
             present[metric.id] = created  # type: ignore[index]
             written += 1
+
+        # 范围指标（工作温度）：识别出的是「-40~+85 ℃」这种区间，上限已落在本格，
+        # 下限也要落 —— 否则低温能力只剩「测试条件」里的文字，对比页看不出差别。
+        lo_key = range_pair.lower_metric_key(metric.key)
+        rng = range_pair.parse_range(row.condition) if lo_key else None
+        lo_metric = metrics.get(lo_key) if lo_key else None
+        if rng is not None and lo_metric is not None and metric_applies(lo_metric, product.category):
+            lower = present.get(lo_metric.id)
+            if lower is None:
+                lower = ProductSpec(
+                    product_id=product.id, metric_id=lo_metric.id, value_num=rng[0],
+                    condition=row.condition or None, source_id=source.id,
+                    confidence=clamp_confidence(row.confidence), verified=False,
+                )
+                session.add(lower)
+                present[lo_metric.id] = lower
+                written += 1
+            elif lower.value_num != rng[0]:
+                lower.value_num = rng[0]
+                lower.condition = row.condition or None
+                lower.source_id = source.id
+                lower.confidence = clamp_confidence(row.confidence)
+                lower.verified = False
+                lower.updated_at = datetime.now(timezone.utc)
+                session.add(lower)
+                updated += 1
 
     rid = _rid()
     if entity_created:

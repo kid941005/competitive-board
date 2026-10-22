@@ -25,7 +25,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlmodel import select
 
-from . import units
+from . import range_pair, units
 from .adoptions import status_label
 from .importer import WIDE_COLUMNS, metric_for_column
 from .models import Adoption, Entity, Product, ProductSpec, SpecMetric, SpecSource
@@ -55,6 +55,30 @@ def _data(session) -> dict:
         "entities": entities, "products": products, "metrics": metrics,
         "specs": specs, "sources": sources, "adoptions": adoptions,
     }
+
+
+def _range_text(lo_spec, hi_spec) -> str:
+    """范围列（工作温度）导出成区间，与导入同形 —— 否则导出一份就丢了下限。
+
+    优先用「测试条件」里记下的原文（`原文 -40~+85` → 取 `-40~+85`）：这样导出再导入
+    写出来的 condition 与原来一字不差，往返是零写入。只有在原文与当前上下限对不上
+    （有人在页面上改过值）时，才按数值重新拼 —— 否则会导出一个陈旧的区间。
+    """
+    lo = lo_spec.value_num if lo_spec is not None else None
+    hi = hi_spec.value_num if hi_spec is not None else None
+    if lo is None and hi is None:
+        return ""
+    if lo is None:
+        return f"{hi:g}"
+    if hi is None:
+        return f"{lo:g}"
+
+    cond = ((hi_spec.condition if hi_spec is not None else None) or "").strip()
+    if cond.startswith("原文 "):
+        literal = cond[len("原文 "):].strip()
+        if range_pair.parse_range(literal) == (lo, hi):
+            return literal
+    return f"{lo:g}~{hi:g}"
 
 
 def _head(ws, headers: list[str]) -> None:
@@ -91,6 +115,11 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
             # 与导入同一套映射：液泵的流量在宽表里也走「流量L/min」这一列
             metric = metric_for_column(col, metrics_by_key, p.category)
             spec = row_specs.get(metric.id) if metric else None
+            if col.range_min_key:
+                lo_metric = metrics_by_key.get(col.range_min_key)
+                lo_spec = row_specs.get(lo_metric.id) if lo_metric else None
+                values.append(_range_text(lo_spec, spec))
+                continue
             values.append(_cell_value(spec, metric, col.unit))
         ws.append(values)
 

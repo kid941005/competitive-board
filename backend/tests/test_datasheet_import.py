@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import engine, init_db
 from app.main import app
-from app.models import Entity, Product, ProductSpec
+from app.models import Entity, Product, ProductSpec, SpecMetric
 from app.seed import seed
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -233,6 +233,30 @@ def test_commit_requires_rows():
         "entity_name": "建档测试甲", "category": "pump_air", "model": "NX-1001",
     }, rows=[])
     assert r2.status_code == 400
+
+
+def test_commit_temperature_range_writes_both_ends():
+    """规格书识别出的是区间（-40~+85 ℃）：确认写入时上下限都要落库。
+
+    只落上限，低温能力就只剩「测试条件」那一行文字 —— -40 与 0 差 40 ℃，
+    对比页上看不出来。
+    """
+    c = _client()
+    d = _analyze(c, entity_name="温度范围测试", model="T-300").json()
+    res = _commit(c, d["doc_id"], {
+        "entity_name": "温度范围测试", "category": "pump_air", "model": "T-300",
+    }, rows=[
+        {"metric_key": "op_temp_max", "value_num": 85,
+         "condition": "原文 -40~+85", "confidence": 0.9},
+    ]).json()
+    assert res["written"] == 2, res   # 上限 + 补出来的下限
+
+    with Session(engine) as s:
+        prod = s.exec(select(Product).where(Product.model == "T-300")).first()
+        got = {}
+        for sp in s.exec(select(ProductSpec).where(ProductSpec.product_id == prod.id)).all():
+            got[s.get(SpecMetric, sp.metric_id).key] = sp.value_num
+    assert got == {"op_temp_max": 85, "op_temp_min": -40}, got
 
 
 # ── 运行器 ─────────────────────────────────────────────────────────────────
