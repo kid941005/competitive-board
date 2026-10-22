@@ -628,6 +628,16 @@ def import_rows(
         src_id = source_for(row.get("来源链接", "")).id if pending else None
         conf = _confidence(row.get("置信度", ""))
 
+        # 「来源链接」是这一行的官方页面（产品页 / 规格书），型号自己的「官方链接」
+        # 也用它填上 —— 否则型号详情页的「官方链接」永远是空的，导出与 /api/v1
+        # 里也只有一个指向内部编号的 source_id，等于网址没进来。
+        # 已有值不覆盖：人工填过的规格书优先于表格里的一行链接。
+        if src_id and not product.datasheet_url:
+            src_row = session.get(SpecSource, src_id)
+            if src_row is not None and src_row.url:
+                product.datasheet_url = src_row.url
+                session.add(product)
+
         for col, metric, cell, raw in pending:
             # 行里没写大类时，只能等型号解析出来再映射指标与判适用性
             if not category:

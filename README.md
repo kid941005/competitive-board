@@ -258,6 +258,7 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 | 已有型号不能改换大类 | 表里写冲突的大类 → 整行跳过 |
 | 公司名忽略括注 | `村田制作所（Murata）` 认成已有的「村田制作所」，不会因为括注多建一家；英文名走公司的「英文名」字段 |
 | 关联客户拆成采用记录 | `华为（WATCH D2 拆解确认）；欧姆龙（HeartGuide 2019）` → 2 条采用记录，状态「传闻」，括注进备注。**括号里的分隔符不切**（`传音控股（A 已量产；另 B 液冷）` 是一家公司） |
+| 来源链接写进两处 | 整行一条来源，越具体越好：既挂在每个参数上（对比页点参数能看到出处），也填进型号的「官方链接」——否则型号页的官方链接永远是空的。**人工填过的规格书链接不覆盖** |
 | 口径与备注写进型号备注 | 如「静压@19.5Vdc、流量@18Vdc」 |
 
 **Excel 与 CSV 走同一套校验**，只在「读文件」这一步分叉：否则很容易出现「CSV 拦住了、Excel 放过去了」的差异，而 Excel 恰恰是业务同事最常用的格式。
@@ -648,7 +649,7 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 318 项测试，通过才推**。标签有 `1.0.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 322 项测试，通过才推**。标签有 `1.0.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
 版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
@@ -800,9 +801,9 @@ pip install -r requirements-dev.txt   # 额外装 httpx，生产镜像不需要
 python tests/test_compare.py          # 20 项：对比逻辑与 CSV 导入
 python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨界与别名边界）
 python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
-python tests/test_import_export.py    # 16 项：宽表导入、液泵列映射、公司名括注归并、报错封顶、全量备份导出（含往返）
+python tests/test_import_export.py    # 18 项：宽表导入、液泵列映射、公司名括注归并、官方链接回填、报错封顶、全量备份导出（含往返）
 python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
-python tests/test_api_v1.py           # 24 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算
+python tests/test_api_v1.py           # 25 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址
 python tests/test_units.py            # 24 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义 / 温度与「待补充（说明）」）
 python tests/test_adoptions.py        # 15 项：客户采用关系（页面 + API、重复拒收、同名复用、自采拦截、ETag、括号内分隔符、审计）
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期

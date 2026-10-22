@@ -50,6 +50,7 @@ from .models import (
     Product,
     ProductSpec,
     SpecMetric,
+    SpecSource,
 )
 from .numeric import clamp_confidence
 from .sanitize import safe_url
@@ -283,15 +284,28 @@ def _product_dict(p: Product, ent: Entity | None, filled: int | None = None,
     return out
 
 
-def _spec_dict(s: ProductSpec, m: SpecMetric) -> dict:
+def _spec_dict(s: ProductSpec, m: SpecMetric, src: SpecSource | None = None) -> dict:
+    """一条参数。`source_url` / `source_title` 必须给出去 —— 只回 `source_id` 等于
+    让调用方拿着一个内部编号，永远看不到「这个数是从哪来的」。"""
     return {
         "metric_key": m.key, "metric_name": m.name, "unit": m.unit,
         "value_num": s.value_num, "value_text": s.value_text,
         "display": format_number(s.value_num, m.precision) if s.value_num is not None else s.value_text,
         "condition": s.condition, "verified": s.verified, "confidence": s.confidence,
         "source_id": s.source_id,
+        "source_url": (src.url if src else None),
+        "source_title": (src.title if src else None),
         "updated_at": iso_utc(s.updated_at),
     }
+
+
+def _source_map(session: Session, specs: list[ProductSpec]) -> dict[int, SpecSource]:
+    """一次取齐这批参数用到的来源（避免每条一次 SELECT）。"""
+    ids = [i for i in {s.source_id for s in specs if s.source_id} if i is not None]
+    if not ids:
+        return {}
+    rows = session.exec(select(SpecSource).where(SpecSource.id.in_(ids))).all()
+    return {r.id: r for r in rows}  # type: ignore[misc]
 
 
 def _actor(principal: Principal) -> tuple[str, str]:
@@ -305,7 +319,7 @@ def _etag(p: Product, specs: list[ProductSpec], adoptions: list[Adoption] | None
         str(p.id), p.model or "", p.name or "", p.category or "", p.status or "",
         p.datasheet_url or "", p.note or "", p.launch_date.isoformat() if p.launch_date else "",
         *[
-            f"{s.metric_id}:{s.value_num}:{s.value_text}:{s.condition}:{s.verified}"
+            f"{s.metric_id}:{s.value_num}:{s.value_text}:{s.condition}:{s.verified}:{s.source_id}"
             for s in sorted(specs, key=lambda x: x.metric_id or 0)
         ],
         # 客户采用也算资源的一部分（GET 详情里带着它），所以要进指纹
@@ -746,8 +760,10 @@ def get_product(
 
     present = {metrics[s.metric_id].key for s in specs if s.metric_id in metrics}
     payload = _product_dict(product, ent, len(specs), len(pool))
+    srcs = _source_map(session, specs)
     payload["specs"] = [
-        _spec_dict(s, metrics[s.metric_id]) for s in specs if s.metric_id in metrics
+        _spec_dict(s, metrics[s.metric_id], srcs.get(s.source_id))
+        for s in specs if s.metric_id in metrics
     ]
     payload["missing_metrics"] = [m.key for m in pool if m.key not in present]
     adoptions = _adoptions_of(session, product_id)
@@ -766,7 +782,9 @@ def get_specs(
         raise ApiError("NOT_FOUND", f"型号 id={product_id} 不存在")
     metrics = {m.id: m for m in session.exec(select(SpecMetric)).all()}
     specs = _specs_of(session, product_id)
-    return ok([_spec_dict(s, metrics[s.metric_id]) for s in specs if s.metric_id in metrics])
+    srcs = _source_map(session, specs)
+    return ok([_spec_dict(s, metrics[s.metric_id], srcs.get(s.source_id))
+               for s in specs if s.metric_id in metrics])
 
 
 @router.get("/adoptions")
@@ -971,6 +989,7 @@ def get_changes(
     ).all())
     metrics = {m.id: m for m in session.exec(select(SpecMetric)).all()}
     products = {p.id: p for p in session.exec(select(Product)).all()}
+    srcs = _source_map(session, specs)
 
     items = []
     for s in specs:
@@ -979,7 +998,8 @@ def get_changes(
             continue
         items.append({
             "product_id": p.id, "model": p.model, "category": p.category,
-            "spec": _spec_dict(s, metrics[s.metric_id]) if s.metric_id in metrics else None,
+            "spec": (_spec_dict(s, metrics[s.metric_id], srcs.get(s.source_id))
+                     if s.metric_id in metrics else None),
         })
     next_since = (iso_utc(specs[-1].updated_at) or since) if specs else since
     return ok(items, total=len(items), next_since=next_since,

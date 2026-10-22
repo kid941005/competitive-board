@@ -100,9 +100,13 @@
             <td class="ctx">
               {% if r.source %}
                 <span class="src-kind">{{ r.source.kind }}</span>
-                {{ r.source.title or '' }}
+                {% if r.source.url and (r.source.url.startswith('http') or r.source.url.startswith('/')) %}
+                  <a href="{{ r.source.url }}" target="_blank" rel="noopener noreferrer"
+                     title="{{ r.source.title or '' }}">{{ r.source.url | replace('https://', '') | replace('http://', '') | truncate(46, true, '…') }}</a>
+                {% else %}
+                  {{ r.source.title or '' }}<span class="dim">· 无网址</span>
+                {% endif %}
                 {% if r.source.captured_at %}<span class="dim">· {{ r.source.captured_at | localtime('%Y-%m-%d') }}</span>{% endif %}
-                {% if r.source.url and (r.source.url.startswith('http') or r.source.url.startswith('/')) %}<a href="{{ r.source.url }}" target="_blank" rel="noopener noreferrer">链接</a>{% endif %}
               {% elif r.spec %}
                 <span class="dim">历史数据（无来源）</span>
               {% else %}

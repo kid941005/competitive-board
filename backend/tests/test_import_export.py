@@ -364,6 +364,50 @@ def test_company_with_parenthetical_merges_into_existing():
     assert names == ["村田制作所"], names
 
 
+def test_source_link_also_fills_product_datasheet_url():
+    """「来源链接」要落成型号自己的「官方链接」。
+
+    只挂到参数的 source 上，型号详情页的「官方链接」就永远是空的 ——
+    用户对着表看，结论就是「导进来的信息缺了网址」。
+    """
+    c = _client()
+    text = wide_csv({"企业名称": "链接测试公司", "产品型号": "LINK-1", "产品类别": "压电气泵",
+                     "流量L/min": "0.5", "来源链接": "https://example.com/pump/link-1"})
+    rep = _post(c, "link.csv", text.encode("utf-8"), "text/csv")
+    assert rep["errors"] == [], rep["errors"]
+
+    with Session(engine) as s:
+        p = s.exec(select(Product).where(Product.model == "LINK-1")).first()
+        assert p.datasheet_url == "https://example.com/pump/link-1", p.datasheet_url
+        sp = s.exec(select(ProductSpec).where(ProductSpec.product_id == p.id)).first()
+        assert sp.source_id, "参数也要挂上来源"
+
+
+def test_source_link_does_not_overwrite_manual_datasheet_url():
+    """人工填过的规格书链接优先，表格里的一行链接不能把它盖掉。"""
+    c = _client()
+    from app.models import Entity
+
+    with Session(engine) as s:
+        ent = s.exec(select(Entity).where(Entity.name == "人工链接公司")).first()
+        if ent is None:
+            ent = Entity(kind="competitor", name="人工链接公司")
+            s.add(ent)
+            s.commit()
+        s.add(Product(entity_id=ent.id, model="LINK-2", category="pump_air",
+                      datasheet_url="https://example.com/official.pdf"))
+        s.commit()
+
+    text = wide_csv({"企业名称": "人工链接公司", "产品型号": "LINK-2", "产品类别": "压电气泵",
+                     "流量L/min": "0.6", "来源链接": "https://example.com/pump/link-2"})
+    rep = _post(c, "link2.csv", text.encode("utf-8"), "text/csv")
+    assert rep["errors"] == [], rep["errors"]
+
+    with Session(engine) as s:
+        p = s.exec(select(Product).where(Product.model == "LINK-2")).first()
+    assert p.datasheet_url == "https://example.com/official.pdf", p.datasheet_url
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

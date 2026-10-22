@@ -327,11 +327,17 @@
       srcUrl = "";
     }
     if (srcUrl) {
+      // 标题往往是来源类型（「表格导入」），光看标题等于看不到网址 ——
+      // 标题在上、网址在下并做成链接，两样都得能看见。
+      var pretty = esc(srcUrl.replace(/^https?:\/\//i, ""));
+      if (pretty.length > 52) pretty = pretty.slice(0, 52) + "…";
+      var title = d.srcTitle ? esc(d.srcTitle) + "<br>" : "";
       parts.push(
         row(
           "来源",
-          '<a href="' + esc(srcUrl) + '" target="_blank" rel="noopener noreferrer">' +
-            esc(d.srcTitle || srcUrl) + "</a>"
+          title +
+            '<a href="' + esc(srcUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+            'title="' + esc(srcUrl) + '">' + pretty + "</a>"
         )
       );
     } else {

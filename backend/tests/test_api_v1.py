@@ -91,6 +91,33 @@ def test_health_exposes_app_version():
     assert data["app_version"] == _app.version, data
 
 
+def test_product_detail_specs_carry_source_url():
+    """型号详情必须回来源网址本身，不能只给一个内部 source_id。
+
+    `source_id` 是库内编号，调用方拿着它什么也做不了 —— 表现为「信息有，
+    但网址看不到」。产品级 `datasheet_url` 与每条参数的 `source_url` 都要有。
+    """
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    rows = [{
+        "企业名称": "来源网址测试", "产品型号": "SRC-1", "产品类别": "压电气泵",
+        "流量L/min": "0.5", "来源链接": "https://example.com/src-1",
+    }]
+    r = c.post("/api/v1/import", json={"rows": rows}, headers=h)
+    assert r.status_code == 200, r.text
+    pid = c.get("/api/v1/products?q=SRC-1", headers=h).json()["data"][0]["id"]
+
+    body = c.get(f"/api/v1/products/{pid}", headers=h).json()["data"]
+    assert body["datasheet_url"] == "https://example.com/src-1", body["datasheet_url"]
+    spec = body["specs"][0]
+    assert spec["source_url"] == "https://example.com/src-1", spec
+    assert spec["source_title"], "来源标题也要给"
+
+    listed = c.get(f"/api/v1/products/{pid}/specs", headers=h).json()["data"]
+    assert listed[0]["source_url"] == "https://example.com/src-1", listed[0]
+
+
 def test_missing_credentials_is_401_envelope():
     c = TestClient(app)
     c.__enter__()
