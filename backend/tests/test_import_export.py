@@ -434,6 +434,41 @@ def test_temperature_range_survives_export_round_trip():
     assert back["skipped_unchanged"] == 2, back
 
 
+def test_reimport_keeps_annotated_condition():
+    """带说明的口径不会被下一次导入抹平。
+
+    区间格会自动生成「原文 0–45」，导入后常被补上更完整的口径（工作/存储双段、
+    计权未标、寿命类型…）。重导同一份表时这些说明必须留着 —— 否则每导一次
+    就丢一次标注，而且界面上看不出来。
+    """
+    c = _client()
+    text = wide_csv({"企业名称": "口径保护公司", "产品型号": "COND-1",
+                     "产品类别": "压电气泵", "温度范围": "0–45 ℃"})
+    rep = _post(c, "cond.csv", text.encode("utf-8"), "text/csv")
+    assert rep["written_specs"] == 2, rep
+
+    annotated = "原文 工作 0–45 ℃（金属表面 ≤60 ℃）；存储 -20–60 ℃（取工作段）"
+    with Session(engine) as s:
+        p = s.exec(select(Product).where(Product.model == "COND-1")).first()
+        m = s.exec(select(SpecMetric).where(SpecMetric.key == "op_temp_max")).first()
+        sp = s.exec(select(ProductSpec).where(
+            ProductSpec.product_id == p.id, ProductSpec.metric_id == m.id)).first()
+        sp.condition = annotated
+        s.add(sp)
+        s.commit()
+
+    again = _post(c, "cond2.csv", text.encode("utf-8"), "text/csv")
+    assert again["written_specs"] == 0, again
+    assert again["skipped_unchanged"] == 2, again
+
+    with Session(engine) as s:
+        p = s.exec(select(Product).where(Product.model == "COND-1")).first()
+        m = s.exec(select(SpecMetric).where(SpecMetric.key == "op_temp_max")).first()
+        sp = s.exec(select(ProductSpec).where(
+            ProductSpec.product_id == p.id, ProductSpec.metric_id == m.id)).first()
+        assert sp.condition == annotated, sp.condition
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

@@ -133,6 +133,11 @@ _RE_NUM = re.compile(_NUM)
 # 数字后面紧跟的单位写法（用来在「50,000 Pa」这类单元格里认出单位）。
 # 必须以字母 / µ / ℃ / % 开头：否则「1.5 (典型)」里的括号会被当成单位。
 _RE_UNIT_TAIL = re.compile(r"[A-Za-zµμ℃°%][A-Za-zµμ℃°%/³²]*")
+# 导入自己生成的区间条件（「原文 -40~+85」）。只有这种才允许被下一次导入覆盖，
+# 带额外说明的口径（人工补的、或批量标注的）一律保留。
+_RE_GENERATED_COND = re.compile(
+    r"^原文\s*[-+]?\d+(?:\.\d+)?\s*[~～\-–—至]\s*[-+]?\d+(?:\.\d+)?$"
+)
 
 
 @dataclass
@@ -693,6 +698,15 @@ def import_rows(
             # 全库的 @15Vpp / 水·100Hz 会被静默抹掉，而且没人会发现。
             condition = cell.condition
             if condition is None and existing is not None:
+                condition = existing.condition
+            elif (
+                existing is not None
+                and existing.condition
+                and not _RE_GENERATED_COND.match(existing.condition.strip())
+            ):
+                # 已有条件是带说明的口径（「原文 工作 0–45 ℃（表面 ≤60 ℃）；存储 …」），
+                # 不是自动生成的「原文 0~45」—— 这种不能用一个更简的原文覆盖掉，
+                # 否则重导一次表就把人工补的口径说明抹平了。
                 condition = existing.condition
             if existing is not None:
                 if (

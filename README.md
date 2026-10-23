@@ -263,7 +263,7 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 
 **Excel 与 CSV 走同一套校验**，只在「读文件」这一步分叉：否则很容易出现「CSV 拦住了、Excel 放过去了」的差异，而 Excel 恰恰是业务同事最常用的格式。
 
-导入的参数一律 `verified=False`，需在「产品管理」里逐项确认。**重复导入是安全的**：值与条件都没变的格会被跳过（报告里的「无变化跳过」），既不写库、也不清掉已复核标记。宽表没有「测试条件」列，所以**表里没给条件时不会清空已有条件** —— 否则导出一份再导入，全库的 `@15Vpp` 会被静默抹掉。
+导入的参数一律 `verified=False`，需在「产品管理」里逐项确认。**重复导入是安全的**：值没变的格会被跳过（报告里的「无变化跳过」），既不写库、也不清掉已复核标记。宽表没有「测试条件」列，所以**已有条件不会被覆盖** —— 由导入自动生成的「原文 0–45」允许被下一次导入刷新，而带说明的口径（工作/存储双段、计权未标、寿命类型）一律保留；否则每导一次表就丢一次标注，界面上还看不出来。
 
 报错里的行号是**文件里的真实行号**（表头不在第一行也准）。程序生成的 xlsx（openpyxl / pandas）若用了公式且没被 Excel 保存过，公式列读出来是空值，导入前请「复制 → 粘贴为值」。
 
@@ -658,7 +658,7 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 327 项测试，通过才推**。标签有 `1.0.2`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 328 项测试，通过才推**。标签有 `1.0.2`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
 版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.2` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
@@ -810,7 +810,7 @@ pip install -r requirements-dev.txt   # 额外装 httpx，生产镜像不需要
 python tests/test_compare.py          # 20 项：对比逻辑与 CSV 导入
 python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨界与别名边界）
 python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
-python tests/test_import_export.py    # 19 项：宽表导入、液泵列映射、公司名括注归并、官方链接回填、温度范围往返、报错封顶、全量备份导出（含往返）
+python tests/test_import_export.py    # 20 项：宽表导入、液泵列映射、公司名括注归并、官方链接回填、温度范围往返、口径标注不被覆盖、报错封顶、全量备份导出（含往返）
 python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
 python tests/test_api_v1.py           # 25 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址
 python tests/test_units.py            # 26 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义 / 温度上下限与「待补充（说明）」）
