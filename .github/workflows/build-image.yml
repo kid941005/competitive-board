@@ -55,6 +55,8 @@ jobs:
               'docker-compose.build.yml': r'APP_VERSION:\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
               'deploy/docker-compose.yml': r'CIB_IMAGE_TAG:-([0-9]+\.[0-9]+\.[0-9]+)',
               'README.md': r'ghcr\.io/kid941005/competitive-board:([0-9]+\.[0-9]+\.[0-9]+)',
+              # MCP 服务端也对外报版本，和镜像不是同一处代码，容易漏
+              'mcp/cib_mcp.py': r'SERVER_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
           }
           print(f"app.version = {V}")
           bad = not V
@@ -93,9 +95,17 @@ jobs:
             echo "::endgroup::"
           done
 
+      # 只跑一个文件会漏 —— test_filter.js 的 8 项此前就不在 CI 里，
+      # 「328 项」这个数字对不上。改成扫描全部 test_*.js，新增文件自动纳入。
       - name: 前端交互测试
         working-directory: backend
-        run: node tests/js/test_datasheet_ui.js
+        run: |
+          set -euo pipefail
+          for f in tests/js/test_*.js; do
+            echo "::group::$f"
+            node "$f"
+            echo "::endgroup::"
+          done
 
   build:
     name: 构建并推送
