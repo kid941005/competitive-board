@@ -140,7 +140,8 @@ def test_upgrade_from_old_database_merges_duplicates():
         assert len(specs) == 2, f"每个指标只该留一格，实际 {len(specs)}"
         values = {sp.metric_id: sp.value_num for sp in specs}
         assert values[2] == 12, "冲突格以赢家为准"
-        assert values[1] == 0.7, "同格重复保留最近更新的一条"
+        # v6 把流量从 L/min 换算到 mL/min（×1000），所以老库的 0.7 落成 700
+        assert values[1] == 700, "同格重复保留最近更新的一条（再按 v6 换算到 mL/min）"
 
         logs = s.exec(select(AuditLog).where(AuditLog.origin == "migration")).all()
         assert logs, "合并动作必须留审计，否则数据凭空少了一条没人说得清"
@@ -199,7 +200,8 @@ def test_v3_merges_fan_metrics_and_drops_vacuum():
         specs = {(sp.product_id, sp.metric_id): sp.value_num
                  for sp in s.exec(select(ProductSpec)).all()}
         assert specs[(11, press.id)] == 1.3, f"1300 Pa 应换算成 1.3 kPa，实际 {specs.get((11, press.id))}"
-        assert specs[(10, 1)] == 0.5
+        assert specs[(10, 1)] == 500, (
+            f"v3 不动流量，但 v6 把 0.5 L/min 换算成 500 mL/min，实际 {specs.get((10, 1))}")
         assert len(specs) == 3, f"真空度那条应被删除，实际剩 {len(specs)} 条"
 
 
@@ -248,6 +250,66 @@ def test_v5_splits_temperature_range_into_min_and_max():
     schema.migrate(engine)
     with Session(engine) as s:
         assert len(s.exec(select(ProductSpec)).all()) == 4
+
+
+# ── 6. v6：三类产品流量/压力单位统一 ──────────────────────────────────────
+def test_v6_unifies_flow_and_pressure_units_across_three_categories():
+    """液泵原用 µL/min 与 mbar，与气泵/风扇的 L/min、kPa 不能直接比。
+
+    v6 把三类统一到 mL/min 与 kPa，**数值必须跟着换算**（不能只改标签，
+    否则 0.3 会被读成 0.3 mL/min，差 1000 倍）：
+    0.3 L/min → 300、8000 µL/min → 8、500 mbar → 50，气泵静压本就是 kPa 不动。
+    """
+    engine = _temp_engine("v6.db")
+    SQLModel.metadata.create_all(engine)
+    schema.migrate(engine)
+    with Session(engine) as s:
+        s.add(Entity(id=1, kind="competitor", name="甲"))
+        for mid, key, name, unit, applies, prec in (
+            (1, "flow_air", "空气流量", "L/min", "pump_air,fan", 3),
+            (2, "flow_liquid", "液体流量", "µL/min", "pump_liquid", 0),
+            (3, "pressure_air", "静压", "kPa", "pump_air,fan", 2),
+            (4, "pressure_liquid", "背压", "mbar", "pump_liquid", 0),
+        ):
+            s.add(SpecMetric(id=mid, key=key, category="g", name=name, unit=unit,
+                             value_type="number", better="higher", precision=prec,
+                             applies_to=applies))
+        s.add(Product(id=10, entity_id=1, model="AIR", category="pump_air"))
+        s.add(Product(id=11, entity_id=1, model="LIQ", category="pump_liquid"))
+        s.commit()
+        s.add(ProductSpec(product_id=10, metric_id=1, value_num=0.3))
+        s.add(ProductSpec(product_id=10, metric_id=3, value_num=50.0))
+        s.add(ProductSpec(product_id=11, metric_id=2, value_num=8000))
+        s.add(ProductSpec(product_id=11, metric_id=4, value_num=500))
+        s.commit()
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE schema_meta SET value = '5' WHERE key = 'version'"))
+
+    result = schema.migrate(engine)
+    assert any(step.startswith("v6") for step in result["applied"]), result
+
+    with Session(engine) as s:
+        m = {x.key: x for x in s.exec(select(SpecMetric)).all()}
+        assert m["flow_air"].unit == "mL/min" and m["flow_liquid"].unit == "mL/min"
+        assert m["pressure_air"].unit == "kPa" and m["pressure_liquid"].unit == "kPa"
+        assert m["flow_air"].precision == 0, "L/min 最多 3 位小数，×1000 后是整数"
+        assert m["flow_liquid"].precision == 1, "µL/min ÷1000 可能留一位小数"
+        vals = {(sp.product_id, sp.metric_id): sp.value_num
+                for sp in s.exec(select(ProductSpec)).all()}
+        assert vals[(10, 1)] == 300, vals        # 0.3 L/min
+        assert vals[(11, 2)] == 8, vals          # 8000 µL/min
+        assert vals[(11, 4)] == 50, vals         # 500 mbar
+        assert vals[(10, 3)] == 50.0, vals       # 静压本来就是 kPa，不该动
+
+        logs = s.exec(select(AuditLog).where(AuditLog.origin == "migration")).all()
+        assert any("mL/min" in (row.note or "") for row in logs), "换算必须留审计"
+
+    # 幂等：版本已在 6，重复迁移不能再乘一次系数
+    schema.migrate(engine)
+    with Session(engine) as s:
+        again = {(sp.product_id, sp.metric_id): sp.value_num
+                 for sp in s.exec(select(ProductSpec)).all()}
+    assert again == vals, f"重复迁移不该二次换算：{again}"
 
 
 # ── 4. 库比代码新 ──────────────────────────────────────────────────────────
@@ -327,7 +389,8 @@ def test_import_file_with_same_model_twice_keeps_one_spec():
         p = s.exec(select(Product).where(Product.model == "DUPD-1")).first()
         assert p is not None
         rows = s.exec(select(ProductSpec).where(ProductSpec.product_id == p.id)).all()
-    assert len(rows) == 1 and rows[0].value_num == 0.6
+    assert len(rows) == 1 and rows[0].value_num == 600, (
+        f"后一行覆盖前一行，且 0.6 L/min 按 v6 换算成 600 mL/min，实际 {rows[0].value_num}")
 
 
 # ── 运行器 ─────────────────────────────────────────────────────────────────

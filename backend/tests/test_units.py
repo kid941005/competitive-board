@@ -168,16 +168,17 @@ def test_voltage_dc_is_not_doubled():
 
 # ── 导入通道 ───────────────────────────────────────────────────────────────
 def test_csv_import_converts_unit():
+    """列头声明 L/min、字典是 mL/min：这一类必须换算，不能原值落库。"""
     s = _session()
     try:
-        rep = import_csv(s, _csv(**{"产品型号": "IMP-A", "流量L/min": "1100 mL/min"}))
+        rep = import_csv(s, _csv(**{"产品型号": "IMP-A", "流量L/min": "1.1"}))
         s.commit()
         assert not rep.errors, rep.errors
         assert rep.converted_units == 1
-        assert rep.conversions and "1.1 L/min" in rep.conversions[0], rep.conversions
+        assert rep.conversions and "1100 mL/min" in rep.conversions[0], rep.conversions
         spec = _spec("IMP-A", "flow_air")
         assert spec is not None
-        assert abs((spec.value_num or 0) - 1.1) < 1e-9, f"落库值应为 1.1，得到 {spec.value_num}"
+        assert abs((spec.value_num or 0) - 1100) < 1e-9, f"落库值应为 1100，得到 {spec.value_num}"
     finally:
         _close(s)
 
@@ -213,12 +214,13 @@ def test_csv_import_normalizes_voltage_text():
 
 
 def test_import_without_unit_column_mean_is_metric_unit():
+    """单元格不带单位时按**列头**的单位理解：列头 L/min 的 0.7 就是 700 mL/min。"""
     s = _session()
     try:
         rep = import_csv(s, _csv(**{"产品型号": "IMP-E", "流量L/min": "0.7"}))
         s.commit()
-        assert not rep.errors and rep.converted_units == 0
-        assert abs((_spec("IMP-E", "flow_air").value_num or 0) - 0.7) < 1e-12
+        assert not rep.errors and rep.converted_units == 1
+        assert abs((_spec("IMP-E", "flow_air").value_num or 0) - 700) < 1e-9
     finally:
         _close(s)
 

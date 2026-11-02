@@ -40,13 +40,19 @@ from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 # 气泵看流量/静压、风扇看风量/厚度、液泵看流量µL级/背压 —— 三套口径不通用，必须分开。
 METRICS = [
     # 气动与流体
-    # 流量与静压**不按大类分家**：气泵吹气、风扇推风，物理量是同一个（流量 L/min、
-    # 压差 kPa），分两套指标会让「气泵 vs 风扇」的对比里出现两行流量、两行静压。
-    # 液泵仍然单列 —— 它的量级差了 10⁴（µL/min 与 mbar），混在一起没法读。
-    ("flow_air", "气动与流体", "空气流量", "L/min", "number", "higher", 3, 300, True, "pump_air,fan", ""),
+    # 流量与静压**不按大类分家**：气泵吹气、风扇推风，物理量是同一个（流量、压差）。
+    # 分两套指标会让「气泵 vs 风扇」的对比里出现两行流量、两行静压。
+    #
+    # 单位在三类产品之间统一（2026-10-23 定）：**压力一律 kPa、流量一律 mL/min**。
+    # 之前液泵用 µL/min 与 mbar，量级是事实（差 10⁴），但代价是气泵 0.3 L/min 与
+    # 液泵 5000 µL/min 成了两个数两个单位 —— 跨类排序、画同一张流量-压力图都做不了，
+    # 「统计单位统一」也就无从谈起。换成 mL/min 后全库流量落在 2~51500，
+    # 一列读得出量级；指标本身仍分空气/液体两条（介质与适用大类不同）。
+    # 精度按「换算后不丢位」定：L/min 最多 3 位小数，×1000 即整数 → 0 位。
+    ("flow_air", "气动与流体", "空气流量", "mL/min", "number", "higher", 0, 300, True, "pump_air,fan", ""),
     ("pressure_air", "气动与流体", "静压", "kPa", "number", "higher", 2, 310, True, "pump_air,fan", ""),
-    ("flow_liquid", "气动与流体", "液体流量", "µL/min", "number", "higher", 0, 350, True, "pump_liquid", "典型值"),
-    ("pressure_liquid", "气动与流体", "背压", "mbar", "number", "higher", 0, 360, True, "pump_liquid", "典型值"),
+    ("flow_liquid", "气动与流体", "液体流量", "mL/min", "number", "higher", 1, 350, True, "pump_liquid", "典型值"),
+    ("pressure_liquid", "气动与流体", "背压", "kPa", "number", "higher", 1, 360, True, "pump_liquid", "典型值"),
     ("self_priming", "气动与流体", "自吸", "", "text", "na", 0, 370, False, "pump_liquid", ""),
     ("media", "气动与流体", "可泵介质", "", "text", "na", 0, 380, False, "pump_liquid", ""),
     # 驱动与功耗
@@ -156,58 +162,60 @@ PRODUCTS = [
 
 # ── 参数 ───────────────────────────────────────────────────────────────────
 # 型号 → {指标 key: 值}。文本型给字符串，数值型给数字；不写 = 该型号未公开。
+# 数值一律按**字典单位**写：流量 mL/min、压力 kPa（2026-10-23 v6 起三类统一）。
+# 所以 0.7 L/min 写成 700、8000 µL/min 写成 8、500 mbar 写成 50 —— 这些是**同一个数**，
+# 只是换了刻度；照着旧刻度填会把演示数据的量级写错 1000 倍。
 SPECS: dict[str, dict[str, float | str]] = {
     # 村田 · MZB 系列
-    # 村田 · MZB 系列
     "MZB1001T02": {
-        "flow_air": 0.7, "pressure_air": 1.42, "resonance": "24~27",
+        "flow_air": 700, "pressure_air": 1.42, "resonance": "24~27",
         "drive_voltage": "11.5~21", "op_temp_max": 70,
         "size": "20×20×1.85", "weight_g": 1.4,
     },
     "MZB3004T04": {
-        "flow_air": 0.155, "pressure_air": 50.0, "resonance": "21.5~24.5",
+        "flow_air": 155, "pressure_air": 50.0, "resonance": "21.5~24.5",
         "drive_voltage": "8~21", "op_temp_max": 45, "size": "21×21",
     },
     "MZB3005T06": {
-        "flow_air": 0.155, "pressure_air": 50.0, "resonance": "21.5~24.5",
+        "flow_air": 155, "pressure_air": 50.0, "resonance": "21.5~24.5",
         "drive_voltage": "8~21", "op_temp_max": 45, "size": "19×19",
     },
     "MZB4001T05": {
-        "flow_air": 0.5, "resonance": "20~22",
+        "flow_air": 500, "resonance": "20~22",
         "drive_voltage": "20~28", "op_temp_max": 50, "size": "φ28",
     },
 
-    # Bartels · mp6 系列（气体型号已换算为 L/min 与 kPa）
+    # Bartels · mp6 系列（已换算为 mL/min 与 kPa）
     "mp6-gas": {
-        "flow_air": 0.025, "pressure_air": 12.0, "drive_voltage": "250",
+        "flow_air": 25, "pressure_air": 12.0, "drive_voltage": "250",
         "power_mw": 50, "op_temp_max": 70, "size": "30×15×3.8",
         "weight_g": 2.0, "lifetime_h": 5000,
     },
     "mp6-gas+": {
-        "flow_air": 0.030, "pressure_air": 16.0, "drive_voltage": "250",
+        "flow_air": 30, "pressure_air": 16.0, "drive_voltage": "250",
         "power_mw": 50, "op_temp_max": 70, "size": "30×15×3.8",
         "weight_g": 2.0, "lifetime_h": 5000,
     },
     "mp6-liq": {
-        "flow_liquid": 8000, "pressure_liquid": 500, "drive_voltage": "250",
+        "flow_liquid": 8, "pressure_liquid": 50, "drive_voltage": "250",
         "power_mw": 50, "op_temp_max": 70, "size": "30×15×3.8",
         "weight_g": 2.0, "lifetime_h": 5000,
         "self_priming": "是", "wetted_material": "PPSU", "media": "液体与气体",
     },
     "mp6-pi": {
-        "flow_liquid": 6000, "pressure_liquid": 500, "drive_voltage": "250",
+        "flow_liquid": 6, "pressure_liquid": 50, "drive_voltage": "250",
         "power_mw": 50, "size": "30×15×3.8", "weight_g": 2.0,
         "lifetime_h": 5000, "wetted_material": "PPSU + PI", "media": "液体与气体",
     },
     "mp6-pp": {
-        "flow_liquid": 4000, "pressure_liquid": 500, "drive_voltage": "250",
+        "flow_liquid": 4, "pressure_liquid": 50, "drive_voltage": "250",
         "power_mw": 50, "size": "30×15×3.8", "weight_g": 2.0,
         "lifetime_h": 5000, "wetted_material": "PP", "media": "液体与气体",
     },
 
     # 固态散热（风扇的静压已从 Pa 换算成 kPa，与气泵同一口径）
     "XMC-2400": {
-        "flow_air": 1.5, "pressure_air": 1.3, "power_mw": 200,
+        "flow_air": 1500, "pressure_air": 1.3, "power_mw": 200,
         "noise_dba": 13.7, "thickness": 1.13, "drive_voltage": "20",
     },
     # Frore 未公开风量 —— 刻意留空，用于体现「未公开」在选型时的实际影响

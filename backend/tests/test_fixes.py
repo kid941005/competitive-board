@@ -87,7 +87,7 @@ def test_import_same_model_two_companies():
             ).first().value_num
             for p in found
         }
-        assert sorted(values.values()) == [0.5, 0.9], f"两家的值不应互相覆盖：{values}"
+        assert sorted(values.values()) == [500, 900], f"两家的值不应互相覆盖：{values}"
 
 
 # ── F-03 置信度 ────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ def test_import_resets_verified():
         rows[0]["流量L/min"] = "0.72"
         import_rows(s, rows, headers)
         s.refresh(spec)
-    assert spec.value_num == 0.72
+    assert spec.value_num == 720, "0.72 L/min 落库是 720 mL/min"
     assert spec.verified is False, "机器重新写入后，人工复核标记必须失效"
 
 

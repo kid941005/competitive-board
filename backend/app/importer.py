@@ -48,7 +48,7 @@ class WideColumn:
     field: str = ""        # meta 列的标识：entity / model / category / source / confidence / customers / note
     metric_key: str = ""
     unit: str = ""         # 表头声明的单位，换算用；空 = 按指标字典的单位理解
-    quantity: str = ""     # 按「物理量」映射指标：同一个流量列，液泵落到 µL/min 那一项
+    quantity: str = ""     # 按「物理量」映射指标：同一个流量列，液泵落到「液体流量」那一项
     range_min_key: str = ""  # 范围列（如「温度范围」）的**下限**写到哪个指标
     width: int = 14
 
@@ -57,7 +57,7 @@ WIDE_COLUMNS: tuple[WideColumn, ...] = (
     WideColumn("企业名称", "meta", "entity", width=22),
     WideColumn("产品型号", "meta", "model", width=18),
     WideColumn("产品类别", "meta", "category", width=12),
-    # 流量与静压按「物理量」映射：同一列在液泵行落到 液体流量(µL/min) / 背压(mbar)，
+    # 流量与静压按「物理量」映射：同一列在液泵行落到 液体流量 / 背压，
     # 否则用户按他那张表填的液泵数据（0.0035 L/min、120000 Pa）会被判成「不适用」。
     WideColumn("流量L/min", "metric", metric_key="flow_air", unit="L/min",
                quantity="flow", width=12),
@@ -88,8 +88,8 @@ WIDE_COLUMNS: tuple[WideColumn, ...] = (
 
 WIDE_HEADERS: list[str] = [c.header for c in WIDE_COLUMNS]
 
-# 同一个「流量」列在不同大类下对应不同指标：液泵的量级小 10⁴，字典里单列一项
-# （µL/min 与 mbar），否则对比页上 0.0035 与 0.7 混在一列里读不出量级感。
+# 同一个「流量」列在不同大类下对应不同指标：介质不同、适用大类不同，
+# 但**单位已统一**（流量 mL/min、压力 kPa），所以三类产品也能直接比。
 QUANTITY_METRIC: dict[str, dict[str, str]] = {
     "flow": {"pump_liquid": "flow_liquid", "*": "flow_air"},
     "pressure": {"pump_liquid": "pressure_liquid", "*": "pressure_air"},
@@ -127,7 +127,12 @@ MISSING_TOKENS = {
 _MISSING_PREFIXES = ("待补充", "待定", "待确认", "未公开", "未提供", "未披露", "暂无")
 
 # 单元格里的数字：可能是 0.155、50,000、1,420、-3
-_NUM = r"[-+]?\d+(?:[.,]\d+)?"
+#
+# **科学计数法必须认**：openpyxl 读出的 float 经 str() 后，绝对值小于 1e-4 会写成
+# 「2.5e-05」（导出到 L/min 的 0.025 mL/min 就是这种）。不认的话正则只抓到前半截
+# 2.5、剩下的 e-05 当成另一个数字，于是「单元格里有 2 个数字」告警 + 值差 1 万倍 ——
+# 而且它只在极小流量上出现，肉眼很难发现。e 后面必须跟数字才算，单独一个 e 不匹配。
+_NUM = r"[-+]?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?"
 _RE_RANGE = re.compile(rf"(?P<a>{_NUM})\s*[~～\-–—至]\s*(?P<b>{_NUM})")
 _RE_NUM = re.compile(_NUM)
 # 数字后面紧跟的单位写法（用来在「50,000 Pa」这类单元格里认出单位）。
@@ -815,8 +820,9 @@ TEMPLATE_TIPS: list[tuple[str, str]] = [
     ("产品类别", "建议填，只能填：" + "、".join(config.CATEGORY_LABEL.values()) + "。"
                 "已有型号不能改大类，冲突时整行跳过。"),
     ("指标列", "一格一个指标，留空或写「待补充」表示未公开，跳过不写。"),
-    ("列头单位", "列头写的单位会被换算成系统口径：流量L/min、静压Pa（50,000 会落成 50 kPa）、"
-              "液体流量µL/min、背压mbar、厚度mm、散热能力W。不要自己换算，按原表填。"),
+    ("列头单位", "列头写的单位会被换算成系统口径：流量统一 mL/min（流量L/min 的 0.3 → 300）、"
+              "压力统一 kPa（静压Pa 的 50,000 → 50）、厚度 mm、散热能力 W。"
+              "液泵同样填这两列即可，会落到液体流量/背压。不要自己换算，按原表填。"),
     ("数字写法", "千分位逗号可以（50,000）；温度范围落成下限+上限两格（-40~+85 ℃ → -40 与 85），其他指标区间取上限；「待补充」= 未公开。"),
     ("文本列", "谐振频率 / 驱动电压 / 外形尺寸 / 自吸 / 可泵介质 / 接触介质材质 按原文填，"
             "驱动电压会统一成「数值 + 口径」（Vp→Vpp 乘 2，Vrms 不猜）。"),

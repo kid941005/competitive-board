@@ -39,7 +39,12 @@ _RE_VALUE = re.compile(
 )
 
 # 指标标准单位 → 文档中可能出现的写法
+# 字典单位 2026-10-23 统一为「流量 mL/min、压力 kPa」，但 L/min / µL/min / mbar
+# 仍留在表里：导出模板的列头、历史规格书、旧表格里都还会出现，
+# 识别时按 metric.unit 取同义词，缺一条就等于「这份规格书认不出流量」。
 UNIT_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "mL/min": ("ml/min", "ml / min", "µl/min", "μl/min", "ul/min", "µl / min",
+               "l/min", "l / min", "lpm", "l/min."),
     "L/min": ("l/min", "l / min", "lpm", "l/min.", "ml/min", "ml / min", "µl/min", "μl/min", "ul/min"),
     "µL/min": ("µl/min", "μl/min", "ul/min", "ml/min", "ml / min", "µl / min", "l/min"),
     "kPa": ("kpa", "mbar", "bar", "mpa", "pa"),

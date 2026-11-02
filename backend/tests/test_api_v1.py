@@ -309,7 +309,7 @@ def test_specs_batch_converts_unit():
     pid = r.json()["data"]["id"]
 
     r = c.post("/api/v1/specs/batch", json={"items": [
-        {"product_id": pid, "metric_key": "flow_air", "value_num": 1100, "unit": "mL/min"},
+        {"product_id": pid, "metric_key": "flow_air", "value_num": 1.1, "unit": "L/min"},
     ]}, headers=h)
     assert r.status_code == 200, r.text
     item = r.json()["data"]["results"][0]
@@ -321,7 +321,7 @@ def test_specs_batch_converts_unit():
             select(ProductSpec).where(ProductSpec.product_id == pid,
                                       ProductSpec.metric_id == _metric_id("flow_air"))
         ).first()
-        assert spec is not None and abs(spec.value_num - 1.1) < 1e-9, spec.value_num
+        assert spec is not None and abs(spec.value_num - 1100) < 1e-9, spec.value_num
 
 
 def test_specs_batch_rejects_cross_dimension_unit():

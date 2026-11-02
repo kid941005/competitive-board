@@ -30,7 +30,7 @@ from . import audit, range_pair
 from .models import Product, ProductSpec, SpecMetric
 
 # 当前代码期望的表结构版本。加一版就在这里改一个数字，并在 MIGRATIONS 末尾追加一步。
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 _VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -341,12 +341,69 @@ class Migration:
     apply: Callable[[Session], None]
 
 
+# v6：三类产品（压电风扇 / 压电气泵 / 压电液泵）的统计单位统一。
+# 压力一律 kPa、流量一律 mL/min。
+#
+# 起因：指标字典里液泵是另一套单位（µL/min、mbar），于是气泵 0.3 L/min 与液泵
+# 5000 µL/min 是两个数两个单位 —— 跨类排序、同一张流量-压力图都做不了。
+# 当初单列的理由是「量级差 10⁴ 混在一起读不出」，但换成 mL/min 后全库流量落在
+# 2~51500，仍在可读范围，换来的是三类可以真正放一起比。
+#
+# 只换算 num 型值；这三项在字典里都是 number，条件文本不动（它的作用就是留原文）。
+_UNIFY_UNITS: tuple[tuple[str, str, str, float, int], ...] = (
+    # (指标 key, 新单位, 旧单位, 换算系数, 新精度)
+    ("flow_air", "mL/min", "L/min", 1000.0, 0),
+    ("flow_liquid", "mL/min", "µL/min", 0.001, 1),
+    ("pressure_liquid", "kPa", "mbar", 0.1, 1),
+)
+
+
+def _v6_unify_units(session: Session) -> None:
+    """把流量/压力统一到 mL/min 与 kPa，并换算存量数值。
+
+    幂等性靠 `metric.unit` 判断：已经是新单位的直接跳过，重复执行不会二次乘系数。
+    空库（字典还没 seed）时一个指标都找不到，什么都不做 —— 字典由 seed 用新单位写。
+    """
+    notes: list[str] = []
+    for key, new_unit, old_unit, factor, precision in _UNIFY_UNITS:
+        metric = session.exec(
+            select(SpecMetric).where(SpecMetric.key == key)
+        ).first()
+        if metric is None or metric.unit == new_unit:
+            continue
+        converted = 0
+        for spec in session.exec(
+            select(ProductSpec).where(ProductSpec.metric_id == metric.id)
+        ).all():
+            if spec.value_num is None:
+                continue
+            # 12 位有效数字：0.3 L/min → 300 而不是 300.00000000000006
+            spec.value_num = float(f"{spec.value_num * factor:.12g}")
+            session.add(spec)
+            converted += 1
+        metric.unit = new_unit
+        metric.precision = precision
+        session.add(metric)
+        notes.append(f"{key}: {old_unit} → {new_unit}（换算 {converted} 条）")
+
+    session.flush()
+    if notes:
+        audit.record(
+            session, actor="system", actor_kind="system", action="update",
+            object_type="metric", label="指标字典", origin="migration",
+            changes=[{"field": "流量/压力单位", "old": "流量 L/min + µL/min、压力 kPa + mbar",
+                      "new": "流量 mL/min、压力 kPa"}],
+            note="；".join(notes),
+        )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline（建表由 create_all 完成）", _v1_baseline),
     Migration(2, "型号与参数加唯一索引（先合并存量重复）", _v2_unique_indexes),
     Migration(3, "合并风量/静压两套指标、删掉真空度、客户采用关系唯一索引", _v3_adoption_index),
     Migration(4, "谐振频率/温度/寿命/噪音放宽到三个大类", _v4_widen_applies_to),
     Migration(5, "工作温度拆成下限+上限两个指标（并从原文回填下限）", _v5_temperature_range),
+    Migration(6, "三类产品流量统一到 mL/min、压力统一到 kPa", _v6_unify_units),
 )
 
 

@@ -223,7 +223,8 @@ def test_import_records_each_item():
     assert "IMP-A · 空气流量" in labels
     first = next(r for r in rows if "空气流量" in r.object_label)
     change = _changes(first)[0]
-    assert change["old"] is None and change["new"] == "0.9", "新写入应记为空 → 值"
+    assert change["old"] is None and float(change["new"]) == 900, (
+        "新写入应记为空 → 值（换算后的 mL/min）")
     assert len({r.request_id for r in rows}) == 1, "同一批导入应共享 request_id"
 
 
@@ -236,7 +237,8 @@ def test_import_overwrite_records_old_value():
                       "流量L/min": "0.95"}))
 
     change = _changes(_logs(action="import")[0])[0]
-    assert change["old"] == "0.9" and change["new"] == "0.95"
+    # 记的是**落库值**：0.9 L/min 经 v6 换算成 900 mL/min，与库里其他数据同单位
+    assert float(change["old"]) == 900 and float(change["new"]) == 950, change
 
 
 # ── 查询、权限与清理 ───────────────────────────────────────────────────────

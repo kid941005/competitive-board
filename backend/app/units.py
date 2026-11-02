@@ -27,8 +27,11 @@ from dataclasses import dataclass
 
 # ── 维度与因子 ─────────────────────────────────────────────────────────────
 # 单位写法（小写）→ (维度, 换算到该维度基准单位的因子)
-# 基准：流量 L/min、压力 kPa、电压 Vpp、功率 mW、频率 kHz、长度 mm、质量 g、
-#      时间 h、声压 dB(A)、占比 %。
+# 因子表的基准：流量 L/min、压力 kPa、电压 Vpp、功率 mW、频率 kHz、长度 mm、
+#              质量 g、时间 h、声压 dB(A)、占比 %。
+# 注意「因子基准」与「字典口径」是两件事：**指标字典的流量单位是 mL/min**
+# （三类产品统一到同一刻度，液泵 2 与风扇 51500 都能直接读），而这里 l/min = 1.0
+# 只是让因子表内部自洽 —— convert() 走的是两个因子之比，改口径不需要动这张表。
 _UNITS: dict[str, tuple[str, float]] = {
     # 流量
     "l/min": ("flow", 1.0),
@@ -93,7 +96,7 @@ _UNITS: dict[str, tuple[str, float]] = {
 }
 
 BASE_UNIT: dict[str, str] = {
-    "flow": "L/min",
+    "flow": "mL/min",
     "pressure": "kPa",
     "voltage": "Vpp",
     "power": "mW",

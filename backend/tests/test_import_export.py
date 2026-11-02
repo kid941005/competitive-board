@@ -256,10 +256,12 @@ def test_export_xlsx_respects_permission():
 
 
 def test_liquid_row_uses_flow_and_pressure_columns():
-    """液泵也用「流量L/min」「静压Pa」两列填，导入时落到 µL/min 与 mbar。
+    """液泵也用「流量L/min」「静压Pa」两列填，导入时落到 液体流量 / 背压。
 
     业务方的表只有一套流量/静压列（一行一个型号），不会为液泵换表头；
-    所以这两列按「物理量」映射：液泵 → 液体流量(µL/min) / 背压(mbar)，其余 → 空气流量 / 静压。
+    所以这两列按「物理量」映射：液泵 → 液体流量 / 背压，其余 → 空气流量 / 静压。
+    单位自 v6 起三类统一（流量 mL/min、压力 kPa），所以 0.0035 L/min 落成 3.5、
+    120000 Pa 落成 120 —— 与空气流量、静压是同一个量纲，跨类可直接比。
     """
     c = _client()
     data = _xlsx([WIDE_HEAD, ["液泵测试公司", "LIQ-1", "压电液泵", 0.0035, 120000, "", "", "",
@@ -271,12 +273,15 @@ def test_liquid_row_uses_flow_and_pressure_columns():
 
     with Session(engine) as s:
         prod = s.exec(select(Product).where(Product.model == "LIQ-1")).first()
-        names = {
-            s.get(SpecMetric, sp.metric_id).key: sp.value_num
+        rows = {
+            s.get(SpecMetric, sp.metric_id).key: (sp.value_num, s.get(SpecMetric, sp.metric_id).unit)
             for sp in s.exec(select(ProductSpec).where(ProductSpec.product_id == prod.id)).all()
         }
-    assert abs(names["flow_liquid"] - 3500) < 1e-6, names
-    assert abs(names["pressure_liquid"] - 1200) < 1e-6, names
+    assert abs(rows["flow_liquid"][0] - 3.5) < 1e-9, rows
+    assert abs(rows["pressure_liquid"][0] - 120) < 1e-9, rows
+    # 单位必须与空气流量/静压完全一致 —— 否则「统计单位统一」就是空话
+    assert rows["flow_liquid"][1] == "mL/min", rows
+    assert rows["pressure_liquid"][1] == "kPa", rows
 
 
 def test_import_errors_are_capped():
