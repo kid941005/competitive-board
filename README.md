@@ -32,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:1.0.4
+  ghcr.io/kid941005/competitive-board:1.0.5
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -667,9 +667,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 329 项测试，通过才推**。标签有 `1.0.4`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 330 项测试，通过才推**。标签有 `1.0.5`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.4` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
+版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.5` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -712,19 +712,19 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:1.0.4
+  ghcr.io/kid941005/competitive-board:1.0.5
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=1.0.4 -t competitive-board:1.0.4 ./backend
+docker build --build-arg APP_VERSION=1.0.5 -t competitive-board:1.0.5 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:1.0.4
+  competitive-board:1.0.5
 ```
 
 ### 配置项在哪改
@@ -735,7 +735,7 @@ docker run -d --name competitive-board \
 
 | 位置 | 当前值 | 作用 |
 |---|---|---|
-| `image:` 的标签 | `1.0.4` | 镜像版本。升级就改这里，再 `docker compose pull` |
+| `image:` 的标签 | `1.0.5` | 镜像版本。升级就改这里，再 `docker compose pull` |
 | `user:` | `10001:10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）改这里，就不必 `chown` 目录；改 `"0:0"` 则以 root 运行 |
 | `ports:` | `127.0.0.1:8000:8000` | 宿主端口。只绑回环，对外访问需反向代理 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
@@ -807,7 +807,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `1.0.4` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `1.0.5` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
 
 ---
 
@@ -821,7 +821,7 @@ python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨�
 python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
 python tests/test_import_export.py    # 20 项：宽表导入、液泵列映射、公司名括注归并、官方链接回填、温度范围往返、口径标注不被覆盖、报错封顶、全量备份导出（含往返）
 python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
-python tests/test_api_v1.py           # 25 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址
+python tests/test_api_v1.py           # 26 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址、备注可读
 python tests/test_units.py            # 26 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义 / 温度上下限与「待补充（说明）」）
 python tests/test_adoptions.py        # 15 项：客户采用关系（页面 + API、重复拒收、同名复用、自采拦截、ETag、括号内分隔符、审计）
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期

@@ -118,6 +118,37 @@ def test_product_detail_specs_carry_source_url():
     assert listed[0]["source_url"] == "https://example.com/src-1", listed[0]
 
 
+def test_product_note_is_readable_through_api():
+    """PATCH 写进去的备注，必须能从 GET 读回来。
+
+    备注是「这个数怎么来的」的唯一落点（口径、测试条件、未公开项清单）。
+    只能写不能读的字段等于不存在 —— 与 `source_url` 当初「网址看不到」是同一类毛病：
+    PATCH 收进去了、GET 不返回，调用方只能猜。
+    """
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    r = c.post("/api/v1/products",
+               json={"entity_id": 2, "model": "NOTE-1", "category": "fan"}, headers=h)
+    pid = r.json()["data"]["id"]
+
+    note = "数值来自厂商量产公告（2026-10-29）；噪音/驱动电压未公开"
+    r = c.patch(f"/api/v1/products/{pid}", json={"note": note}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["note"] == note, "PATCH 的响应就该带上备注"
+
+    body = c.get(f"/api/v1/products/{pid}", headers=h).json()["data"]
+    assert body["note"] == note, body.get("note")
+
+    listed = [x for x in c.get("/api/v1/products?q=NOTE-1", headers=h).json()["data"]
+              if x["id"] == pid]
+    assert listed and listed[0]["note"] == note, "列表与详情的字段形状要一致"
+
+    # 清空也要能体现（空串落库为 None，不是留着旧文字）
+    c.patch(f"/api/v1/products/{pid}", json={"note": ""}, headers=h)
+    assert c.get(f"/api/v1/products/{pid}", headers=h).json()["data"]["note"] is None
+
+
 def test_missing_credentials_is_401_envelope():
     c = TestClient(app)
     c.__enter__()

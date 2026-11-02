@@ -276,6 +276,10 @@ def _product_dict(p: Product, ent: Entity | None, filled: int | None = None,
             "kind": ent.kind if ent else None,
         },
         "datasheet_url": p.datasheet_url,
+        # 备注（口径说明、来源限制、未公开项清单）必须回给调用方。
+        # 只能写、不能读的字段等于不存在 —— 与 source_url 当初「网址看不到」
+        # 是同一个毛病：PATCH 收进去了，GET 却不返回，调用方只能靠猜。
+        "note": p.note,
     }
     if filled is not None and total is not None:
         out["specs_filled"] = filled
