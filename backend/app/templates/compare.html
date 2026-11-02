@@ -109,7 +109,7 @@
 </section>
 
 <div class="table-wrap" id="tableWrap">
-  <table class="matrix" id="matrix">
+  <table class="matrix" id="matrix" style="--cols: {{ products|length }}">
     <thead>
       <tr>
         <th class="metric-col">
@@ -157,7 +157,7 @@
 
           {% for pr in products %}
             {% set c = row.cells[pr.id] %}
-            <td class="cell{% if c.is_best %} best{% endif %}{% if c.is_missing %} missing{% endif %}"
+            <td class="cell{% if row.metric.value_type != 'number' %} text{% endif %}{% if c.is_best %} best{% endif %}{% if c.is_missing %} missing{% endif %}"
                 {% if not c.is_missing %}
                 data-trace="1"
                 data-product="{{ pr.model }}"

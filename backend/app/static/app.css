@@ -227,7 +227,15 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.matrix { border-collapse: separate; border-spacing: 0; width: 100%; }
+/* 固定列宽：auto 布局下列宽由「最长的那个格子」决定，于是外形尺寸、驱动电压
+   这类一句话的参数会把整列撑到 300px 以上，别的列被挤窄、整表还要横向拖动。
+   fixed 之后每列等宽，长文本在格内换行（见 .cell.text）。
+   min-width 兜住「产品很多」的情况：列挤到 180px 以下就横向滚动，不压缩文字。 */
+.matrix {
+  border-collapse: separate; border-spacing: 0; width: 100%;
+  table-layout: fixed;
+  min-width: calc(190px + 180px * var(--cols, 4));
+}
 
 .matrix thead th {
   position: sticky; top: 0; z-index: 3;
@@ -238,7 +246,7 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 }
 .matrix thead th.metric-col { z-index: 5; left: 0; }
 
-.prod-col { min-width: 146px; }
+.prod-col { width: 180px; min-width: 180px; }
 .prod-ent {
   font-size: 11px; font-weight: 400; color: var(--text-3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -295,6 +303,21 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
   border-bottom: 1px solid var(--line);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* 文本型指标（外形尺寸、驱动电压、谐振频率）在格内换行。
+   这类值本来就是「一句话」：`8–18 Vdc（背压 <10 kPa）／8–21 Vdc（背压 ≥10 kPa）`
+   不换行就会把整列撑宽，换行后一行读完、列宽恒定。
+   数值型仍然 nowrap —— 把 `1.42` 断成两行才是真的难读。 */
+.cell.text {
+  white-space: normal;
+  /* 用 break-word 而不是 anywhere：anywhere 允许在任意字符间断开，
+     会把 `21±0.2×19±0.2` 这类尺寸串拆得七零八落；break-word 只在整段放不下时才断。
+     中文本身有断行机会，「／」「；」后面就是自然断点。 */
+  overflow-wrap: break-word;
+  line-height: 1.45;
+  /* 让浏览器在换行时照顾末行，避免出现「只剩一两个字」的孤行；
+     旧内核不认这条会直接忽略，不影响布局。 */
+  text-wrap: pretty;
 }
 .metric-row .cell { border-bottom: 1px solid var(--line); }
 .metric-row:last-child .cell { border-bottom: 0; }
