@@ -27,9 +27,10 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _http import enable_csrf
 from app.db import engine, init_db
 from app.main import app
-from app.models import Adoption, AuditLog, Entity, Product
+from app.models import Adoption, AuditLog, Entity, Product, SpecSource
 from app.seed import seed
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -47,6 +48,7 @@ def _client() -> TestClient:
     r = c.post("/login", data={"username": "admin", "password": "AdminPass123"},
                follow_redirects=False)
     assert r.status_code == 303, f"登录失败：{r.status_code}"
+    enable_csrf(c)
     _state["client"] = c
     return c
 
@@ -141,9 +143,41 @@ def test_page_reuses_existing_customer_by_normalized_name():
     assert after == before, "同名客户应复用，不该多一份档案"
 
 
+def test_page_parenthetical_customer_name_reuses_entity():
+    """客户名同样忽略括注，但证据文字仍要进入采用记录的备注。"""
+    c = _client()
+    p = _product("MZB3004T04")
+    csrf = _csrf(c, f"/products/{p.id}")
+    with Session(engine) as s:
+        cust = Entity(kind="customer", name="括注客户")
+        s.add(cust)
+        s.commit()
+        s.refresh(cust)
+        before = len(s.exec(select(Entity)).all())
+
+    r = c.post(
+        f"/products/{p.id}/adoptions",
+        data={
+            "customer_name": "括注客户（公开拆解确认）",
+            "status": "rumored",
+            "note": "公开拆解确认",
+            "_csrf": csrf,
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with Session(engine) as s:
+        assert len(s.exec(select(Entity)).all()) == before, "括注不能另建客户"
+        rows = s.exec(select(Adoption).where(Adoption.product_id == p.id)).all()
+        ours = [row for row in rows if row.customer_id == cust.id]
+        assert len(ours) == 1, "括注客户应落一条采用记录"
+        assert ours[0].status == "rumored"
+
+
 def test_page_rejects_bad_status_and_year():
     c = _client()
     p = _product("MZB3005T06")
+    before = len(_adoptions(p.id))
     csrf = _csrf(c, f"/products/{p.id}")
     bad_status = c.post(f"/products/{p.id}/adoptions",
                         data={"customer_name": "测试客户乙", "status": "量产中", "_csrf": csrf},
@@ -154,7 +188,7 @@ def test_page_rejects_bad_status_and_year():
                       data={"customer_name": "测试客户乙", "status": "sample",
                             "year": "去年", "_csrf": csrf}, follow_redirects=False)
     assert "不是数字" in unquote(bad_year.headers["location"])
-    assert _adoptions(p.id) == []
+    assert len(_adoptions(p.id)) == before, "被拒的表单不能新增采用记录"
 
 
 def test_page_delete_adoption():
@@ -162,11 +196,21 @@ def test_page_delete_adoption():
     p = _product("MZB1001T02")
     csrf = _csrf(c, f"/products/{p.id}")
     row = _adoptions(p.id)[0]
+    with Session(engine) as s:
+        src = SpecSource(kind="manual", title="采用记录页面删除来源")
+        s.add(src)
+        s.flush()
+        adoption = s.get(Adoption, row.id)
+        assert adoption is not None
+        adoption.source_id = src.id
+        s.commit()
+        source_id = src.id
     r = c.post(f"/products/{p.id}/adoptions/{row.id}/delete",
                data={"_csrf": csrf}, follow_redirects=False)
     assert r.status_code == 303
     assert _adoptions(p.id) == []
     with Session(engine) as s:
+        assert s.get(SpecSource, source_id) is None, "删除采用记录后孤立来源应回收"
         assert s.exec(
             select(AuditLog).where(AuditLog.action == "delete",
                                    AuditLog.object_type == "adoption")
@@ -267,9 +311,21 @@ def test_api_delete_adoption():
     p = _product("mp6-gas")
     rows = c.get(f"/api/v1/adoptions?product_id={p.id}", headers=h).json()["data"]
     assert rows
-    r = c.delete(f"/api/v1/adoptions/{rows[0]['id']}", headers=h)
+    adoption_id = rows[0]["id"]
+    with Session(engine) as s:
+        src = SpecSource(kind="manual", title="采用记录 API 删除来源")
+        s.add(src)
+        s.flush()
+        adoption = s.get(Adoption, adoption_id)
+        assert adoption is not None
+        adoption.source_id = src.id
+        s.commit()
+        source_id = src.id
+    r = c.delete(f"/api/v1/adoptions/{adoption_id}", headers=h)
     assert r.status_code == 200
     assert c.get(f"/api/v1/adoptions?product_id={p.id}", headers=h).json()["data"] == []
+    with Session(engine) as s:
+        assert s.get(SpecSource, source_id) is None, "API 删除后孤立来源应回收"
 
 
 def test_api_rejects_self_adoption():

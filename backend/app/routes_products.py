@@ -10,16 +10,17 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Upl
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlmodel import Session, select
 
-from . import adoptions, audit, auth, config, settings_store
+from . import adoptions, audit, auth, config, references, settings_store
 from .auth import P_WRITE, AuthSession, User
 from .compare import format_number, metrics_for_categories
 from .config import category_label
 from .db import get_session
-from .importer import CSV_TEMPLATE, import_csv, import_xlsx, xlsx_template
+from .importer import CSV_TEMPLATE, ImportFileError, import_csv, import_xlsx, xlsx_template
 from .models import ADOPTION_STATUS, Adoption, Entity, Product, ProductSpec, SpecMetric, SpecSource
 from .numeric import parse_number
 from .sanitize import safe_url
 from .selection import _load
+from .uploads import read_upload_limited
 from .web_shared import (
     _ctx,
     _find_product,
@@ -97,26 +98,29 @@ async def api_import(
     """Excel 与 CSV 走同一套校验，只在「读文件」这一步分叉。"""
     sset = settings_store.all_values(session)
     max_bytes = int(sset["datasheet.max_upload_mb"]) * 1024 * 1024
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(400, "文件为空")
-    if len(raw) > max_bytes:
-        raise HTTPException(413, f"文件超过 {sset['datasheet.max_upload_mb']} MB")
     ext = Path(file.filename or "").suffix.lower()
     if ext not in SHEET_EXT:
         raise HTTPException(400, f"暂不支持 {ext or '未知'} 格式，请上传 .xlsx / .csv")
 
+    raw = await read_upload_limited(file, max_bytes)
+    if not raw:
+        raise HTTPException(400, "文件为空")
+
     note = f"{file.filename or '表格导入'}"
     if ext in (".xlsx", ".xlsm"):
-        report = import_xlsx(session, raw, batch_note=note)
+        try:
+            report = import_xlsx(session, raw, batch_note=note, commit=False)
+        except ImportFileError as exc:
+            raise HTTPException(400, str(exc)) from exc
     else:
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError:
             text = raw.decode("gbk", errors="replace")
-        report = import_csv(session, text, batch_note=note)
+        report = import_csv(session, text, batch_note=note, commit=False)
     audit.log_import(session, report, actor=_user.username, origin="import",
                      request_id=_rid())
+    session.commit()
     return report.as_dict()
 
 
@@ -443,12 +447,15 @@ def adoption_delete(
     label = f"{customer.name if customer else row.customer_id} · " \
             f"{product.model if product else product_id}"
     session.delete(row)
+    source_ids = {row.source_id} if row.source_id is not None else set()
     audit.record(
         session, actor=user.username, action="delete", object_type="adoption",
         object_id=adoption_id, label=label, origin="web",
         changes=[{"field": "客户采用", "old": "存在", "new": "已删除"}],
         request_id=_rid(),
     )
+    session.flush()
+    references.delete_unreferenced_sources(session, source_ids)
     session.commit()
     return _redirect(f"/products/{product_id}", "已删除该采用记录")
 
@@ -553,6 +560,7 @@ async def product_save_specs(
         return _source_holder[0]
 
     written = updated = removed = unchanged = 0
+    old_source_ids: set[int] = set()
     errors: list[str] = []
     for m in pool:
         if m.id is None:
@@ -571,6 +579,8 @@ async def product_save_specs(
         if not raw:
             # 空值 = 未公开。已存在的行删掉，不留「有行无值」的脏数据
             if cur:
+                if cur.source_id is not None:
+                    old_source_ids.add(cur.source_id)
                 session.delete(cur)
                 removed += 1
             continue
@@ -603,6 +613,8 @@ async def product_save_specs(
             cur.verified = verified
             if value_changed:
                 # 只有真改了值，才轮到「人工录入」这条来源接管，置信度才提到 1.0
+                if cur.source_id is not None:
+                    old_source_ids.add(cur.source_id)
                 cur.source_id = _source().id
                 cur.confidence = 1.0
             cur.updated_at = datetime.now(timezone.utc)
@@ -623,6 +635,8 @@ async def product_save_specs(
         note=f"新增 {written}、更新 {updated}、清除 {removed}、未变 {unchanged}",
         request_id=_rid(),
     )
+    session.flush()
+    references.delete_unreferenced_sources(session, old_source_ids)
     session.commit()
     msg = f"已保存：新增 {written}、更新 {updated}、清除 {removed}"
     if unchanged:
@@ -646,6 +660,9 @@ def product_delete(
     model = product.model
     # 删除是唯一「不记就永远查不到」的操作：先把即将消失的数据写成快照
     snapshot = audit.spec_snapshot(session, product.id)
+    adoption_rows = session.exec(
+        select(Adoption).where(Adoption.product_id == product.id)
+    ).all()
     changes = [
         {"field": f"型号 · {audit.PRODUCT_LABELS.get(k, k)}", "old": audit._s(v), "new": None}
         for k, v in audit.product_snapshot(product).items() if v not in (None, "")
@@ -654,19 +671,32 @@ def product_delete(
     audit.record(
         session, actor=_user.username, action="delete", object_type="product",
         object_id=product.id, label=model, origin="web", changes=changes,
-        note=f"删除型号及其 {len(snapshot)} 项参数", request_id=_rid(),
+        note=(
+            f"删除型号、{len(snapshot)} 项参数及 {len(adoption_rows)} 条客户采用记录"
+        ),
+        request_id=_rid(),
     )
 
-    for spec in session.exec(
+    snapshot_specs = list(session.exec(
         select(ProductSpec).where(ProductSpec.product_id == product.id)
-    ).all():
+    ).all())
+    source_ids = {s.source_id for s in snapshot_specs if s.source_id is not None}
+    source_ids.update(a.source_id for a in adoption_rows if a.source_id is not None)
+    for row in adoption_rows:
+        session.delete(row)
+    for spec in snapshot_specs:
         session.delete(spec)
     # 先 flush：ProductSpec 与 Product 之间没有 ORM relationship，
     # 同一批提交时 SQLAlchemy 不保证先删子表，SQLite 外键会直接报错
     session.flush()
+    removed_sources = references.delete_unreferenced_sources(session, source_ids)
     session.delete(product)
     session.commit()
-    return _redirect("/products", f"已删除型号 {model}（含其全部参数）")
+    return _redirect(
+        "/products",
+        f"已删除型号 {model}（含 {len(snapshot)} 项参数、{len(adoption_rows)} 条采用记录"
+        f"和 {removed_sources} 条无引用来源）",
+    )
 
 
 # ── 管理员：账号管理 ───────────────────────────────────────────────────────

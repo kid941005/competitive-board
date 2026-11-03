@@ -64,6 +64,7 @@ def login_submit(
 
     hours = int(settings_store.get_value(session, "security.session_hours"))
     token, _csrf = auth.create_session(session, user, hours, request.headers.get("user-agent"))
+    session.commit()
 
     response = RedirectResponse(_safe_next(next), status_code=303)
     response.set_cookie(
@@ -85,6 +86,7 @@ def logout(
     session: Session = Depends(get_session),
 ):
     auth.revoke_session(session, request.cookies.get(COOKIE_NAME, ""))
+    session.commit()
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(COOKIE_NAME, path="/")
     return response

@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, func, select
 
+from . import search
 from .models import AuditLog, Product, ProductSpec, SpecMetric
 
 # 单条日志最多存多少项差异：一次导入几千行时，避免一行日志撑爆
@@ -168,11 +169,11 @@ def query(
     if origin:
         stmt = stmt.where(AuditLog.origin == origin)
     if q:
-        like = f"%{q}%"
+        like = search.pattern(search.normalize(q))
         stmt = stmt.where(
-            (AuditLog.object_label.ilike(like))  # type: ignore[attr-defined]
-            | (AuditLog.changes.ilike(like))  # type: ignore[attr-defined]
-            | (AuditLog.note.ilike(like))  # type: ignore[attr-defined]
+            (AuditLog.object_label.ilike(like, escape="\\"))  # type: ignore[attr-defined]
+            | (AuditLog.changes.ilike(like, escape="\\"))  # type: ignore[attr-defined]
+            | (AuditLog.note.ilike(like, escape="\\"))  # type: ignore[attr-defined]
         )
 
     total = session.exec(select(func.count()).select_from(stmt.subquery())).one()
@@ -195,8 +196,6 @@ def purge(session: Session, days: int = RETENTION_DEFAULT_DAYS) -> int:
     rows = list(session.exec(select(AuditLog).where(AuditLog.at < cutoff)).all())
     for row in rows:
         session.delete(row)
-    if rows:
-        session.commit()
     return len(rows)
 
 
@@ -234,6 +233,4 @@ def log_import(
         )
         if audit_row is not None:
             written += 1
-    if written:
-        session.commit()
     return written

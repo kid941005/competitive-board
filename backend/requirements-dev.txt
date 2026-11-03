@@ -2,3 +2,4 @@
 -r requirements.txt
 httpx>=0.27      # fastapi.testclient 依赖；用于权限体系的接口层测试
 ruff>=0.6        # 静态检查（CI 里跑，见 .github/workflows/build-image.yml）
+pytest>=8,<10    # 每个测试文件独立收集，新增用例自动进入 CI

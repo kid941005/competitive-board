@@ -116,7 +116,7 @@ def create_session(
     )
     user.last_login_at = utcnow()
     session.add(user)
-    session.commit()
+    session.flush()
     return token, csrf
 
 
@@ -150,7 +150,6 @@ def revoke_session(session: Session, token: str) -> None:
     ).first()
     if row:
         session.delete(row)
-        session.commit()
 
 
 def revoke_user_sessions(session: Session, user_id: int) -> int:
@@ -158,7 +157,8 @@ def revoke_user_sessions(session: Session, user_id: int) -> int:
     rows = session.exec(select(AuthSession).where(AuthSession.user_id == user_id)).all()
     for row in rows:
         session.delete(row)
-    session.commit()
+    if rows:
+        session.flush()
     return len(rows)
 
 
@@ -173,8 +173,6 @@ def purge_expired(session: Session) -> int:
         if expires < now:
             session.delete(row)
             dropped += 1
-    if dropped:
-        session.commit()
     return dropped
 
 
@@ -251,7 +249,9 @@ async def verify_csrf(request: Request, session: Session = Depends(get_session))
             form = await request.form()
             supplied = form.get(CSRF_FIELD)
 
-    if not supplied or not hmac.compare_digest(str(supplied), auth_session.csrf):
+    if not supplied or not hmac.compare_digest(
+        str(supplied).encode("utf-8"), auth_session.csrf.encode("utf-8")
+    ):
         raise CsrfInvalid()
 
 

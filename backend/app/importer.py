@@ -22,16 +22,21 @@ from __future__ import annotations
 import csv
 import io
 import re
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from . import adoptions, config, range_pair, units
+from . import adoptions, config, entity_names, range_pair, references, units
 from .compare import metric_applies
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 from .numeric import clamp_confidence, parse_number
 from .sanitize import safe_url
+
+
+class ImportFileError(ValueError):
+    """上传文件本身无法解析，或解压后的规模超过安全上限。"""
 
 
 def _fmt(value: float) -> str:
@@ -205,11 +210,8 @@ def _norm_key(s: str) -> str:
 # 表头归一不能去掉它（「关联客户（有公开证据）」是完整列名），但**公司名匹配必须去掉** ——
 # 否则「村田制作所（Murata）」与库里已有的「村田制作所」认不出是一家，
 # 同一次导入就会凭空多出一家重复公司，对比页上同一家友商出现两次。
-_RE_PAREN = re.compile(r"[（(][^（()）]*[)）]")
-
-
 def _entity_key(name: str) -> str:
-    return _norm_key(_RE_PAREN.sub("", name or ""))
+    return entity_names.key(name)
 
 
 def _scope_message(where: str, metric: SpecMetric, category: str) -> str:
@@ -250,7 +252,11 @@ def rows_from_csv(text: str) -> tuple[list[dict], list[str]]:
     mapping: dict[int, WideColumn] = {}
     headers: list[str] = []
     rows: list[dict] = []
+    truncated = False
     for lineno, raw in enumerate(reader, start=1):
+        if len(rows) >= config.IMPORT_MAX_ROWS:
+            truncated = True
+            break
         cells = [(c or "").strip() for c in raw]
         if not any(cells):
             continue
@@ -268,6 +274,8 @@ def rows_from_csv(text: str) -> tuple[list[dict], list[str]]:
                 row[col.header] = cell
         row["_lineno"] = str(lineno)
         rows.append(row)
+    if truncated:
+        rows.append({"__import_error__": f"表格超过单次上限 {config.IMPORT_MAX_ROWS} 行，已截断"})
     return rows, headers
 
 
@@ -279,13 +287,42 @@ def rows_from_xlsx(data: bytes) -> tuple[list[dict], list[str]]:
     """
     from openpyxl import load_workbook
 
-    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            expanded = sum(info.file_size for info in archive.infolist())
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        raise ImportFileError("文件不是有效的 .xlsx / .xlsm 工作簿") from exc
+    if expanded > config.SHEET_MAX_UNCOMPRESSED_BYTES:
+        raise ImportFileError(
+            f"工作簿解压后为 {expanded / 1024 / 1024:.1f} MB，超过安全上限 "
+            f"{config.SHEET_MAX_UNCOMPRESSED_BYTES // 1024 // 1024} MB"
+        )
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:
+        raise ImportFileError("工作簿损坏或格式不受支持，请用 Excel 另存为 .xlsx 后重试") from exc
     try:
         ws = wb.worksheets[0]
+        if ws.max_row * ws.max_column > config.SHEET_MAX_CELLS:
+            raise ImportFileError(
+                f"工作表约 {ws.max_row} 行 × {ws.max_column} 列，超过 "
+                f"{config.SHEET_MAX_CELLS} 个单元格的安全上限"
+            )
         mapping: dict[int, WideColumn] = {}
         headers: list[str] = []
         rows: list[dict] = []
+        truncated = False
+        cells_seen = 0
         for lineno, values in enumerate(ws.iter_rows(values_only=True), start=1):
+            cells_seen += len(values)
+            if cells_seen > config.SHEET_MAX_CELLS:
+                raise ImportFileError(
+                    f"工作表超过 {config.SHEET_MAX_CELLS} 个单元格的安全上限"
+                )
+            if len(rows) >= config.IMPORT_MAX_ROWS:
+                truncated = True
+                break
             cells = ["" if v is None else str(v).strip() for v in values]
             if not any(cells):
                 continue
@@ -304,6 +341,8 @@ def rows_from_xlsx(data: bytes) -> tuple[list[dict], list[str]]:
             if row:
                 row["_lineno"] = str(lineno)
                 rows.append(row)
+        if truncated:
+            rows.append({"__import_error__": f"表格超过单次上限 {config.IMPORT_MAX_ROWS} 行，已截断"})
         return rows, headers
     finally:
         wb.close()
@@ -378,6 +417,7 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
     # 数值型：区间（-40~+85 ℃）两端都留着 —— 上限给本格，下限给 value_min
     # （「温度范围」这类范围列要把一格拆成两格，只留上限等于丢掉低温能力）。
     condition = None
+    review = None
     lo: float | None = None
     rng = _RE_RANGE.search(text)
     if rng:
@@ -397,10 +437,7 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
         if len(numbers) > 1:
             # 「100000（水）／15000（空气）」这类并列口径：只能取一个，
             # 但必须标出来 —— 静默丢掉另一个值正是最坏的一种错。
-            return Cell(
-                value_num=num, review=f"单元格里有 {len(numbers)} 个数字（{text}），"
-                                      f"只取了第一个，请人工确认口径",
-            )
+            review = f"单元格里有 {len(numbers)} 个数字（{text}），只取了第一个，请人工确认口径"
 
     # 单位优先级：单元格自带的 > 列头声明的 > 指标字典的。
     # 单元格写了单位但认不出来（如把「3.3 Vrms」填进静压列）必须报错 ——
@@ -420,10 +457,10 @@ def parse_cell(raw: str, metric: SpecMetric, column_unit: str = "") -> Cell:
         if lo_conv.ok:
             lo_out = lo_conv.value
     if conv.converted:
-        return Cell(value_num=conv.value, value_min=lo_out, condition=condition,
+        return Cell(value_num=conv.value, value_min=lo_out, condition=condition, review=review,
                     converted=True,
                     note=f"{text} → {_fmt(conv.value)} {metric.unit}" + (f"（{conv.note}）" if conv.note else ""))
-    return Cell(value_num=conv.value, value_min=lo_out, condition=condition)
+    return Cell(value_num=conv.value, value_min=lo_out, condition=condition, review=review)
 
 
 # ── 导入 ───────────────────────────────────────────────────────────────────
@@ -501,6 +538,17 @@ def import_rows(
 ) -> ImportReport:
     """按宽表写入。一行 = 一个型号；行内每个指标列一格。"""
     report = ImportReport(rows_read=len(rows))
+    marker = next((r.get("__import_error__") for r in rows if "__import_error__" in r), None)
+    if marker:
+        report.add_error(str(marker))
+        # 截断后继续写入会让用户误以为整份表都已导入，因此直接拒绝整批。
+        return report
+    if len(rows) > config.IMPORT_MAX_ROWS:
+        report.add_error(
+            f"单次最多导入 {config.IMPORT_MAX_ROWS} 行，当前 {len(rows)} 行；"
+            "请拆分文件后重试"
+        )
+        return report
     # 表头校验：文件导入带的是识别后的规范表头，JSON 调用方（/api/v1/import）只给行，
     # 这里统一按「行里出现过的键」补一次 —— 两条通道必须给出同一句人话，
     # 否则 AI 传旧格式只会收到 41 条「产品型号为空」，看不出是自己格式错了。
@@ -534,6 +582,7 @@ def import_rows(
         for p in session.exec(select(Product)).all()
     }
     source_for = _source_cache(session, batch_note)
+    replaced_source_ids: set[int] = set()
     spec_cache: dict[int, dict[int, ProductSpec]] = {}
 
     def specs_of(product_id: int) -> dict[int, ProductSpec]:
@@ -556,7 +605,8 @@ def import_rows(
             normalized[col.header if col else key] = "" if v is None else str(v).strip()
         row = normalized
         raw_lineno = row.pop("_lineno", "")
-        lineno = int(raw_lineno) if raw_lineno.isdigit() else idx
+        lineno = int(raw_lineno) if (len(raw_lineno) <= 10 and raw_lineno.isascii()
+                                    and raw_lineno.isdecimal()) else idx
         where = f"第 {lineno} 行"
 
         model = row.get("产品型号", "")
@@ -659,7 +709,8 @@ def import_rows(
 
         # 只有真要写格子时才建来源；否则「只写了备注」的行会凭空多出一条
         # 「表格导入」来源记录，攒成垃圾数据。
-        src_id = source_for(row.get("来源链接", "")).id if pending else None
+        source = source_for(row.get("来源链接", "")) if pending else None
+        src_id = source.id if source is not None else None
         conf = _confidence(row.get("置信度", ""))
 
         # 「来源链接」是这一行的官方页面（产品页 / 规格书），型号自己的「官方链接」
@@ -722,6 +773,8 @@ def import_rows(
                     report.skipped_unchanged += 1
                     continue
                 old_value = existing.value_num if existing.value_num is not None else existing.value_text
+                if existing.source_id is not None:
+                    replaced_source_ids.add(existing.source_id)
                 existing.value_num = cell.value_num
                 existing.value_text = cell.value_text
                 existing.condition = condition
@@ -767,20 +820,28 @@ def import_rows(
             product.note = note
             session.add(product)
 
+    # 被新来源替换掉的旧来源若已无人引用，与本次导入一起回收；共享来源仍保留。
+    session.flush()
+    references.delete_unreferenced_sources(session, replaced_source_ids)
+
     # 全程 flush 不 commit：一次导入要么整批可见，要么整批回滚。
+    # commit=False 只把事务交给调用方（例如与审计、幂等记录一起提交），
+    # 不在这里回滚；否则调用方后续写入审计时会发现业务数据已消失。
     if commit:
         session.commit()
-    else:
-        session.rollback()
     return report
 
 
-def import_csv(session: Session, text: str, *, batch_note: str = "CSV 导入") -> ImportReport:
+def import_csv(
+    session: Session, text: str, *, batch_note: str = "CSV 导入", commit: bool = True
+) -> ImportReport:
     rows, headers = rows_from_csv(text)
-    return import_rows(session, rows, headers, batch_note=batch_note)
+    return import_rows(session, rows, headers, batch_note=batch_note, commit=commit)
 
 
-def import_xlsx(session: Session, data: bytes, *, batch_note: str = "Excel 导入") -> ImportReport:
+def import_xlsx(
+    session: Session, data: bytes, *, batch_note: str = "Excel 导入", commit: bool = True
+) -> ImportReport:
     rows, headers = rows_from_xlsx(data)
     if not rows and not headers:
         rep = ImportReport()
@@ -789,7 +850,7 @@ def import_xlsx(session: Session, data: bytes, *, batch_note: str = "Excel 导�
             "模板是宽表（一行一个型号），请重新下载模板。"
         )
         return rep
-    return import_rows(session, rows, headers, batch_note=batch_note)
+    return import_rows(session, rows, headers, batch_note=batch_note, commit=commit)
 
 
 # ── 模板 ───────────────────────────────────────────────────────────────────

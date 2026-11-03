@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -137,6 +138,8 @@ def convert(value: float, src_unit: str, dst_unit: str) -> Converted:
     """
     s = (src_unit or "").strip().lower()
     d = (dst_unit or "").strip().lower()
+    if not math.isfinite(value):
+        return Converted(value, ok=False, converted=False, reason="数值必须为有限数")
     if not s or s == d:
         return Converted(value=value, ok=True, converted=False)
     if s not in _UNITS:
@@ -154,6 +157,8 @@ def convert(value: float, src_unit: str, dst_unit: str) -> Converted:
         )
     # 12 位有效数字：0.0035 L/min → 3500 µL/min 不带上 1e-13 的浮点尾巴
     out = float(f"{value * fs / fd:.12g}")
+    if not math.isfinite(out):
+        return Converted(value, ok=False, converted=False, reason="单位换算结果超出数值范围")
     return Converted(out, ok=True, converted=True, note=_APPROX.get((s, ds)))
 
 

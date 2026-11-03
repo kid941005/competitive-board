@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -27,10 +28,11 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _http import enable_csrf
 from app import tokens
 from app.db import engine, init_db
 from app.main import app
-from app.models import Product, ProductSpec, SpecMetric
+from app.models import ApiIdempotency, Entity, Product, ProductSpec, SpecMetric, SpecSource
 from app.seed import seed
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -49,6 +51,7 @@ def _admin() -> TestClient:
     r = c.post("/login", data={"username": "admin", "password": "AdminPass123"},
                follow_redirects=False)
     assert r.status_code == 303
+    enable_csrf(c)
     _state["admin"] = c
     return c
 
@@ -187,6 +190,7 @@ def test_token_secret_with_underscore_is_valid():
     with patch.object(tokens.secrets, "token_urlsafe", return_value="abc_def-ghi"):
         with Session(engine) as s:
             raw, _row = tokens.create_token(s, name="下划线令牌", scopes="read")
+            s.commit()
             assert raw.endswith("abc_def-ghi")
             assert tokens.verify(s, raw) is not None, "含下划线的 secret 也必须能校验"
 
@@ -289,6 +293,111 @@ def test_idempotency_replay_writes_once():
     assert len(rows) == 1, f"重放写了两遍：{len(rows)}"
 
 
+def test_entity_name_parenthetical_reuses_existing_company():
+    """名称归一化必须在 API 入口也生效，否则同一家会多出第二份档案。"""
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    with Session(engine) as s:
+        ent = s.exec(select(Entity).where(Entity.name == "村田制作所")).first()
+        if ent is None:
+            ent = Entity(kind="competitor", name="村田制作所", name_en="Murata")
+            s.add(ent)
+            s.commit()
+            s.refresh(ent)
+        before = ent.id
+
+    r = c.post(
+        "/api/v1/products",
+        json={
+            "entity_name": "村田制作所（Murata）",
+            "model": "PAREN-API-1",
+            "category": "pump_air",
+        },
+        headers=h,
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["data"]["entity"]["id"] == before, "括注写法不能新建公司"
+    with Session(engine) as s:
+        assert s.exec(
+            select(Entity).where(Entity.name == "村田制作所（Murata）")
+        ).first() is None
+
+
+def test_idempotency_key_cannot_be_reused_for_different_request():
+    c = TestClient(app)
+    c.__enter__()
+    h = {**_h(), "Idempotency-Key": "create-IDEM-MISMATCH"}
+    body = {"entity_id": 2, "model": "IDEM-MISMATCH-1", "category": "pump_air"}
+    assert c.post("/api/v1/products", json=body, headers=h).status_code == 201
+
+    changed = c.post(
+        "/api/v1/products",
+        json={**body, "model": "IDEM-MISMATCH-2"},
+        headers=h,
+    )
+    assert changed.status_code == 409
+    assert changed.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    with Session(engine) as s:
+        assert s.exec(
+            select(Product).where(Product.model == "IDEM-MISMATCH-2")
+        ).first() is None, "复用键的异请求不能落库"
+
+
+def test_import_replay_does_not_duplicate_rows():
+    c = TestClient(app)
+    c.__enter__()
+    h = {**_h(), "Idempotency-Key": "import-IDEM-1"}
+    body = {"rows": [{
+        "企业名称": "导入幂等公司", "产品型号": "IMP-IDEM-1",
+        "产品类别": "压电气泵", "流量L/min": 0.5,
+    }]}
+    first = c.post("/api/v1/import", json=body, headers=h)
+    second = c.post("/api/v1/import", json=body, headers=h)
+    assert first.status_code == 200 and second.status_code == 200
+    assert second.json()["meta"].get("replayed") is True
+    with Session(engine) as s:
+        products = s.exec(
+            select(Product).where(Product.model == "IMP-IDEM-1")
+        ).all()
+        specs = s.exec(
+            select(ProductSpec).where(ProductSpec.product_id == products[0].id)
+        ).all()
+    assert len(products) == 1 and len(specs) == 1
+
+
+def test_import_dry_run_does_not_consume_idempotency_key():
+    c = TestClient(app)
+    c.__enter__()
+    h = {**_h(), "Idempotency-Key": "import-DRY-IDEM-1"}
+    body = {"rows": [{
+        "企业名称": "导入预演公司", "产品型号": "IMP-DRY-IDEM-1",
+        "产品类别": "压电气泵", "流量L/min": 0.4,
+    }]}
+    preview = c.post("/api/v1/import", json={**body, "dry_run": True}, headers=h)
+    assert preview.status_code == 200
+    real = c.post("/api/v1/import", json=body, headers=h)
+    assert real.status_code == 200
+    assert not real.json()["meta"].get("replayed")
+
+
+def test_non_finite_spec_values_are_rejected():
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    pid = _product_id("MZB3004T04")
+    for value in ("NaN", "Infinity", "-Infinity"):
+        r = c.post("/api/v1/specs/batch", content=json.dumps({"items": [{
+            "product_id": pid, "metric_key": "flow_air", "value_num": value,
+        }]}), headers={**h, "Content-Type": "application/json"})
+        assert r.status_code == 422, r.text
+    r = c.post("/api/v1/specs/batch", content=json.dumps({"items": [{
+        "product_id": pid, "metric_key": "flow_air", "value_num": 0.1,
+        "confidence": "NaN",
+    }]}), headers={**h, "Content-Type": "application/json"})
+    assert r.status_code == 422, r.text
+
+
 def test_duplicate_model_returns_409_with_hint():
     c = TestClient(app)
     c.__enter__()
@@ -353,6 +462,8 @@ def test_specs_batch_converts_unit():
                                       ProductSpec.metric_id == _metric_id("flow_air"))
         ).first()
         assert spec is not None and abs(spec.value_num - 1100) < 1e-9, spec.value_num
+        source = s.get(SpecSource, spec.source_id)
+        assert source is not None and source.kind == "api", "API 写入必须带可追溯来源"
 
 
 def test_specs_batch_rejects_cross_dimension_unit():
@@ -385,6 +496,110 @@ def test_delete_requires_confirm():
     assert r.json()["error"]["code"] == "CONFIRM_REQUIRED"
     with Session(engine) as s:
         assert s.get(Product, pid) is not None, "未确认时不得删除"
+
+
+def test_delete_product_with_adoptions_keeps_foreign_keys_valid():
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    created_product = c.post("/api/v1/products", json={
+        "entity_id": 2, "model": "DEL-ADOPT-1", "category": "pump_air",
+    }, headers=h)
+    assert created_product.status_code == 201, created_product.text
+    pid = created_product.json()["data"]["id"]
+    created = c.post("/api/v1/adoptions", json={
+        "product_id": pid, "customer_name": "删除连带客户", "status": "sample",
+    }, headers=h)
+    assert created.status_code == 201, created.text
+    deleted = c.delete(f"/api/v1/products/{pid}?confirm=true", headers=h)
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["data"]["deleted_adoptions"] >= 1
+    with Session(engine) as s:
+        assert s.get(Product, pid) is None
+        assert s.exec(select(ProductSpec).where(ProductSpec.product_id == pid)).first() is None
+
+
+def test_delete_product_removes_only_unreferenced_sources():
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    first = c.post("/api/v1/products", json={
+        "entity_id": 2, "model": "SRC-DEL-1", "category": "pump_air",
+    }, headers=h)
+    second = c.post("/api/v1/products", json={
+        "entity_id": 2, "model": "SRC-DEL-2", "category": "pump_air",
+    }, headers=h)
+    assert first.status_code == second.status_code == 201
+    p1, p2 = first.json()["data"]["id"], second.json()["data"]["id"]
+    metric_id = _metric_id("flow_air")
+    with Session(engine) as s:
+        shared = SpecSource(kind="manual", url="https://example.test/shared", title="共享来源")
+        alone = SpecSource(kind="manual", url="https://example.test/alone", title="独有来源")
+        s.add(shared)
+        s.add(alone)
+        s.flush()
+        s.add(ProductSpec(product_id=p1, metric_id=metric_id, value_num=1.0, source_id=shared.id))
+        s.add(ProductSpec(product_id=p2, metric_id=metric_id, value_num=2.0, source_id=shared.id))
+        s.add(ProductSpec(product_id=p1, metric_id=_metric_id("pressure_air"), value_num=3.0,
+                          source_id=alone.id))
+        s.commit()
+        shared_id, alone_id = shared.id, alone.id
+    deleted = c.delete(f"/api/v1/products/{p1}?confirm=true", headers=h)
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["data"]["deleted_sources"] == 1
+    with Session(engine) as s:
+        assert s.get(SpecSource, shared_id) is not None, "仍被另一型号引用的来源不能删"
+        assert s.get(SpecSource, alone_id) is None, "失去唯一引用者的来源应回收"
+
+
+def test_specs_batch_delete_recycles_orphan_source():
+    """API 删除参数时，旧来源也应像页面删除一样回收。"""
+    c = TestClient(app)
+    c.__enter__()
+    h = _h()
+    r = c.post("/api/v1/products",
+               json={"entity_id": 2, "model": "SRC-BATCH-DEL", "category": "pump_air"},
+               headers=h)
+    pid = r.json()["data"]["id"]
+    metric_id = _metric_id("flow_air")
+    with Session(engine) as s:
+        src = SpecSource(kind="manual", title="批量删除来源")
+        s.add(src)
+        s.flush()
+        s.add(ProductSpec(product_id=pid, metric_id=metric_id,
+                          value_num=1.0, source_id=src.id))
+        s.commit()
+        source_id = src.id
+
+    deleted = c.post("/api/v1/specs/batch", json={"items": [
+        {"product_id": pid, "metric_key": "flow_air", "action": "delete"},
+    ]}, headers=h)
+    assert deleted.status_code == 200, deleted.text
+    with Session(engine) as s:
+        assert s.get(SpecSource, source_id) is None, "删除参数后孤立来源应回收"
+
+
+def test_expired_idempotency_records_are_purged():
+    from datetime import datetime, timedelta, timezone
+
+    from app.api_v1 import purge_idempotency
+    with Session(engine) as s:
+        old = ApiIdempotency(
+            key="old-record", method="POST", path="/api/v1/products",
+            request_hash="x", status_code=201, response_json="{}",
+            created_at=datetime.now(timezone.utc) - timedelta(days=31),
+        )
+        fresh = ApiIdempotency(
+            key="fresh-record", method="POST", path="/api/v1/products",
+            request_hash="y", status_code=201, response_json="{}",
+        )
+        s.add(old)
+        s.add(fresh)
+        s.commit()
+        assert purge_idempotency(s, keep_days=30) >= 1
+        s.commit()
+        assert s.get(ApiIdempotency, "old-record") is None
+        assert s.get(ApiIdempotency, "fresh-record") is not None
 
 
 def test_etag_guard_prevents_overwrite():

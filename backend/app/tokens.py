@@ -20,6 +20,7 @@ from .models import ApiToken
 
 TOKEN_PREFIX = "cib"
 VALID_SCOPES = ("read", "write", "ingest", "admin")
+MAX_EXPIRY_DAYS = 3650
 
 
 def _hash(secret: str) -> str:
@@ -48,6 +49,8 @@ def create_token(
     expires_days: int | None = None,
 ) -> tuple[str, ApiToken]:
     """返回 (明文令牌, 记录)。明文只在此刻可见，之后无法再取回。"""
+    if expires_days is not None and not 1 <= expires_days <= MAX_EXPIRY_DAYS:
+        raise ValueError(f"令牌有效期必须在 1–{MAX_EXPIRY_DAYS} 天之间")
     prefix = secrets.token_hex(4)
     secret = secrets.token_urlsafe(24)
     row = ApiToken(
@@ -61,8 +64,7 @@ def create_token(
         ),
     )
     session.add(row)
-    session.commit()
-    session.refresh(row)
+    session.flush()
     return f"{TOKEN_PREFIX}_{prefix}_{secret}", row
 
 
@@ -116,7 +118,7 @@ def revoke(session: Session, token_id: int) -> bool:
         return False
     row.revoked_at = datetime.now(timezone.utc)
     session.add(row)
-    session.commit()
+    session.flush()
     return True
 
 

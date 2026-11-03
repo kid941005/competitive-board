@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import io
 from datetime import datetime
 
 from openpyxl import Workbook
@@ -27,6 +26,7 @@ from sqlmodel import select
 
 from . import range_pair, units
 from .adoptions import status_label
+from .export_safety import append_row, xlsx_bytes
 from .importer import WIDE_COLUMNS, metric_for_column
 from .models import Adoption, Entity, Product, ProductSpec, SpecMetric, SpecSource
 
@@ -82,7 +82,7 @@ def _range_text(lo_spec, hi_spec) -> str:
 
 
 def _head(ws, headers: list[str]) -> None:
-    ws.append(headers)
+    append_row(ws, headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.fill = HEAD_FILL
@@ -121,7 +121,7 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
                 values.append(_range_text(lo_spec, spec))
                 continue
             values.append(_cell_value(spec, metric, col.unit))
-        ws.append(values)
+        append_row(ws, values)
 
     for i, col in enumerate(WIDE_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = col.width
@@ -138,7 +138,7 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
             if metric is None:
                 continue
             src = sources.get(spec.source_id) if spec.source_id else None
-            ws2.append([
+            append_row(ws2, [
                 ent.name if ent else "", p.model, p.category or "",
                 metric.key, metric.name,
                 spec.value_num if spec.value_num is not None else "",
@@ -159,7 +159,7 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
         cust = entities.get(a.customer_id)
         prod = prod_by_id.get(a.product_id)
         owner = entities.get(prod.entity_id) if prod else None
-        ws3.append([
+        append_row(ws3, [
             cust.name if cust else f"#{a.customer_id}",
             prod.model if prod else f"#{a.product_id}",
             owner.name if owner else "",
@@ -173,7 +173,7 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
     # ── 4. 说明 ────────────────────────────────────────────────────────
     ws4 = wb.create_sheet("说明")
     ts = (generated_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
-    confidential = sum(1 for p in products for s in specs.get(p.id, {}).values() if s.verified)
+    verified_count = sum(1 for p in products for s in specs.get(p.id, {}).values() if s.verified)
     lines = [
         ("全量备份", ""),
         ("生成时间", ts),
@@ -186,12 +186,12 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
                     "用于核对，不用于再导入。"),
         ("单位", "参数导入表按列头单位导出（流量按 L/min、压力按 Pa），"
                 "再导入时会换算回系统口径（流量 mL/min、压力 kPa），往返不会漂。"),
-        ("复核", f"当前有 {confidential} 个参数已人工复核；导入会把被覆盖的参数重置为未复核。"),
+        ("复核", f"当前有 {verified_count} 个参数已人工复核；导入会把被覆盖的参数重置为未复核。"),
         ("不含", "登录账号、API 令牌、变更日志、系统参数 —— 这些不属于业务数据，"
                 "账号与令牌请另行保管。"),
     ]
     for row in lines:
-        ws4.append(list(row))
+        append_row(ws4, list(row))
     ws4["A1"].font = Font(bold=True, size=13)
     for cell in ws4["A"]:
         if cell.row > 1:
@@ -201,9 +201,7 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
     for row in ws4.iter_rows(min_row=2):
         row[1].alignment = Alignment(wrap_text=True, vertical="top")
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+    return xlsx_bytes(wb)
 
 
 def _cell_value(spec: ProductSpec | None, metric: SpecMetric | None, column_unit: str) -> object:

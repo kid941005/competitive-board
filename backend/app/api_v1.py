@@ -10,8 +10,8 @@
   `code` 是稳定枚举，供程序分支；`message/hint` 给人看。
 - 令牌鉴权：`Authorization: Bearer cib_<prefix>_<secret>`，用 scope 控权限（read/write/ingest/admin）。
   令牌不走 Cookie，所以不需要 CSRF —— 也就不存在「为了机器调用而放宽浏览器安全」的问题。
-- 幂等：写接口支持 `Idempotency-Key`，重放返回首次响应，不重复写库。
-- 预演：所有写接口支持 `dry_run=true`，只校验并回报将发生什么，不落库。
+- 幂等：创建公司/型号、批量写参数、JSON 导入支持 `Idempotency-Key`，重放返回首次响应。
+- 预演：创建、更新、批量写与导入支持 `dry_run=true`；删除采用记录等破坏性接口需显式确认。
 - 并发：资源返回 `ETag`，更新可用 `If-Match`；版本不匹配返回 409，避免覆盖别人的改动。
 
 路由按「用途」分四组，而不是按对象分：
@@ -25,19 +25,40 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
-from . import adoptions, audit, auth, config, search, settings_store, tokens, units
+from . import (
+    adoptions,
+    audit,
+    auth,
+    config,
+    entity_names,
+    references,
+    search,
+    settings_store,
+    tokens,
+    units,
+)
+from .api_schemas import (
+    AdoptionIn,
+    AdoptionPatch,
+    EntityIn,
+    EntityPatch,
+    ImportIn,
+    ProductIn,
+    ProductPatch,
+    SpecBatch,
+    TokenIn,
+)
 from .compare import format_number, metrics_for_categories
 from .db import get_session
 from .importer import import_rows
@@ -74,6 +95,7 @@ E: dict[str, int] = {
     "ADOPTION_EXISTS": 409,
     # 唯一索引兜底：并发提交同一型号/同一参数，或迁移后仍有重复数据
     "UNIQUE_CONFLICT": 409,
+    "IDEMPOTENCY_KEY_REUSED": 409,
     "CONFIRM_REQUIRED": 400,
 }
 
@@ -180,13 +202,23 @@ def get_principal(request: Request, session: Session = Depends(get_session)) -> 
 
 
 def require_scope(scope: str):
-    def dependency(principal: Principal = Depends(get_principal)) -> Principal:
+    async def dependency(
+        request: Request,
+        principal: Principal = Depends(get_principal),
+        session: Session = Depends(get_session),
+    ) -> Principal:
         if scope not in principal.scopes and "admin" not in principal.scopes:
             raise ApiError(
                 "FORBIDDEN",
                 f"缺少 {scope} 权限",
                 hint=f"当前 scope：{', '.join(sorted(principal.scopes)) or '无'}",
             )
+        if principal.kind == "user":
+            try:
+                await auth.verify_csrf(request, session)
+            except auth.CsrfInvalid as exc:
+                raise ApiError("FORBIDDEN", "CSRF 校验失败，请刷新页面后重试",
+                               field=auth.CSRF_HEADER) from exc
         return principal
 
     return dependency
@@ -316,23 +348,9 @@ def _actor(principal: Principal) -> tuple[str, str]:
     return principal.name, ("token" if principal.kind == "token" else "user")
 
 
-def _etag(p: Product, specs: list[ProductSpec], adoptions: list[Adoption] | None = None) -> str:
-    """表示指纹。**必须覆盖响应体里的所有字段** —— 少了哪一块，
-    条件请求就会把「内容其实变了」当成「没变」，返回 304 给客户端一份旧数据。"""
-    raw = "|".join([
-        str(p.id), p.model or "", p.name or "", p.category or "", p.status or "",
-        p.datasheet_url or "", p.note or "", p.launch_date.isoformat() if p.launch_date else "",
-        *[
-            f"{s.metric_id}:{s.value_num}:{s.value_text}:{s.condition}:{s.verified}:{s.source_id}"
-            for s in sorted(specs, key=lambda x: x.metric_id or 0)
-        ],
-        # 客户采用也算资源的一部分（GET 详情里带着它），所以要进指纹
-        *[
-            f"a{a.id}:{a.customer_id}:{a.status}:{a.year}:{a.note or ''}:"
-            f"{a.updated_at.isoformat() if a.updated_at else ''}"
-            for a in sorted(adoptions or [], key=lambda x: x.id or 0)
-        ],
-    ])
+def _etag(payload: dict) -> str:
+    """完整资源表示的指纹；元数据与关联对象变化也会更新版本。"""
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return 'W/"' + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16] + '"'
 
 
@@ -340,6 +358,28 @@ def _specs_of(session: Session, product_id: int) -> list[ProductSpec]:
     return list(session.exec(
         select(ProductSpec).where(ProductSpec.product_id == product_id)
     ).all())
+
+
+def _product_payload(session: Session, product: Product) -> dict:
+    """GET、PATCH 和版本检查共用一种资源表示，避免字段漂移。"""
+    specs = sorted(_specs_of(session, product.id), key=lambda s: s.metric_id)
+    metrics = {m.id: m for m in session.exec(select(SpecMetric).order_by(
+        SpecMetric.display_order, SpecMetric.id
+    )).all()}
+    pool = metrics_for_categories(list(metrics.values()),
+                                  {product.category} if product.category else set())
+    present = {metrics[s.metric_id].key for s in specs if s.metric_id in metrics}
+    payload = _product_dict(product, session.get(Entity, product.entity_id), len(specs), len(pool))
+    srcs = _source_map(session, specs)
+    payload["specs"] = [
+        _spec_dict(s, metrics[s.metric_id], srcs.get(s.source_id))
+        for s in specs if s.metric_id in metrics
+    ]
+    payload["missing_metrics"] = [m.key for m in pool if m.key not in present]
+    payload["adoptions"] = [_adoption_dict(a, session) for a in sorted(
+        _adoptions_of(session, product.id), key=lambda a: a.id
+    )]
+    return payload
 
 
 def _filled_counts(session: Session) -> dict[int, int]:
@@ -382,8 +422,7 @@ def _clean_model(model: str | None) -> str:
 
 
 def _norm_name(name: str) -> str:
-
-    return re.sub(r"[\s\-_.·/\\()（）&]+", "", name or "").casefold()
+    return entity_names.key(name)
 
 
 VALID_ENTITY_KINDS = ("self", "competitor", "customer")
@@ -457,34 +496,73 @@ def _find_product_ci(session: Session, entity_id: int, model: str) -> Product | 
 
 
 # ── 幂等 ───────────────────────────────────────────────────────────────────
+def purge_idempotency(session: Session, keep_days: int | None = None) -> int:
+    """清理过期幂等记录。首次响应只在客户端重试窗口内有用，不能永久堆积。"""
+    days = config.IDEMPOTENCY_KEEP_DAYS if keep_days is None else keep_days
+    if days <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = list(session.exec(
+        select(ApiIdempotency).where(ApiIdempotency.created_at < cutoff)
+    ).all())
+    for row in rows:
+        session.delete(row)
+    return len(rows)
+
+
 def _idem_key(principal: Principal, header: str | None) -> str | None:
     if not header:
         return None
-    owner = principal.token_id or principal.user_id or 0
+    # token 与 user 的 id 各自独立；只拼数字会让两类主体意外撞键。
+    owner = (
+        f"token:{principal.token_id}" if principal.token_id is not None
+        else f"user:{principal.user_id}" if principal.user_id is not None
+        else f"name:{principal.name}"
+    )
     return hashlib.sha256(f"{owner}:{header}".encode("utf-8")).hexdigest()
 
 
-def _replay(session: Session, key: str | None, method: str, path: str) -> JSONResponse | None:
+def _request_hash(body: BaseModel | None) -> str:
+    payload = body.model_dump(mode="json", exclude={"dry_run"}) if body is not None else {}
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _replay(
+    session: Session, key: str | None, method: str, path: str, request_hash: str
+) -> JSONResponse | None:
     if not key:
         return None
     row = session.get(ApiIdempotency, key)
-    if row is None or row.method != method or row.path != path:
+    if row is None:
         return None
+    if row.method != method or row.path != path or row.request_hash != request_hash:
+        raise ApiError(
+            "IDEMPOTENCY_KEY_REUSED",
+            "同一个 Idempotency-Key 已用于另一个请求",
+            field="Idempotency-Key",
+            hint="每次不同的写操作请使用新的键；只有完全相同请求的重试才复用原键",
+        )
     body = json.loads(row.response_json)
     body.setdefault("meta", {})["replayed"] = True
     return JSONResponse(body, status_code=row.status_code)
 
 
-def _remember(session: Session, key: str | None, method: str, path: str,
-              response: JSONResponse) -> None:
+def _remember(
+    session: Session, key: str | None, method: str, path: str,
+    request_hash: str, response: JSONResponse,
+) -> None:
     if not key:
         return
+    # 旧版本或并发写入可能在当前事务里已有一条；同请求视为重放，
+    # 异请求交给唯一索引与全局异常处理给出稳定 409。
+    if session.get(ApiIdempotency, key) is not None:
+        return
     session.add(ApiIdempotency(
-        key=key, method=method, path=path,
+        key=key, method=method, path=path, request_hash=request_hash,
         status_code=response.status_code,
         response_json=response.body.decode("utf-8"),
     ))
-    session.commit()
 
 
 def _is_dry(request: Request, body: BaseModel | None = None) -> bool:
@@ -494,103 +572,16 @@ def _is_dry(request: Request, body: BaseModel | None = None) -> bool:
 
 
 # ── 请求体 ─────────────────────────────────────────────────────────────────
-class EntityIn(BaseModel):
-    name: str
-    kind: str = "competitor"
-    name_en: str | None = None
-    region: str | None = None
-    tier: str = "C"
-    force: bool = False
-    dry_run: bool = False
-
-
-class ProductIn(BaseModel):
-    entity_id: int | None = None
-    entity_name: str | None = None
-    model: str
-    category: str
-    name: str | None = None
-    status: str = "active"
-    force: bool = False
-    dry_run: bool = False
-
-
-class ProductPatch(BaseModel):
-    model: str | None = None
-    name: str | None = None
-    category: str | None = None
-    status: str | None = None
-    datasheet_url: str | None = None
-    note: str | None = None
-    dry_run: bool = False
-
-
-class SpecItem(BaseModel):
-    product_id: int
-    metric_key: str
-    action: str = "upsert"  # upsert / delete
-    value_num: float | None = None
-    value_text: str | None = None
-    # 传了 unit 就按它换算到指标字典的单位（mL/min → L/min、Vp → Vpp）；
-    # 不传视为已经是字典单位。跨维度或认不出的单位会让该项被拒，不会按原值落库。
-    unit: str | None = None
-    condition: str | None = None
-    verified: bool = False
-    confidence: float | None = None
-
-
-class SpecBatch(BaseModel):
-    items: list[SpecItem]
-    dry_run: bool = False
-
-
-class ImportIn(BaseModel):
-    rows: list[dict]
-    note: str | None = None
-    dry_run: bool = False
-
-
-class EntityPatch(BaseModel):
-    name: str | None = None
-    kind: str | None = None
-    name_en: str | None = None
-    region: str | None = None
-    tier: str | None = None
-    dry_run: bool = False
-
-
-class AdoptionIn(BaseModel):
-    product_id: int
-    customer_id: int | None = None
-    customer_name: str | None = None
-    status: str = "sample"
-    year: int | None = None
-    note: str | None = None
-    dry_run: bool = False
-
-
-class AdoptionPatch(BaseModel):
-    status: str | None = None
-    year: int | None = None
-    note: str | None = None
-
-
-class TokenIn(BaseModel):
-    name: str
-    scopes: list[str] = ["read"]
-    expires_days: int | None = None
 
 
 # ── 查询面 ─────────────────────────────────────────────────────────────────
 @router.get("/health")
-def health():
+def health(request: Request):
     """version 是**接口版本**（v1，路径前缀就是这个）；app_version 是**应用版本**。
 
     两个都返回，是因为「查部署的到底是哪一版」只能靠后者 —— 前者永远等于 v1。
     """
-    from .main import app as _app
-
-    return ok({"status": "ok", "version": "v1", "app_version": _app.version})
+    return ok({"status": "ok", "version": "v1", "app_version": request.app.version})
 
 
 @router.get("/context")
@@ -756,23 +747,8 @@ def get_product(
     product = session.get(Product, product_id)
     if product is None:
         raise ApiError("NOT_FOUND", f"型号 id={product_id} 不存在")
-    specs = _specs_of(session, product_id)
-    metrics = {m.id: m for m in session.exec(select(SpecMetric)).all()}
-    pool = metrics_for_categories(list(metrics.values()),
-                                  {product.category} if product.category else set())
-    ent = session.get(Entity, product.entity_id)
-
-    present = {metrics[s.metric_id].key for s in specs if s.metric_id in metrics}
-    payload = _product_dict(product, ent, len(specs), len(pool))
-    srcs = _source_map(session, specs)
-    payload["specs"] = [
-        _spec_dict(s, metrics[s.metric_id], srcs.get(s.source_id))
-        for s in specs if s.metric_id in metrics
-    ]
-    payload["missing_metrics"] = [m.key for m in pool if m.key not in present]
-    adoptions = _adoptions_of(session, product_id)
-    payload["adoptions"] = [_adoption_dict(a, session) for a in adoptions]
-    etag = _etag(product, specs, adoptions)   # 与响应体同源，不再漏 adoptions
+    payload = _product_payload(session, product)
+    etag = _etag(payload)
     return ok(payload, etag=etag, headers={"ETag": etag})
 
 
@@ -914,6 +890,7 @@ def delete_adoption(
     if row is None:
         raise ApiError("NOT_FOUND", f"采用记录 id={adoption_id} 不存在")
     data = _adoption_dict(row, session)
+    source_ids = {row.source_id} if row.source_id is not None else set()
     session.delete(row)
     actor, kind = _actor(_p)
     audit.record(
@@ -922,6 +899,8 @@ def delete_adoption(
         origin="api", changes=[{"field": "采用", "old": "存在", "new": "已删除"}],
         request_id=uuid.uuid4().hex[:12],
     )
+    session.flush()
+    references.delete_unreferenced_sources(session, source_ids)
     session.commit()
     return ok({"deleted": adoption_id})
 
@@ -971,6 +950,7 @@ def get_matrix(
 def get_changes(
     since: str = Query(description="ISO 时间，如 2026-10-20T08:00:00Z"),
     limit: int = Query(default=200, ge=1, le=1000),
+    cursor: str | None = Query(default=None, max_length=128, description="上一页 meta.next_cursor，原样传回"),
     _p: Principal = Depends(require_scope("read")),
     session: Session = Depends(get_session),
 ):
@@ -985,12 +965,29 @@ def get_changes(
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
 
+    ts = ts.astimezone(timezone.utc)
+    stmt = select(ProductSpec).where(ProductSpec.updated_at >= ts)
+    if cursor is not None:
+        try:
+            cursor_time, raw_id = cursor.rsplit("|", 1)
+            cursor_ts = datetime.fromisoformat(cursor_time.replace("Z", "+00:00"))
+            cursor_id = int(raw_id)
+            if cursor_ts.tzinfo is None or cursor_id < 1 or cursor_id > 2**63 - 1:
+                raise ValueError()
+            cursor_ts = cursor_ts.astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            raise ApiError("VALIDATION_FAILED", "cursor 无效，请使用上次返回的 next_cursor",
+                           field="cursor") from None
+        stmt = stmt.where(or_(ProductSpec.updated_at > cursor_ts, and_(
+            ProductSpec.updated_at == cursor_ts, ProductSpec.id > cursor_id
+        )))
     specs = list(session.exec(
-        select(ProductSpec)
-        .where(ProductSpec.updated_at >= ts)
+        stmt
         .order_by(ProductSpec.updated_at, ProductSpec.id)
-        .limit(limit)          # 下推：原来先全量 .all() 再切片，数据一多就是白读
+        .limit(limit + 1)
     ).all())
+    has_more = len(specs) > limit
+    specs = specs[:limit]
     metrics = {m.id: m for m in session.exec(select(SpecMetric)).all()}
     products = {p.id: p for p in session.exec(select(Product)).all()}
     srcs = _source_map(session, specs)
@@ -1006,8 +1003,9 @@ def get_changes(
                      if s.metric_id in metrics else None),
         })
     next_since = (iso_utc(specs[-1].updated_at) or since) if specs else since
-    return ok(items, total=len(items), next_since=next_since,
-              hint="把 next_since 原样作为下次的 since；产品元信息变更不在本接口范围内")
+    next_cursor = f"{iso_utc(specs[-1].updated_at)}|{specs[-1].id}" if specs else cursor
+    return ok(items, total=len(items), next_since=next_since, next_cursor=next_cursor, has_more=has_more,
+              hint="继续同步请保留 since 并传回 next_cursor；产品元信息及删除不在本接口范围内")
 
 
 # ── 写入面 ─────────────────────────────────────────────────────────────────
@@ -1020,7 +1018,10 @@ def create_entity(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     key = _idem_key(principal, idempotency_key)
-    if (replayed := _replay(session, key, "POST", "/api/v1/entities")) is not None:
+    request_hash = _request_hash(body)
+    if (replayed := _replay(
+        session, key, "POST", "/api/v1/entities", request_hash
+    )) is not None:
         return replayed
 
     if body.kind not in VALID_ENTITY_KINDS:
@@ -1056,10 +1057,10 @@ def create_entity(
             changes=[{"field": "公司", "old": None, "new": ent.name}],
             request_id=uuid.uuid4().hex[:12],
         )
-        session.commit()
         resp = ok(data, status=201, created=True)
     if not dry and created:
-        _remember(session, key, "POST", "/api/v1/entities", resp)
+        _remember(session, key, "POST", "/api/v1/entities", request_hash, resp)
+        session.commit()
     return resp
 
 
@@ -1158,7 +1159,10 @@ def create_product(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     key = _idem_key(principal, idempotency_key)
-    if (replayed := _replay(session, key, "POST", "/api/v1/products")) is not None:
+    request_hash = _request_hash(body)
+    if (replayed := _replay(
+        session, key, "POST", "/api/v1/products", request_hash
+    )) is not None:
         return replayed
 
     category = _check_category(body.category)
@@ -1198,10 +1202,10 @@ def create_product(
             changes=audit.diff({}, audit.product_snapshot(product), audit.PRODUCT_LABELS),
             request_id=uuid.uuid4().hex[:12],
         )
-        session.commit()
         resp = ok(data, status=201)
     if not dry:
-        _remember(session, key, "POST", "/api/v1/products", resp)
+        _remember(session, key, "POST", "/api/v1/products", request_hash, resp)
+        session.commit()
     return resp
 
 
@@ -1220,8 +1224,7 @@ def patch_product(
     before_meta = audit.product_snapshot(product)
 
     specs = _specs_of(session, product_id)
-    adoptions_rows = _adoptions_of(session, product_id)
-    current_etag = _etag(product, specs, adoptions_rows)
+    current_etag = _etag(_product_payload(session, product))
     if if_match and if_match.strip() != current_etag:
         raise ApiError(
             "CONFLICT_VERSION",
@@ -1257,9 +1260,7 @@ def patch_product(
 
     session.add(product)
     dry = _is_dry(request, body)
-    data = _product_dict(product, session.get(Entity, product.entity_id))
-    # 与 GET 保持同一形状：同一个资源，两种响应不该字段不一样
-    data["adoptions"] = [_adoption_dict(a, session) for a in adoptions_rows]
+    data = _product_payload(session, product)
     if dry:
         session.rollback()
         return ok(data, dry_run=True, hint="预演：未落库")
@@ -1271,7 +1272,10 @@ def patch_product(
         request_id=uuid.uuid4().hex[:12],
     )
     session.commit()
-    return ok(data, headers={"ETag": _etag(product, _specs_of(session, product_id))})
+    return ok(
+        data,
+        headers={"ETag": _etag(data)},
+    )
 
 
 @router.delete("/products/{product_id}")
@@ -1287,23 +1291,39 @@ def delete_product(
     if not confirm:
         raise ApiError(
             "CONFIRM_REQUIRED", "删除不可撤销，需要 confirm=true",
-            hint=f"将删除型号 {product.model} 及其全部参数",
+            hint=f"将删除型号 {product.model}、全部参数及客户采用记录",
         )
     specs = _specs_of(session, product_id)
+    adoptions_rows = session.exec(
+        select(Adoption).where(Adoption.product_id == product_id)
+    ).all()
     snapshot = audit.spec_snapshot(session, product_id)
     actor, kind = _actor(_p)
     audit.record(
         session, actor=actor, actor_kind=kind, action="delete", object_type="product",
         object_id=product_id, label=product.model, origin="api",
         changes=[{"field": k, "old": v, "new": None} for k, v in snapshot.items()],
-        note=f"删除型号及其 {len(specs)} 项参数", request_id=uuid.uuid4().hex[:12],
+        note=(
+            f"删除型号、{len(specs)} 项参数及 {len(adoptions_rows)} 条客户采用记录"
+        ),
+        request_id=uuid.uuid4().hex[:12],
     )
+    source_ids = {s.source_id for s in specs if s.source_id is not None}
+    source_ids.update(a.source_id for a in adoptions_rows if a.source_id is not None)
+    for row in adoptions_rows:
+        session.delete(row)
     for s in specs:
         session.delete(s)
     session.flush()  # 无 relationship 时，先删子表再删父表，避免外键报错
+    removed_sources = references.delete_unreferenced_sources(session, source_ids)
     session.delete(product)
     session.commit()
-    return ok({"deleted_product_id": product_id, "deleted_specs": len(specs)})
+    return ok({
+        "deleted_product_id": product_id,
+        "deleted_specs": len(specs),
+        "deleted_adoptions": len(adoptions_rows),
+        "deleted_sources": removed_sources,
+    })
 
 
 @router.post("/specs/batch")
@@ -1316,10 +1336,19 @@ def batch_specs(
 ):
     """批量写参数。逐项返回状态 —— 部分成功必须显式，不能让调用方以为全成了。"""
     key = _idem_key(principal, idempotency_key)
-    if (replayed := _replay(session, key, "POST", "/api/v1/specs/batch")) is not None:
+    request_hash = _request_hash(body)
+    if (replayed := _replay(
+        session, key, "POST", "/api/v1/specs/batch", request_hash
+    )) is not None:
         return replayed
     if not body.items:
         raise ApiError("VALIDATION_FAILED", "items 不能为空", field="items")
+    if len(body.items) > config.IMPORT_MAX_ROWS:
+        raise ApiError(
+            "VALIDATION_FAILED",
+            f"单次最多写入 {config.IMPORT_MAX_ROWS} 项",
+            field="items",
+        )
 
     metrics = {m.key: m for m in session.exec(select(SpecMetric)).all()}
     metric_by_id = {m.id: m for m in metrics.values()}
@@ -1346,6 +1375,26 @@ def batch_specs(
     results: list[dict] = []
     applied = 0
     dry = _is_dry(request, body)
+    rid = uuid.uuid4().hex[:12]
+    actor, kind = _actor(principal)
+    old_source_ids: set[int] = set()
+    source_holder: list[SpecSource] = []
+
+    def api_source() -> SpecSource | None:
+        """只在确有成功写入时建来源，整批全被拒时不留下空来源。"""
+        if dry:
+            return None
+        if not source_holder:
+            src = SpecSource(
+                kind="api",
+                title=f"{actor} 批量写入参数",
+                captured_at=datetime.now(timezone.utc),
+                note=f"API {kind} {actor}；请求 {rid}",
+            )
+            session.add(src)
+            session.flush()
+            source_holder.append(src)
+        return source_holder[0]
 
     for idx, item in enumerate(body.items):
         base = {"index": idx, "product_id": item.product_id, "metric_key": item.metric_key}
@@ -1375,6 +1424,8 @@ def batch_specs(
             if existing is None:
                 results.append({**base, "ok": True, "action": "noop", "message": "原本就没有该项"})
             else:
+                if existing.source_id is not None:
+                    old_source_ids.add(existing.source_id)
                 session.delete(existing)
                 specs_by_key.pop((product.id, metric.id), None)  # type: ignore[arg-type]
                 applied += 1
@@ -1424,17 +1475,24 @@ def batch_specs(
             num = None
 
         if existing:
+            if not dry and existing.source_id is not None:
+                old_source_ids.add(existing.source_id)
+            src = api_source()
             existing.value_num, existing.value_text = num, text
             existing.condition = item.condition
             existing.verified = item.verified
             existing.confidence = clamp_confidence(item.confidence)
+            if src is not None:
+                existing.source_id = src.id
             existing.updated_at = datetime.now(timezone.utc)
             session.add(existing)
             action = "updated"
         else:
+            src = api_source()
             created = ProductSpec(
                 product_id=product.id, metric_id=metric.id,
                 value_num=num, value_text=text, condition=item.condition,
+                source_id=src.id if src is not None else None,
                 confidence=clamp_confidence(item.confidence),
                 verified=item.verified,
             )
@@ -1452,8 +1510,6 @@ def batch_specs(
         resp = ok({"results": results, "applied": applied}, dry_run=True,
                   hint="预演：未落库，results 为「将会发生」的结果")
     else:
-        actor, kind = _actor(principal)
-        rid = uuid.uuid4().hex[:12]
         session.flush()   # 新增项要先落库，否则「改后」快照看不到它们
         for pid in touched:
             product = products_by_id.get(pid)
@@ -1466,11 +1522,12 @@ def batch_specs(
                 object_id=pid, label=product.model, origin="api",
                 changes=changes, note=f"批量写入 {applied} 项", request_id=rid,
             )
-        session.commit()
+        references.delete_unreferenced_sources(session, old_source_ids)
         resp = ok({"results": results, "applied": applied},
                   failed=sum(1 for r in results if not r.get("ok")))
     if not dry:
-        _remember(session, key, "POST", "/api/v1/specs/batch", resp)
+        _remember(session, key, "POST", "/api/v1/specs/batch", request_hash, resp)
+        session.commit()
     return resp
 
 
@@ -1478,28 +1535,47 @@ def batch_specs(
 def api_import_rows(
     body: ImportIn,
     request: Request,
-    _p: Principal = Depends(require_scope("ingest")),
+    principal: Principal = Depends(require_scope("ingest")),
     session: Session = Depends(get_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     """与页面上的 Excel/CSV 导入共用同一套校验，只是输入换成 JSON 行。"""
+    key = _idem_key(principal, idempotency_key)
+    request_hash = _request_hash(body)
+    if (replayed := _replay(
+        session, key, "POST", "/api/v1/import", request_hash
+    )) is not None:
+        return replayed
     if not body.rows:
         raise ApiError("VALIDATION_FAILED", "rows 不能为空", field="rows")
+    if len(body.rows) > config.IMPORT_MAX_ROWS:
+        raise ApiError(
+            "VALIDATION_FAILED",
+            f"单次最多导入 {config.IMPORT_MAX_ROWS} 行",
+            field="rows",
+        )
     headers: list[str] = []
     for row in body.rows:
-        for key in row:
-            if key not in headers:
-                headers.append(key)
+        for column in row:
+            if column not in headers:
+                headers.append(column)
     dry = _is_dry(request, body)
     report = import_rows(
         session, body.rows, headers,
         batch_note=body.note or "API 导入",
-        commit=not dry,
+        commit=False,
     )
     if not dry:
-        actor, kind = _actor(_p)
+        actor, kind = _actor(principal)
         audit.log_import(session, report, actor=actor, actor_kind=kind, origin="api",
                          request_id=uuid.uuid4().hex[:12])
-    return ok(report.as_dict(), dry_run=dry)
+        resp = ok(report.as_dict(), dry_run=False)
+        _remember(session, key, "POST", "/api/v1/import", request_hash, resp)
+        session.commit()
+    else:
+        session.rollback()
+        resp = ok(report.as_dict(), dry_run=True)
+    return resp
 
 
 # ── 令牌管理 ───────────────────────────────────────────────────────────────
@@ -1789,7 +1865,8 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
             "parameters": {
                 "type": "object", "required": ["since"],
                 "properties": {"since": {"type": "string", "format": "date-time"},
-                               "limit": {"type": "integer", "maximum": 1000}},
+                               "limit": {"type": "integer", "maximum": 1000},
+                               "cursor": {"type": "string", "description": "上一页 meta.next_cursor，原样传回"}},
             },
         },
         {
@@ -1816,7 +1893,7 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
             "method": "PATCH", "path": "/api/v1/products/{product_id}",
             "description": (
                 "改型号元信息（只传要改的字段，未传的不动）。已有参数时不能换大类。"
-                "并发保护靠 HTTP 的 If-Match 头，本清单不透传；先 GET 再 PATCH 即可。"
+                "HTTP 调用用 If-Match 头；MCP 调用用 if_match 参数传回 GET 的 meta.etag。"
             ),
             "scope": "write",
             "parameters": {

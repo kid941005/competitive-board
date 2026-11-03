@@ -1,12 +1,15 @@
 name: build-image
 
 # 触发方式：
-#   1) 推 v* 标签 —— 版本号取自标签；
-#   2) 手动运行（workflow_dispatch）—— 版本号可填，留空则读 backend/app/main.py 的 app.version。
-# 产物：ghcr.io/<owner>/<repo>:<version> / :latest / :sha-<7位>
+#   1) 推 v* 标签 —— 版本号取自标签，并通过测试后构建镜像；
+#   2) 手动运行（workflow_dispatch）—— 版本号可填，留空则读 app.version，并构建镜像；
+#   3) 推送到 main 或发起 Pull Request —— 只跑质量门禁，不构建/推送镜像。
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -35,7 +38,11 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
       # 版本号散落在四处（app.version / 根 compose / 构建叠加 / deploy 规划稿 / README 示例），
       # 已经因此漏过一次（Dockerfile 里曾停留在 0.2.0），这里直接卡住。
@@ -78,10 +85,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 
-      # 只开 F/E9/B 三条（见 pyproject.toml）：抓未使用导入、未定义名、常见陷阱。
+      # 规则集见 pyproject.toml：抓未使用导入、未定义名、常见陷阱与 import 顺序。
       # 不做行宽与风格检查 —— 本项目注释密度高，强制 88 列会压缩「为什么」的说明。
       - name: 静态检查
-        run: python -m ruff check backend/app backend/tests mcp
+        run: python -m ruff check backend/app backend/tests mcp scripts
 
       # 每个测试文件独立进程：它们都在导入期设置 CIB_DATA_DIR，
       # 同一个进程里跑会共用临时目录而互相污染
@@ -91,7 +98,7 @@ jobs:
           set -euo pipefail
           for f in tests/test_*.py; do
             echo "::group::$f"
-            python "$f"
+            python -m pytest "$f" -q
             echo "::endgroup::"
           done
 
@@ -110,6 +117,7 @@ jobs:
   build:
     name: 构建并推送
     needs: test
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}

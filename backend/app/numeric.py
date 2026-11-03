@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import math
+
 
 def parse_number(raw: object) -> float | None:
     """把单元格/表单里的文本转成 float；无法识别返回 None。
@@ -21,7 +23,11 @@ def parse_number(raw: object) -> float | None:
     if raw is None:
         return None
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        return float(raw)
+        try:
+            number = float(raw)
+        except OverflowError:
+            return None
+        return number if math.isfinite(number) else None
 
     text = str(raw).strip().replace(" ", "").replace("\u3000", "")
     if not text:
@@ -39,9 +45,10 @@ def parse_number(raw: object) -> float | None:
                 text = text.replace(",", "")
 
     try:
-        return float(text)
+        number = float(text)
     except ValueError:
         return None
+    return number if math.isfinite(number) else None
 
 
 # 置信度的合法区间。三条写入通道（表格导入 / 规格书提交 / 批量接口）都必须经过它 ——
@@ -58,5 +65,7 @@ def clamp_confidence(value: float | None, default: float = 1.0) -> float:
     try:
         number = float(value)
     except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number):
         return default
     return min(max(number, CONFIDENCE_MIN), CONFIDENCE_MAX)

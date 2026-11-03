@@ -8,14 +8,19 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app import config
 from app.datasheet import (
+    DocumentLimitError,
     extract_candidates,
     metric_aliases,
     normalize_text,
+    read_pdf,
+    read_plain,
 )
 from app.models import SpecMetric
 
@@ -41,6 +46,51 @@ def _one(text: str, metrics=None, key: str = "flow_air"):
     cands = extract_candidates([(1, text)], metrics or POOL)
     hit = [c for c in cands if c.metric_key == key]
     return hit[0] if hit else None
+
+
+def test_plain_text_char_limit_is_enforced(monkeypatch):
+    monkeypatch.setattr(config, "DATASHEET_MAX_CHARS", 10_000)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "large.txt"
+        path.write_text("x" * 10_001, encoding="utf-8")
+        try:
+            read_plain(path)
+        except DocumentLimitError:
+            pass
+        else:
+            raise AssertionError("超过字符上限的文本必须拒绝解析")
+
+
+def test_pdf_page_limit_is_enforced(monkeypatch):
+    """PDF 在打开后、逐页提取前检查页数上限。"""
+    class FakePage:
+        def get_text(self, _kind):
+            return "page"
+
+    class FakeDoc:
+        page_count = 2
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            return iter([FakePage(), FakePage()])
+
+    fake = type("FakePymupdf", (), {"open": staticmethod(lambda _path: FakeDoc())})
+    monkeypatch.setattr(config, "DATASHEET_MAX_PAGES", 1)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "fake.pdf"
+        path.write_bytes(b"%PDF")
+        monkeypatch.setitem(__import__("sys").modules, "pymupdf", fake)
+        try:
+            read_pdf(path)
+        except DocumentLimitError:
+            pass
+        else:
+            raise AssertionError("超过页数上限的 PDF 必须拒绝解析")
 
 
 # ── 归一化 ─────────────────────────────────────────────────────────────────

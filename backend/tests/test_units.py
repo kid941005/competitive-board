@@ -40,7 +40,9 @@ _state: dict[str, object] = {}
 def _session() -> Session:
     if not _state.get("ready"):
         init_db()
-        seed()
+        # 本模块直接使用与全量测试共享的引擎；显式重建内置数据，保证
+        # IMP-A / IMP-B 等断言不取决于其他测试模块留下什么。
+        seed(force=True)
         _state["ready"] = True
     return Session(engine)
 

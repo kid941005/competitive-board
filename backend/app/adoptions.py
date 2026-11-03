@@ -15,9 +15,8 @@ import re
 
 from sqlmodel import Session, select
 
+from . import entity_names
 from .models import ADOPTION_STATUS, Adoption, Entity
-
-_NAME_NOISE = re.compile(r"[\s\-_.·/\\()（）]+")
 
 # 「关联客户（有公开证据）」这类自由文本里，一条记录用这些符号分隔
 _SPLIT_CHARS = "；;、\n"
@@ -28,7 +27,7 @@ _PLACEHOLDERS = {"待补充", "待定", "无", "暂无", "未知", "—", "-", "
 
 
 def norm_name(name: str) -> str:
-    return _NAME_NOISE.sub("", (name or "").strip()).lower()
+    return entity_names.key(name)
 
 
 def _split_outside_parens(text: str) -> list[str]:

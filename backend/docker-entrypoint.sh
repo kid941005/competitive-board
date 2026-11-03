@@ -48,5 +48,9 @@ if [[ "${CIB_SEED_DEMO:-0}" == "1" ]]; then
 fi
 
 # ── 3. 交给容器 CMD ────────────────────────────────────────────────────────
+# 反向代理部署才需要信任代理头；通配 * 会让客户端伪造 IP 绕过登录限流。
+if [[ "${1:-}" == "uvicorn" && -n "${CIB_FORWARDED_ALLOW_IPS:-}" ]]; then
+  set -- "$@" --proxy-headers --forwarded-allow-ips "${CIB_FORWARDED_ALLOW_IPS}"
+fi
 log "启动：$*"
 exec "$@"

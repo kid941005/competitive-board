@@ -24,6 +24,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _http import enable_csrf
 from app import search
 from app.db import init_db
 from app.main import app
@@ -37,11 +38,14 @@ def _h() -> dict:
     if "h" in _state:
         return _state["h"]  # type: ignore[return-value]
     init_db()
-    seed()
+    # 全量 pytest 共用一个引擎；seed() 遇到已有实体就会跳过。本模块的检索断言
+    # 依赖内置的 11 个型号，因此显式重建演示数据，消除测试文件顺序影响。
+    seed(force=True)
     c = TestClient(app)
     c.__enter__()
     c.post("/login", data={"username": "admin", "password": "AdminPass123"},
            follow_redirects=False)
+    enable_csrf(c)
     r = c.post("/api/v1/tokens", json={"name": "检索测试", "scopes": ["read"]})
     assert r.status_code == 201, r.text
     _state["c"] = c

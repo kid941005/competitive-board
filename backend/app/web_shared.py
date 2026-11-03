@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import re
 import uuid
 from pathlib import Path
 from urllib.parse import quote
@@ -16,7 +15,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
-from . import auth, config
+from . import auth, config, entity_names
 from .auth import AuthSession, User
 from .models import PRODUCT_STATUSES, Entity, Product
 from .timeutil import fmt_local
@@ -69,6 +68,7 @@ def _safe_next(target: str | None) -> str:
         or not target.startswith("/")
         or target.startswith("//")
         or chr(92) in target        # 反斜杠：部分浏览器把 /\host 当 //host
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in target)
     ):
         return "/compare"
     return target
@@ -77,23 +77,18 @@ def _safe_next(target: str | None) -> str:
 # ── 数据装载 ────────────────────────────────────────────────────────────────
 
 
-def _norm_company(name: str) -> str:
-    """公司名归一：去掉空白与标点、统一大小写，用于判断是否同一家。"""
-    return re.sub(r"[\s\-_.·/\\()（）&]+", "", name or "").casefold()
-
-
 def _find_company(session: Session, name: str) -> tuple[Entity | None, list[Entity]]:
     """返回 (完全同名, 近名列表)。
 
     近名用于拦「村田」与「村田制作所」建成两份档案 —— 名称归一的前提是先别造出重复。
     """
-    key = _norm_company(name)
+    key = entity_names.key(name)
     exact: Entity | None = None
     similar: list[Entity] = []
     if not key:
         return None, []
     for e in session.exec(select(Entity)).all():
-        other = _norm_company(e.name)
+        other = entity_names.key(e.name)
         if not other:
             continue
         if other == key:

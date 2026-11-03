@@ -88,7 +88,7 @@ def _parse_ids(
     out: list[int] = []
     for chunk in raw.split(","):
         chunk = chunk.strip()
-        if not chunk.isdigit():
+        if len(chunk) > 20 or not chunk.isascii() or not chunk.isdecimal():
             continue
         pid = int(chunk)
         if pid in valid and pid not in out:

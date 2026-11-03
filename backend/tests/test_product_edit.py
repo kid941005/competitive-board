@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import engine, init_db
 from app.main import app
-from app.models import Product, ProductSpec, SpecMetric
+from app.models import Product, ProductSpec, SpecMetric, SpecSource
 from app.seed import seed
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -41,7 +41,7 @@ def _client() -> TestClient:
     if _state.get("client"):
         return _state["client"]  # type: ignore[return-value]
     init_db()
-    seed()
+    seed(force=True)
     c = TestClient(app)
     c.__enter__()
     r = c.post("/login", data={"username": "admin", "password": "AdminPass123"},
@@ -137,6 +137,47 @@ def test_clearing_value_deletes_the_spec():
     )
     assert r.status_code == 303
     assert _spec(p.id, flow.id) is None, "清空数值应删除该项，而不是留一行空值"
+
+
+def test_clearing_value_recycles_only_orphan_source():
+    """清空参数后，旧来源应回收；共享来源必须保留。"""
+    c = _client()
+    p = _product_by_model("MZB3004T04")
+    flow = _metric("flow_air")
+    pressure = _metric("pressure_air")
+    csrf = _csrf(c, f"/products/{p.id}")
+    with Session(engine) as s:
+        orphan = SpecSource(kind="manual", title="清空后应回收")
+        shared = SpecSource(kind="manual", title="其他参数仍在使用")
+        s.add(orphan)
+        s.add(shared)
+        s.flush()
+        spec = s.exec(select(ProductSpec).where(
+            ProductSpec.product_id == p.id, ProductSpec.metric_id == flow.id
+        )).first()
+        if spec is None:
+            spec = ProductSpec(product_id=p.id, metric_id=flow.id, value_num=0.3)
+            s.add(spec)
+        spec.source_id = orphan.id
+        pressure_spec = s.exec(select(ProductSpec).where(
+            ProductSpec.product_id == p.id, ProductSpec.metric_id == pressure.id
+        )).first()
+        if pressure_spec is None:
+            pressure_spec = ProductSpec(product_id=p.id, metric_id=pressure.id, value_num=2.0)
+            s.add(pressure_spec)
+        pressure_spec.source_id = shared.id
+        s.commit()
+        orphan_id, shared_id = orphan.id, shared.id
+
+    r = c.post(
+        f"/products/{p.id}/specs",
+        data={f"{flow.id}:v": "", f"{flow.id}:c": "", "_csrf": csrf},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with Session(engine) as s:
+        assert s.get(SpecSource, orphan_id) is None, "失去唯一引用者的来源应回收"
+        assert s.get(SpecSource, shared_id) is not None, "共享来源不能误删"
 
 
 def test_invalid_number_keeps_old_value_and_reports():

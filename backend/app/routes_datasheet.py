@@ -4,24 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from . import audit, auth, config, range_pair, settings_store
+from . import audit, auth, config, range_pair, references, settings_store
 from .auth import P_VIEW, P_WRITE, AuthSession, User
 from .compare import metric_applies, metrics_for_categories
 from .config import category_label
-from .datasheet import extract_candidates, read_document, summarize
+from .datasheet import DocumentLimitError, extract_candidates, read_document, summarize
 from .db import get_session
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 from .numeric import clamp_confidence
 from .selection import _load, _self_name
+from .uploads import read_upload_limited
 from .web_shared import (
     _ctx,
     _find_company,
@@ -41,11 +44,11 @@ router = APIRouter()
 
 class CommitRow(BaseModel):
     metric_key: str
-    value_num: float | None = None
+    value_num: float | None = Field(default=None, allow_inf_nan=False)
     value_text: str | None = None
     condition: str | None = None
     page: int | None = None
-    confidence: float = 1.0
+    confidence: float = Field(default=1.0, allow_inf_nan=False)
 
 
 class CommitTarget(BaseModel):
@@ -65,14 +68,22 @@ class CommitTarget(BaseModel):
 class CommitPayload(BaseModel):
     doc_id: str
     target: CommitTarget
-    rows: list[CommitRow]
+    rows: list[CommitRow] = Field(max_length=config.IMPORT_MAX_ROWS)
 
 
 def _ds_meta(doc_id: str) -> dict:
+    _check_doc_id(doc_id)
     meta_path = DATASHEET_DIR / f"{doc_id}.json"
-    if not meta_path.exists():
-        raise HTTPException(404, "文档不存在或已过期，请重新上传")
-    return json.loads(meta_path.read_text(encoding="utf-8"))
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404, "文档不存在或已过期，请重新上传") from exc
+    if (not isinstance(meta, dict) or not isinstance(meta.get("ext"), str)
+            or meta["ext"] not in ALLOWED_DS_EXT):
+        raise HTTPException(404, "文档元数据损坏，请重新上传")
+    if not (DATASHEET_DIR / f"{doc_id}{meta['ext']}").is_file():
+        raise HTTPException(404, "文档文件已丢失，请重新上传")
+    return meta
 
 
 def _ds_file(doc_id: str) -> Path:
@@ -84,7 +95,7 @@ def _ds_file(doc_id: str) -> Path:
 
 
 def _check_doc_id(doc_id: str) -> None:
-    if not DOC_ID_RE.match(doc_id or ""):
+    if not DOC_ID_RE.fullmatch(doc_id or ""):
         raise HTTPException(400, "非法的文档标识")
 
 
@@ -164,33 +175,53 @@ async def api_ds_analyze(
     sset = settings_store.all_values(session)
     max_bytes = int(sset["datasheet.max_upload_mb"]) * 1024 * 1024
 
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(400, "文件为空")
-    if len(raw) > max_bytes:
-        raise HTTPException(413, f"文件超过 {sset['datasheet.max_upload_mb']} MB")
-
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_DS_EXT:
         raise HTTPException(400, f"暂不支持 {ext or '未知'} 格式，请上传 PDF 或纯文本")
 
-    doc_id = hashlib.sha256(raw).hexdigest()[:12]
-    DATASHEET_DIR.mkdir(parents=True, exist_ok=True)
-    (DATASHEET_DIR / f"{doc_id}{ext}").write_bytes(raw)
-    (DATASHEET_DIR / f"{doc_id}.json").write_text(
-        json.dumps(
-            {
-                "filename": file.filename,
-                "ext": ext,
-                "size": len(raw),
-                "uploaded_at": datetime.now(timezone.utc).isoformat(),
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    raw = await read_upload_limited(file, max_bytes)
+    if not raw:
+        raise HTTPException(400, "文件为空")
 
-    pages = read_document(DATASHEET_DIR / f"{doc_id}{ext}")
+    doc_id = hashlib.sha256(raw).hexdigest()[:12]
+    doc_path = DATASHEET_DIR / f"{doc_id}{ext}"
+    meta_path = DATASHEET_DIR / f"{doc_id}.json"
+    upload_id = uuid.uuid4().hex
+    tmp_doc = DATASHEET_DIR / f"{doc_id}.{upload_id}{ext}.tmp"
+    tmp_meta = DATASHEET_DIR / f"{doc_id}.{upload_id}.json.tmp"
+    try:
+        DATASHEET_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_doc.write_bytes(raw)
+        tmp_meta.write_text(
+            json.dumps(
+                {
+                    "filename": file.filename,
+                    "ext": ext,
+                    "size": len(raw),
+                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        # 先解析临时原文；失败时不会留下可被后续提交的正式文档。
+        pages = read_document(tmp_doc)
+        # 先写原文，再发布可提交的元数据；同内容并发上传使用独立临时文件。
+        os.replace(tmp_doc, doc_path)
+        os.replace(tmp_meta, meta_path)
+    except DocumentLimitError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(422, "文档无法解析，请确认文件有效且未加密") from exc
+    except OSError as exc:
+        raise HTTPException(503, "文档存储不可用，请检查数据目录权限或剩余空间") from exc
+    finally:
+        for path in (tmp_doc, tmp_meta):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     _, _, all_metrics, _ = _load(session)
     applicable = metrics_for_categories(all_metrics, {category})
     candidates = extract_candidates(pages, applicable)
@@ -241,6 +272,8 @@ def api_ds_commit(
     model = _validate_target(target.category, target.model)
     if not payload.rows:
         raise HTTPException(400, "没有要写入的参数")
+    if len(payload.rows) > config.IMPORT_MAX_ROWS:
+        raise HTTPException(413, f"单次最多提交 {config.IMPORT_MAX_ROWS} 行参数")
 
     # ── 1) 定位公司，必要时就地建档 ──────────────────────────────────
     entity: Entity | None = None
@@ -299,15 +332,26 @@ def api_ds_commit(
         product_created = True
 
     # ── 3) 出处 ──────────────────────────────────────────────────────
-    source = SpecSource(
-        kind="datasheet",
-        url=f"/datasheet/{payload.doc_id}/file",
-        title=meta.get("filename") or f"{payload.doc_id}",
-        captured_at=datetime.now(timezone.utc),
-        note=f"规格书自动识别，{len(payload.rows)} 项待复核；录入人 {user.username}",
-    )
-    session.add(source)
-    session.flush()
+    source_holder: list[SpecSource] = []
+    old_source_ids: set[int] = set()
+
+    def datasheet_source() -> SpecSource:
+        """只为真正写入的参数建来源；全部被跳过时不留下空来源。"""
+        if not source_holder:
+            src = SpecSource(
+                kind="datasheet",
+                url=f"/datasheet/{payload.doc_id}/file",
+                title=meta.get("filename") or f"{payload.doc_id}",
+                captured_at=datetime.now(timezone.utc),
+                note=(
+                    f"规格书自动识别，{len(payload.rows)} 项待复核；"
+                    f"录入人 {user.username}"
+                ),
+            )
+            session.add(src)
+            session.flush()
+            source_holder.append(src)
+        return source_holder[0]
 
     metrics = {m.key: m for m in session.exec(select(SpecMetric)).all()}
     metric_by_id = {m.id: m for m in metrics.values()}
@@ -350,6 +394,9 @@ def api_ds_commit(
 
         existing = present.get(metric.id)  # type: ignore[arg-type]
         if existing:
+            if existing.source_id is not None:
+                old_source_ids.add(existing.source_id)
+            source = datasheet_source()
             existing.value_num = row.value_num if is_num else None
             existing.value_text = None if is_num else row.value_text
             existing.condition = row.condition or None
@@ -366,7 +413,7 @@ def api_ds_commit(
                 value_num=row.value_num if is_num else None,
                 value_text=None if is_num else row.value_text,
                 condition=row.condition or None,
-                source_id=source.id,
+                source_id=datasheet_source().id,
                 confidence=clamp_confidence(row.confidence),
                 verified=False,
             )
@@ -382,6 +429,7 @@ def api_ds_commit(
         if rng is not None and lo_metric is not None and metric_applies(lo_metric, product.category):
             lower = present.get(lo_metric.id)
             if lower is None:
+                source = datasheet_source()
                 lower = ProductSpec(
                     product_id=product.id, metric_id=lo_metric.id, value_num=rng[0],
                     condition=row.condition or None, source_id=source.id,
@@ -391,6 +439,9 @@ def api_ds_commit(
                 present[lo_metric.id] = lower
                 written += 1
             elif lower.value_num != rng[0]:
+                if lower.source_id is not None:
+                    old_source_ids.add(lower.source_id)
+                source = datasheet_source()
                 lower.value_num = rng[0]
                 lower.condition = row.condition or None
                 lower.source_id = source.id
@@ -422,12 +473,15 @@ def api_ds_commit(
         note=f"规格书 {meta.get('filename') or payload.doc_id}：写入 {written}、更新 {updated}、跳过 {skipped}",
         request_id=rid,
     )
+    session.flush()
+    references.delete_unreferenced_sources(session, old_source_ids)
     session.commit()
+    source = source_holder[0] if source_holder else None
     return {
         "written": written,
         "updated": updated,
         "skipped": skipped,
-        "source_id": source.id,
+        "source_id": source.id if source else None,
         "entity": entity.name,
         "entity_created": entity_created,
         "product": product.model,

@@ -517,14 +517,14 @@
         var isNum = (metric.value_type || "number") === "number";
         if (!raw) { bad += 1; return; }
         var num = Number(raw);
-        if (isNum && isNaN(num)) { bad += 1; return; }
+        if (isNum && !Number.isFinite(num)) { bad += 1; return; }
         payloadRows.push({
           metric_key: key,
           value_num: isNum ? num : null,
           value_text: isNum ? null : raw,
           condition: tr.querySelector(".cond-input").value.trim() || null,
           page: Number(tr.children[5].textContent) || null,
-          confidence: Number(tr.dataset.conf) || 0.7
+          confidence: Number.isFinite(Number(tr.dataset.conf)) ? Number(tr.dataset.conf) : 0.7
         });
       });
 
@@ -556,7 +556,7 @@
           commitMsg.className = "ds-msg ok";
           commitMsg.innerHTML =
             esc(res.entity) + " · " + esc(res.product) + " · " + esc(res.category_label) + "：" +
-            parts.join("，") + '。 <a href="/compare">去对比页核对</a>';
+            esc(parts.join("，")) + '。 <a href="/compare">去对比页核对</a>';
           if (res.errors && res.errors.length) {
             commitMsg.innerHTML += '<br><span class="ds-err">' + esc(res.errors.join("；")) + "</span>";
           }

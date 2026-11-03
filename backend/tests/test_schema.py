@@ -29,6 +29,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _http import enable_csrf
 from _wide import wide_headers
 from app import schema
 from app.db import engine as app_engine
@@ -48,12 +49,13 @@ def _admin() -> TestClient:
     if _state.get("admin"):
         return _state["admin"]  # type: ignore[return-value]
     init_db()
-    seed()
+    seed(force=True)
     c = TestClient(app)
     c.__enter__()
     r = c.post("/login", data={"username": "admin", "password": "AdminPass123"},
                follow_redirects=False)
     assert r.status_code == 303
+    enable_csrf(c)
     _state["admin"] = c
     return c
 

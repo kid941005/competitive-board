@@ -231,6 +231,7 @@ class ApiIdempotency(SQLModel, table=True):
     key: str = Field(primary_key=True, description="sha256(token_id + 客户端 Idempotency-Key)")
     method: str
     path: str
+    request_hash: str = Field(default="", description="请求体指纹，同键异请求必须拒绝")
     status_code: int
     response_json: str
     created_at: datetime = Field(default_factory=utcnow)

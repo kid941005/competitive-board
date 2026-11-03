@@ -3,7 +3,8 @@ uvicorn[standard]>=0.30
 sqlmodel>=0.0.22
 jinja2>=3.1
 python-multipart>=0.0.9
-pymupdf>=1.24
+# PDF 文本解析依赖经验证的 1.x API；2.x 会自动引入布局/ONNX 推理栈。
+pymupdf==1.26.7
 openpyxl>=3.1
 
 # PostgreSQL 驱动（生产必装；本地用 SQLite 时也一并安装，避免「开发能跑、上线才炸」）

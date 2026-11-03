@@ -43,7 +43,7 @@ def _client() -> TestClient:
     if _state.get("client"):
         return _state["client"]  # type: ignore[return-value]
     init_db()
-    seed()
+    seed(force=True)
     c = TestClient(app)
     c.__enter__()
     r = c.post("/login", data={"username": "admin", "password": "AdminPass123"},
@@ -182,6 +182,34 @@ def test_unsupported_extension_rejected():
     r = c.post("/api/import", files={"file": ("t.pdf", b"%PDF", "application/pdf")},
                headers={"X-CSRF-Token": _csrf(c)})
     assert r.status_code == 400
+
+
+def test_corrupt_xlsx_is_a_client_error_not_500():
+    """损坏的工作簿要返回可理解的 400，不能让 ZIP/OpenPyXL 异常冒成服务器错误。"""
+    c = _client()
+    r = c.post(
+        "/api/import",
+        files={"file": ("broken.xlsx", b"not-a-zip", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers={"X-CSRF-Token": _csrf(c)},
+    )
+    assert r.status_code == 400, r.text
+    assert "工作簿" in r.json()["detail"]
+
+
+def test_xlsx_uncompressed_size_limit_is_enforced(monkeypatch):
+    """压缩包很小不代表展开后也小；超限必须在打开工作表前拒绝。"""
+    import app.config
+
+    c = _client()
+    monkeypatch.setattr(app.config, "SHEET_MAX_UNCOMPRESSED_BYTES", 1024)
+    data = _xlsx([WIDE_HEAD])
+    r = c.post(
+        "/api/import",
+        files={"file": ("large.xlsx", data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers={"X-CSRF-Token": _csrf(c)},
+    )
+    assert r.status_code == 400, r.text
+    assert "安全上限" in r.json()["detail"]
 
 
 # ── 模板 ───────────────────────────────────────────────────────────────────

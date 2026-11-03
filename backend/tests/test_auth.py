@@ -14,6 +14,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 # 必须在导入 app 之前设置，config 在导入期读环境变量
 _TMP = tempfile.mkdtemp(prefix="cib-auth-test-")
@@ -149,6 +150,17 @@ def test_setting_spec_validation():
     assert spec.parse("abc")[1] is not None        # 非整数
     assert spec.parse("1")[1] is not None          # 低于下限
     assert spec.parse("99")[1] is not None         # 高于上限
+
+
+def test_invalid_integer_environment_falls_back_to_default():
+    from app import config
+
+    with patch.dict(os.environ, {"CIB_CONFIG_TEST_INT": "not-a-number"}):
+        assert config.env_int("CIB_CONFIG_TEST_INT", 8, minimum=2, maximum=12) == 8
+    with patch.dict(os.environ, {"CIB_CONFIG_TEST_INT": "1"}):
+        assert config.env_int("CIB_CONFIG_TEST_INT", 8, minimum=2, maximum=12) == 2
+    with patch.dict(os.environ, {"CIB_CONFIG_TEST_INT": "99"}):
+        assert config.env_int("CIB_CONFIG_TEST_INT", 8, minimum=2, maximum=12) == 12
 
 
 def test_setting_choices_validation():

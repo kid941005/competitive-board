@@ -15,11 +15,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 _TMP = tempfile.mkdtemp(prefix="cib-import-test-")
 os.environ["CIB_DATA_DIR"] = _TMP
@@ -29,9 +31,10 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.config import DATASHEET_DIR
 from app.db import engine, init_db
 from app.main import app
-from app.models import Entity, Product, ProductSpec, SpecMetric
+from app.models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 from app.seed import seed
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -121,6 +124,36 @@ def test_analyze_rejects_customer_entity():
     assert r.status_code == 400, r.text
 
 
+def test_failed_parse_leaves_no_official_or_temp_files():
+    """解析失败必须清理临时文件，也不能产生可被后续提交的正式文档。"""
+    c = _client()
+    with patch(
+        "app.routes_datasheet.read_document",
+        side_effect=RuntimeError("模拟解析失败"),
+    ):
+        response = _analyze(c, entity_name="解析失败测试", model="PARSE-FAIL-1")
+        assert response.status_code == 422, response.text
+    leftovers = [
+        path for path in DATASHEET_DIR.iterdir()
+        if path.name.endswith(".tmp")
+    ]
+    assert not leftovers, f"解析失败留下了临时文件：{leftovers}"
+
+
+def test_oversized_datasheet_is_rejected_without_persisting():
+    """文本量超限时返回 413，不能把完整原文留在数据目录。"""
+    c = _client()
+    with patch("app.config.DATASHEET_MAX_CHARS", 20):
+        r = _analyze(
+            c,
+            entity_name="超限测试",
+            model="TOO-LARGE-1",
+            text="空气流量 0.7 L/min\n" * 20,
+        )
+    assert r.status_code == 413, r.text
+    assert not list(DATASHEET_DIR.glob("*.tmp"))
+
+
 # ── 建档 ───────────────────────────────────────────────────────────────────
 def test_new_company_and_new_model_are_created():
     """导入的核心用途：新友商 + 新型号一次建档并落参数。"""
@@ -159,9 +192,11 @@ def test_existing_model_is_updated_not_duplicated():
     first = _analyze(c, entity_name=name, model=model)
     d0 = first.json()
     assert d0["target"]["product_is_new"] is True
-    assert _commit(c, d0["doc_id"], {
+    first_commit = _commit(c, d0["doc_id"], {
         "entity_name": name, "category": "pump_air", "model": model,
-    }).json()["product_created"] is True
+    }).json()
+    assert first_commit["product_created"] is True
+    first_source_id = first_commit["source_id"]
 
     # 型号大小写不同，仍应视为同一款
     r = _analyze(c, entity_name=name, model="nx-2002")
@@ -174,6 +209,10 @@ def test_existing_model_is_updated_not_duplicated():
     res = r2.json()
     assert res["product_created"] is False
     assert res["updated"] == 2 and res["written"] == 0, res
+    assert res["source_id"] != first_source_id
+    with Session(engine) as s:
+        assert s.get(SpecSource, first_source_id) is None, "被新来源替换的孤立来源应回收"
+        assert s.get(SpecSource, res["source_id"]) is not None
 
     with Session(engine) as s:
         n = len(s.exec(select(Product).where(Product.model.ilike("nx-2002"))).all())  # type: ignore[attr-defined]
@@ -233,6 +272,24 @@ def test_commit_requires_rows():
         "entity_name": "建档测试甲", "category": "pump_air", "model": "NX-1001",
     }, rows=[])
     assert r2.status_code == 400
+
+
+def test_commit_rejects_non_finite_values():
+    c = _client()
+    d = _analyze(c, entity_name="非有限数值测试", model="FINITE-1").json()
+    payload = {
+        "doc_id": d["doc_id"],
+        "target": {
+            "entity_name": "非有限数值测试", "category": "pump_air", "model": "FINITE-1",
+        },
+        "rows": [{"metric_key": "flow_air", "value_num": "Infinity", "confidence": 0.9}],
+    }
+    r = c.post(
+        "/api/datasheet/commit",
+        content=json.dumps(payload),
+        headers={"X-CSRF-Token": _csrf(c), "Content-Type": "application/json"},
+    )
+    assert r.status_code == 422, r.text
 
 
 def test_commit_temperature_range_writes_both_ends():

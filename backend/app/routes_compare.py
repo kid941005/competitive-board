@@ -15,6 +15,7 @@ from .auth import P_EXPORT, P_VIEW, AuthSession, User
 from .compare import better_label
 from .config import category_label
 from .db import get_session
+from .export_safety import csv_text
 from .exporters import matrix_xlsx
 from .models import Product, ProductSpec, SpecMetric, SpecSource
 from .selection import _load, _matrix_payload, _parse_ids
@@ -293,13 +294,13 @@ def export_csv(
     w = csv.writer(buf)
     header = ["指标", "单位", "优劣方向"]
     header += [f"{data['ent_by_id'][pr.entity_id].name} {pr.model}" for pr in data["products"]]
-    w.writerow(header)
+    w.writerow([csv_text(value) for value in header])
     for row in data["rows"]:
         line = [row.metric.name, row.metric.unit, better_label(row.metric.better)]
         for pr in data["products"]:
             cell = row.cells[pr.id]
             line.append("" if cell.is_missing else cell.display)
-        w.writerow(line)
+        w.writerow([csv_text(value) for value in line])
 
     return StreamingResponse(
         io.BytesIO(buf.getvalue().encode("utf-8")),

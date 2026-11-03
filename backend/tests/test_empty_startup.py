@@ -36,9 +36,9 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.db import engine
+from app.db import engine, init_db
 from app.main import app
-from app.models import Entity, Product, SpecMetric
+from app.models import ApiIdempotency, Entity, Product, SpecMetric
 from app.seed import seed
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -46,9 +46,29 @@ from sqlmodel import Session, select
 _state: dict = {}
 
 
+def _reset_business_tables() -> None:
+    """本模块要验证真正的空库；pytest 全量运行时会与先前的有数据用例共用同一引擎。
+
+    清空业务表不是测试绕过业务规则，而是让「空库启动」这个前提在共享进程里
+    仍然成立。所有删除仍走 SQLAlchemy，SQLite 外键约束也会实际生效。
+    """
+    from app.models import Adoption, AuditLog, AuthSession, ProductSpec, SpecSource
+
+    init_db()
+    with Session(engine) as s:
+        for model in (
+            Adoption, AuditLog, AuthSession, ProductSpec, SpecSource,
+            Product, SpecMetric, Entity, ApiIdempotency,
+        ):
+            for row in s.exec(select(model)).all():  # type: ignore[arg-type]
+                s.delete(row)
+        s.commit()
+
+
 def _client() -> TestClient:
     """启动应用（lifespan 建表 + 建管理员），但不写任何示例数据。"""
     if "c" not in _state:
+        _reset_business_tables()
         c = TestClient(app)
         c.__enter__()
         _state["c"] = c

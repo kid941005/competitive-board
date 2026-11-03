@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import re
 
+from .numeric import parse_number
+
 # 上限指标 → 下限指标。目前只有温度，未来若有别的「区间指标」也往这里加。
 RANGE_PAIRS: dict[str, str] = {"op_temp_max": "op_temp_min"}
 
@@ -31,7 +33,9 @@ def parse_range(text: str | None) -> tuple[float, float] | None:
     m = _RANGE.search(text or "")
     if m is None:
         return None
-    a, b = float(m.group(1)), float(m.group(2))
+    a, b = parse_number(m.group(1)), parse_number(m.group(2))
+    if a is None or b is None:
+        return None
     return (min(a, b), max(a, b))
 
 

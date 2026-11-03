@@ -32,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:1.0.6
+  ghcr.io/kid941005/competitive-board:1.0.7
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -92,7 +92,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 能力 | 权限位 | 管理员 | 普通用户 |
 |---|---|---|---|
 | 查看对比矩阵、参数溯源 | `data:view` | ✓ | ✓ |
-| 导出 CSV / JSON | `data:export` | ✓ | ✓ |
+| 导出 CSV / Excel、读取 JSON | `data:export` / `data:view` | ✓ | ✓ |
 | 导入规格书、CSV 导入、写入参数 | `data:write` | ✓ | ✗ |
 | 账号管理：新建、改账号名/显示名、改角色、停用、重置密码 | `admin:users` | ✓ | ✗ |
 | 系统参数配置 | `admin:settings` | ✓ | ✗ |
@@ -588,30 +588,30 @@ v2 给两处加了唯一索引，并且**先合并存量重复再建索引**（�
 
 ## 用真实数据替换示例
 
-### 方式一：CSV 导入（推荐，Excel 另存为 CSV 即可）
+### 方式一：宽表导入（推荐，Excel 另存为 CSV 即可）
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/import -F "file=@specs.csv"
 ```
 
-格式（表头必须存在，顺序不限）：
+格式为一行一个型号，表头必须含「企业名称」与「产品型号」，顺序不限；其余指标列与完整模板保持一致：
 
 ```csv
-型号,友商,指标,数值,单位,条件,来源链接,置信度
-MZB6001T01,村田制作所,空气流量,1.2,L/min,@15Vpp,https://www.murata.com/...,0.95
-MZB6001T01,村田制作所,静压,2.5,kPa,@15Vpp,https://www.murata.com/...,0.95
-mp6-liq,巴特尔斯微技术,液体流量,8,mL/min,水·250Vpp/100Hz,https://...,0.95
+企业名称,产品型号,产品类别,流量L/min,静压Pa,来源链接,置信度
+村田制作所,MZB6001T01,压电气泵,0.5,1.2,https://www.murata.com/...,0.95
+巴特尔斯微技术,mp6-liq,压电液泵,0.008,8,https://...,0.95
 ```
 
-指标列可直接写 `key`（如 `flow_air`）或中文名（如 `空气流量`）。
+指标列名必须使用宽表模板中的固定表头（如「流量L/min」「静压Pa」）；旧的「型号/友商/指标/数值」长表会被明确拒绝。
 
 模板下载：`GET /api/import/template`
 
-三条约定：
+四条约定：
 
-1. **指标按 key 或中文名匹配字典；匹配不到直接报错跳过，绝不自动新建**。指标字典必须先想清楚，否则会退化成每个友商一套字段，半年后无法横向对比。
-2. 产品按型号匹配，不存在则连同友商一起创建。
-3. 数值留空 = 该型号未公开此项，跳过写入，不覆盖已有值。
+1. **指标按宽表列头映射字典；列头单位会自动换算到系统口径**，认不出的大类或单位直接报错，不自动新建指标。
+2. 产品按「公司 + 型号」匹配，不存在则连同公司一起创建；同一型号可存在于不同公司名下。
+3. 留空或「待补充」= 未公开，跳过写入，不覆盖已有值。
+4. 单次最多导入 `CIB_IMPORT_MAX_ROWS` 行（默认 2000），超过时整批拒绝而不是静默截断。
 
 ### 方式二：改 `app/seed.py`
 
@@ -667,9 +667,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与 330 项测试，通过才推**。标签有 `1.0.6`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.0.7`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.6` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
+版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.7` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -712,19 +712,19 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:1.0.6
+  ghcr.io/kid941005/competitive-board:1.0.7
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=1.0.6 -t competitive-board:1.0.6 ./backend
+docker build --build-arg APP_VERSION=1.0.7 -t competitive-board:1.0.7 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:1.0.6
+  competitive-board:1.0.7
 ```
 
 ### 配置项在哪改
@@ -735,7 +735,7 @@ docker run -d --name competitive-board \
 
 | 位置 | 当前值 | 作用 |
 |---|---|---|
-| `image:` 的标签 | `1.0.6` | 镜像版本。升级就改这里，再 `docker compose pull` |
+| `image:` 的标签 | `1.0.7` | 镜像版本。升级就改这里，再 `docker compose pull` |
 | `user:` | `10001:10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）改这里，就不必 `chown` 目录；改 `"0:0"` 则以 root 运行 |
 | `ports:` | `127.0.0.1:8000:8000` | 宿主端口。只绑回环，对外访问需反向代理 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
@@ -746,6 +746,13 @@ docker run -d --name competitive-board \
 | `CIB_COOKIE_SECURE` | `0` | HTTPS 部署必须改 `1`，否则 Cookie 会明文传输 |
 | `CIB_MAX_COMPARE` | `8` | 单页最多对比型号数的初始默认 |
 | `CIB_DATASHEET_DAYS` | `30` | 未入库规格书的保留天数（运行期可在系统设置里改） |
+| `CIB_IMPORT_MAX_ROWS` | `2000` | 单次表格/JSON/规格书复核提交的最大行数，超出整批拒绝 |
+| `CIB_DATASHEET_MAX_PAGES` | `300` | PDF 解析最多页数，超出返回 413 |
+| `CIB_DATASHEET_MAX_CHARS` | `2000000` | PDF/纯文本累计提取字符上限，超出返回 413 |
+| `CIB_SHEET_MAX_CELLS` | `1000000` | Excel 单次解析最多单元格数，超出返回 400 |
+| `CIB_SHEET_MAX_UNCOMPRESSED_BYTES` | `104857600` | XLSX 解压后总大小上限（字节），超出返回 400 |
+| `CIB_IDEMPOTENCY_DAYS` | `30` | API 幂等记录保留天数，启动时清理过期记录 |
+| `CIB_FORWARDED_ALLOW_IPS` | 空 | 仅部署在可信反向代理后时设置代理地址；为空不信任 X-Forwarded-For |
 | `DATABASE_URL` | 未设 | 不设即 SQLite。启用 PG 时由 `docker-compose.pg.yml` 叠加注入 |
 | `POSTGRES_PASSWORD` | `ciboard-change-me` | 仅 PG，在 `docker-compose.pg.yml` 里改；该文件有三处要一起改 |
 
@@ -807,7 +814,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 真实构建并发布（run 记录见 [Actions](https://github.com/kid941005/competitive-board/actions)，当前 `1.0.6` 那次测试与构建均通过），`docker compose up -d` 拉到的是同一个产物。
+> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布配置为 `1.0.7`。
 
 ---
 
@@ -817,20 +824,20 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 cd backend
 pip install -r requirements-dev.txt   # 额外装 httpx，生产镜像不需要
 python tests/test_compare.py          # 20 项：对比逻辑与 CSV 导入
-python tests/test_datasheet.py        # 21 项：规格书识别（含单位跨界与别名边界）
-python tests/test_datasheet_import.py #  9 项：规格书导入建档（新公司/新型号/三类拦截）
-python tests/test_import_export.py    # 20 项：宽表导入、液泵列映射、公司名括注归并、官方链接回填、温度范围往返、口径标注不被覆盖、报错封顶、全量备份导出（含往返）
+python tests/test_datasheet.py        # 23 项：规格书识别（含单位跨界、别名边界、PDF 页数与文本解析上限）
+python tests/test_datasheet_import.py # 13 项：规格书导入建档（新公司/新型号/三类拦截、解析失败/资源上限）
+python tests/test_import_export.py    # 22 项：宽表导入、液泵列映射、公司名括注归并、官方链接回填、温度范围往返、口径标注不被覆盖、报错封顶、损坏/超限文件拒绝、全量备份导出（含往返）
 python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
-python tests/test_api_v1.py           # 26 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址、备注可读
+python tests/test_api_v1.py           # 34 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址、删除清理、公司括注归一
 python tests/test_units.py            # 26 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义 / 温度上下限与「待补充（说明）」）
-python tests/test_adoptions.py        # 15 项：客户采用关系（页面 + API、重复拒收、同名复用、自采拦截、ETag、括号内分隔符、审计）
+python tests/test_adoptions.py        # 16 项：客户采用关系（页面 + API、重复拒收、同名复用、自采拦截、ETag、括号内分隔符、审计）
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
 python tests/test_labels.py           #  6 项：自家公司用公司名，不出现「本方 / 我方」
-python tests/test_fixes.py            # 10 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS）
-python tests/test_auth.py             # 25 项：权限体系（含接口层拦截与 CSRF）
+python tests/test_fixes.py            # 11 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS / 批量上限）
+python tests/test_auth.py             # 26 项：权限体系（含接口层拦截与 CSRF）
 python tests/test_channel_parity.py   # 13 项：四条写入通道的规则一致性（applies_to / 置信度 / 出处 / 日志时间）
 python tests/test_schema.py           #  9 项：表结构迁移（新库 / 老库升级去重 / v3 指标合并 / v5 温度拆两格 / v6 单位统一 / 版本过新拒启）
-python tests/test_retention.py        #  4 项：规格书原文保留（被引用的不删、过期的删、未到期留着）
+python tests/test_retention.py        #  8 项：规格书原文保留（被引用的不删、过期的删、未到期留着、孤立来源、中断临时文件回收）
 python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
 python tests/test_datadir.py          #  6 项：数据目录自检（不可写 / 建不出 / 磁盘满各有各的话）
 python tests/test_empty_startup.py    #  7 项：空库启动、空状态文案、应用模板、幂等、权限
@@ -844,7 +851,7 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 # 或 pytest tests/
 ```
 
-共 **266 项**（后端 247 + 前端 19）。覆盖内容：
+当前自动化测试共 **354 项**（后端 335 + 前端 19）；此数字以本仓库当前的 `pytest` 收集与 Node 测试为准。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限（确认写入时温度会补出下限）、修饰语降权、别名不重复计数、多页页码
@@ -858,12 +865,13 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 - **通道一致性**（`test_channel_parity.py`）：只改一格不该动别的参数的出处与置信度、导入与规格书提交必须和批量接口一样校验 `applies_to`、置信度在三条通道都钳 0~1、重复建同名公司不记假日志、日志按本地时区显示、勾选复核要留痕、导入不再每行一次查询、重复导入是 no-op、报错行号等于文件真实行号、出处链接只收 http(s)
 - **表结构与迁移**：全新库补齐索引与版本号、0.7.x 老库带着重复数据升级（合并型号 / 去重参数 / 留审计）、库比代码新时拒绝启动、唯一索引在并发下回 409、同一批内重复项不炸
 - **规格书保留**：被参数引用的永不删、过期且无引用的连原文一起删、未到期保留、`keep_days=0` 关闭清理
+- **删除与保留期**：删除型号后只回收已无任何参数/采用记录引用的来源；幂等记录按保留期清理
 - **登录限速**：第 5 次失败后开始退避、第 6 次返回 429 + `Retry-After`、退避期内正确密码也不放行、成功登录清零、不影响其他账号
 - **页面渲染契约**：用 `StrictUndefined` 渲染全部页面（漏传变量直接 500，而不是静默渲染成空）、空库页、404 页、登录失败分支、403 页的可选变量、CSRF 失效页的「重新登录」入口、清理日志后的「已清理 N 条」提示真的显示
 - **公司元信息**：`POST /entities` 的 kind/name_en/region/tier 真的生效（曾经被静默丢弃）、`PATCH /entities` 改类型与档位、重名被拒、名下有型号不能改成客户、`dry_run` 不落库、没变化不写日志、审计 label 留旧名
 - **MCP 适配层**：协议版本协商与回退、通知不产生响应、未知方法 -32601、`/tools` 映射成 `inputSchema` 且路径占位符自动补成 required、GET 参数进 query 而写操作 `dry_run` 进 query 其余进 body、`?confirm=true` 这类内联 query 不被吃掉、成功时剥掉 `request_id`、失败置 `isError`、令牌错与连不上各有各的话、**stdout 只有协议消息**（混一行日志就等于客户端 parse 失败）、一行坏 JSON 不会让进程退出
 - **账号改名**：只改显示名不动账号名、改名后旧名立即无法登录而新名可登、重名与非法字符被拒且不落库、没变化不写日志、普通用户 403、管理员改自己名字不掉线且审计的 actor 记旧名
-- **空库启动**：只有表与管理员的空库、空状态分「无字典」与「有字典无产品」两种话术、应用模板只写 20 个指标不建公司、重复应用不重复写、普通用户不能应用模板、幂等判断跟着模式走
+- **空库启动**：只有表与管理员的空库、空状态分「无字典」与「有字典无产品」两种话术、应用模板只写 18 个指标不建公司、重复应用不重复写、普通用户不能应用模板、幂等判断跟着模式走
 - **数据目录自检**：可写时通过且不留探针文件、不可写时报出 uid/属主/权限位与修复命令、目录建不出与不可写不混成一句、路径是文件时说「不是目录」、磁盘满时报出剩余字节、`init_db` 顺手建出 `datasheets` 子目录
 - **检索**：`q` 命中公司中文名/英文名/型号/产品名、多词按 AND、`%` 与 `_` 按字面量、`matched` 字段、与 `category`/`kind` 叠加、空关键词不过滤
 - **前端过滤**（`test_filter.js`，无 DOM）：大小写、多词 AND、空串、`%` 不具通配含义
@@ -938,3 +946,7 @@ docker-compose.pg.yml     叠加：换成 PostgreSQL
 docs/                     AI-API-设计.md（接口划分、I/O、扩展点）
 deploy/                   Docker 编排（infra + app 双 profile）
 ```
+
+项目审查结果、修复记录和后续架构建议见 [项目审查报告](docs/project-review.md)。
+API 请求模型在 `backend/app/api_schemas.py`；Excel/CSV 文本导出防护在
+`backend/app/export_safety.py`，由矩阵导出和全量备份共用。

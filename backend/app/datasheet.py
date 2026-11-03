@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import units
+from . import config, units
 from .models import SpecMetric
 
 # 标签后向后搜索的范围（字符）。太小会漏掉「标签在表头、数值在下一行」的版式，
@@ -122,6 +122,10 @@ def normalize_text(text: str) -> str:
     return s
 
 
+class DocumentLimitError(ValueError):
+    """文档页数或文本量超过解析上限；由路由翻译成 413。"""
+
+
 def read_pdf(path: str | Path) -> list[tuple[int, str]]:
     """返回 [(页码, 文本)]。页码从 1 开始。"""
     try:
@@ -131,13 +135,29 @@ def read_pdf(path: str | Path) -> list[tuple[int, str]]:
 
     pages: list[tuple[int, str]] = []
     with pymupdf.open(str(path)) as doc:
+        if doc.page_count > config.DATASHEET_MAX_PAGES:
+            raise DocumentLimitError(
+                f"PDF 有 {doc.page_count} 页，超过单次解析上限 "
+                f"{config.DATASHEET_MAX_PAGES} 页"
+            )
+        chars = 0
         for i, page in enumerate(doc, start=1):
-            pages.append((i, page.get_text("text") or ""))
+            text = page.get_text("text") or ""
+            chars += len(text)
+            pages.append((i, text))
+            if chars > config.DATASHEET_MAX_CHARS:
+                raise DocumentLimitError(
+                    f"PDF 文本超过单次解析上限 {config.DATASHEET_MAX_CHARS} 字符"
+                )
     return pages
 
 
 def read_plain(path: str | Path) -> list[tuple[int, str]]:
     raw = Path(path).read_bytes()
+    if len(raw) > config.DATASHEET_MAX_CHARS:
+        raise DocumentLimitError(
+            f"文本超过单次解析上限 {config.DATASHEET_MAX_CHARS} 字符"
+        )
     for enc in ("utf-8-sig", "utf-8", "gbk"):
         try:
             return [(1, raw.decode(enc))]
@@ -147,7 +167,7 @@ def read_plain(path: str | Path) -> list[tuple[int, str]]:
 
 
 def read_document(path: str | Path) -> list[tuple[int, str]]:
-    if str(path).lower().endswith(".pdf"):
+    if str(path).lower().removesuffix(".tmp").endswith(".pdf"):
         return read_pdf(path)
     return read_plain(path)
 

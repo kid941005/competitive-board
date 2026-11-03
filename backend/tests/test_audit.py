@@ -28,6 +28,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _http import enable_csrf
 from _wide import wide_csv
 from app import audit
 from app.db import engine, init_db
@@ -50,6 +51,7 @@ def _admin() -> TestClient:
     r = c.post("/login", data={"username": "admin", "password": "AdminPass123"},
                follow_redirects=False)
     assert r.status_code == 303
+    enable_csrf(c)
     _state["admin"] = c
     return c
 

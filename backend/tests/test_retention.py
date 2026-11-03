@@ -104,6 +104,67 @@ def test_keep_days_zero_disables_cleanup():
     assert meta.exists() and stats["removed"] == 0
 
 
+def test_expired_original_without_metadata_is_removed():
+    init_db()
+    DATASHEET_DIR.mkdir(parents=True, exist_ok=True)
+    orphan = DATASHEET_DIR / "eeeeeeeeeeee.pdf"
+    orphan.write_bytes(b"x" * 1024)
+    stamp = (datetime.now(timezone.utc) - timedelta(days=90)).timestamp()
+    os.utime(orphan, (stamp, stamp))
+    with Session(engine) as s:
+        stats = datasheet_store.purge_orphans(s, keep_days=30)
+    assert not orphan.exists(), "没有元数据的过期原文也必须清理"
+    assert stats["removed"] >= 1
+
+
+def test_source_row_without_live_references_does_not_pin_document():
+    """来源行本身不是「仍在使用」：没有参数/采用记录引用时应允许过期清理。"""
+    init_db()
+    doc_id = "abababababab"
+    meta = _drop(doc_id, age_days=90)
+    with Session(engine) as s:
+        orphan_source = SpecSource(
+            kind="datasheet", url=f"/datasheet/{doc_id}/file", title="孤立来源"
+        )
+        s.add(orphan_source)
+        s.commit()
+    with Session(engine) as s:
+        stats = datasheet_store.purge_orphans(s, keep_days=30)
+    assert not meta.exists(), "没有业务记录引用时，来源行不能让原文永久保留"
+    assert stats["removed"] >= 1
+
+
+def test_corrupt_metadata_does_not_block_cleanup():
+    init_db()
+    DATASHEET_DIR.mkdir(parents=True, exist_ok=True)
+    meta = DATASHEET_DIR / "ffffffffffff.json"
+    original = DATASHEET_DIR / "ffffffffffff.txt"
+    meta.write_text("{not-json", encoding="utf-8")
+    original.write_bytes(b"x" * 512)
+    stamp = (datetime.now(timezone.utc) - timedelta(days=90)).timestamp()
+    os.utime(meta, (stamp, stamp))
+    os.utime(original, (stamp, stamp))
+    with Session(engine) as s:
+        stats = datasheet_store.purge_orphans(s, keep_days=30)
+    assert not meta.exists() and not original.exists()
+    assert stats["removed"] >= 1
+
+
+def test_interrupted_write_temp_files_are_removed():
+    """进程若在临时写入阶段退出，下一轮启动必须回收 .tmp，不能永久占用数据卷。"""
+    init_db()
+    DATASHEET_DIR.mkdir(parents=True, exist_ok=True)
+    original_tmp = DATASHEET_DIR / "111111111111.pdf.tmp"
+    meta_tmp = DATASHEET_DIR / "111111111111.json.tmp"
+    original_tmp.write_bytes(b"x" * 700)
+    meta_tmp.write_text("{}", encoding="utf-8")
+
+    with Session(engine) as s:
+        stats = datasheet_store.purge_orphans(s, keep_days=0)
+    assert not original_tmp.exists() and not meta_tmp.exists()
+    assert stats["removed"] >= 2 and stats["bytes"] >= 700
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

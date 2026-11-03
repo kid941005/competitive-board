@@ -23,6 +23,7 @@ os.environ.pop("DATABASE_URL", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from _http import enable_csrf
 from app import config
 from app.db import engine, init_db
 from app.main import app
@@ -44,6 +45,7 @@ def _boot() -> TestClient:
     r = client.post("/login", data={"username": "admin", "password": ADMIN_PW},
                     follow_redirects=False)
     assert r.status_code in (302, 303), r.status_code
+    enable_csrf(client)
     _state["c"] = client
     return client
 
@@ -74,7 +76,9 @@ def test_import_creates_self_company_by_name():
     左蓝微被建成竞争对手，对比页把它归到友商那一栏。
     """
     c = _boot()
-    seed(metrics_only=True)      # 只建指标字典，不建任何公司
+    # 全量 pytest 共享引擎；强制重建演示数据后只保留指标字典，
+    # 让「导入自建公司」断言有确定的空公司前提。
+    seed(force=True, metrics_only=True)
 
     r = c.post("/api/v1/import", json={"rows": [
         # 宽表：一行一个型号，指标是列

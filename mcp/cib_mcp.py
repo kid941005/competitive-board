@@ -32,6 +32,7 @@ function-calling 形态（name / description / parameters）。所以这一层�
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -40,7 +41,7 @@ import urllib.parse
 import urllib.request
 
 SERVER_NAME = "competitive-board"
-SERVER_VERSION = "1.0.6"
+SERVER_VERSION = "1.0.7"
 
 # 支持的协议版本，新的在前。客户端请求哪个就回哪个，都不认时回最新的。
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -49,7 +50,7 @@ INSTRUCTIONS = (
     "这是压电竞品参数看板的接口（公司 / 型号 / 参数矩阵 / 规格书导入）。\n"
     "动手前先调 get_context 拿骨架（有哪些公司、型号、指标 key）；\n"
     "写参数前先用 dry_run=true 预演，确认后再落库；重试写操作时带同一个 "
-    "Idempotency-Key，不会写两遍。\n"
+    "idempotency_key，不会写两遍；修改型号时可传 if_match 检查资源版本。\n"
     "所有响应都是 {ok,data,meta}，失败看 error.code 而不要解析 message；\n"
     "metric_key 用稳定的 key（如 flow_air），不要用中文指标名。"
 )
@@ -110,6 +111,7 @@ class Api:
         *,
         params: dict | None = None,
         body: dict | None = None,
+        headers: dict | None = None,
     ) -> tuple[int, dict]:
         url = self.base_url + path
         if params:
@@ -119,17 +121,18 @@ class Api:
             if query:
                 url += ("&" if "?" in url else "?") + query
 
-        headers = {
+        request_headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json",
             "User-Agent": f"{SERVER_NAME}-mcp/{SERVER_VERSION}",
         }
+        request_headers.update(headers or {})
         data = None
         if body is not None:
             data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            request_headers["Content-Type"] = "application/json"
 
-        request = urllib.request.Request(url, data=data, method=method.upper(), headers=headers)
+        request = urllib.request.Request(url, data=data, method=method.upper(), headers=request_headers)
         try:
             with self._opener.open(request, timeout=self.timeout) as response:
                 return response.status, _parse_json(response.read()) or {}
@@ -209,6 +212,12 @@ def to_mcp_tool(spec: dict) -> dict:
     schema = json.loads(json.dumps(schema)) if schema else {"type": "object", "properties": {}}
     schema.setdefault("type", "object")
     props = schema.setdefault("properties", {})
+    if spec.get("method") == "POST" and spec.get("path") in (
+        "/api/v1/entities", "/api/v1/products", "/api/v1/specs/batch", "/api/v1/import"
+    ):
+        props["idempotency_key"] = {"type": "string", "description": "重试时保持相同，映射至 Idempotency-Key 请求头"}
+    if spec.get("method") == "PATCH" and spec.get("path") == "/api/v1/products/{product_id}":
+        props["if_match"] = {"type": "string", "description": "上次读取的 meta.etag，映射至 If-Match 请求头"}
 
     required = list(schema.get("required") or [])
     for name in path_params(spec.get("path", "")):
@@ -309,12 +318,22 @@ class McpServer:
 
     def handle(self, message: dict) -> dict | None:
         """处理一条消息。返回 None 表示这是通知、不该有响应。"""
+        if not isinstance(message, dict):
+            return _error(None, -32600, "消息必须是 JSON 对象")
         method = message.get("method")
         request_id = message.get("id")
         is_notification = "id" not in message
+        if (message.get("jsonrpc") != "2.0" or not isinstance(method, str)
+                or not method or isinstance(request_id, bool)
+                or not isinstance(request_id, (str, int, type(None)))):
+            return _error(None, -32600, "无效 JSON-RPC 请求")
+        params = message.get("params", {})
+        if not isinstance(params, dict):
+            return None if is_notification else _error(request_id, -32602, "params 必须是对象")
+        if is_notification:
+            return None
 
         if method == "initialize":
-            params = message.get("params") or {}
             requested = params.get("protocolVersion")
             version = requested if requested in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0]
             return _result(request_id, {
@@ -341,7 +360,7 @@ class McpServer:
                 return _error(request_id, -32603, str(exc))
 
         if method == "tools/call":
-            return self._call_tool(request_id, message.get("params") or {})
+            return self._call_tool(request_id, params)
 
         if method in ("resources/list", "prompts/list"):
             # 明确告知「没有这个能力」，比报错更友好；客户端一般不会走到这里
@@ -355,7 +374,19 @@ class McpServer:
 
     def _call_tool(self, request_id: object, params: dict) -> dict:
         name = params.get("name")
-        arguments = params.get("arguments") or {}
+        arguments = params.get("arguments", {})
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            return _error(request_id, -32602, "name 必须是字符串，arguments 必须是对象")
+        arguments = dict(arguments)
+        headers = {}
+        for key, header in (("idempotency_key", "Idempotency-Key"), ("if_match", "If-Match")):
+            value = arguments.pop(key, None)
+            if value is not None:
+                if not isinstance(value, str) or not value or not value.isascii() or any(
+                    ord(c) < 32 or ord(c) == 127 for c in value
+                ):
+                    return _error(request_id, -32602, f"{key} 必须是非空 ASCII 文本且不含控制字符")
+                headers[header] = value
 
         try:
             self._load_tools()
@@ -380,7 +411,8 @@ class McpServer:
             })
 
         try:
-            status, payload = self.api.call(method, path, params=query, body=body)
+            extra = {"headers": headers} if headers else {}
+            status, payload = self.api.call(method, path, params=query, body=body, **extra)
         except ApiUnreachable as exc:
             return _result(request_id, {
                 "content": [{"type": "text", "text": str(exc)}], "isError": True,
@@ -411,6 +443,8 @@ def build_api_from_env() -> Api:
     try:
         timeout = float(_env("CIB_TIMEOUT", "30") or 30)
     except ValueError:
+        timeout = 30.0
+    if not math.isfinite(timeout) or timeout <= 0:
         timeout = 30.0
     return Api(
         base_url,

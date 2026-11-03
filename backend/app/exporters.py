@@ -11,7 +11,6 @@ CSV 里这些只能退化成文字，回到 Excel 又得手工上色。所以导
 
 from __future__ import annotations
 
-import io
 from datetime import datetime
 
 from openpyxl import Workbook
@@ -19,6 +18,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .compare import better_label
+from .export_safety import append_row, xlsx_bytes
 
 BEST_FILL = PatternFill("solid", fgColor="E7F6EC")
 HEAD_FILL = PatternFill("solid", fgColor="EEF2FF")
@@ -35,7 +35,7 @@ def _width(text: str) -> int:
 
 
 def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
-    """data 为 main._matrix_payload 的返回值。返回 xlsx 字节。"""
+    """data 为 selection._matrix_payload 的返回值。返回 xlsx 字节。"""
     wb = Workbook()
     products = data["products"]
     ent_by_id = data["ent_by_id"]
@@ -50,7 +50,7 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
     for pr in products:
         ent = ent_by_id.get(pr.entity_id)
         header.append(f"{ent.name if ent else ''}\n{pr.model}")
-    ws.append(header)
+    append_row(ws, header)
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.fill = HEAD_FILL
@@ -66,7 +66,7 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
                 line.append("—")
             else:
                 line.append(cell.display)
-        ws.append(line)
+        append_row(ws, line)
 
         r = ws.max_row
         for c in range(1, 5):
@@ -85,7 +85,7 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
                 xcell.font = UNVERIFIED_FONT
 
     # 完整度
-    ws.append(["完整度", "已公开项占比", "%", ""] + [f"{comp.get(pr.id, 0) * 100:.0f}%" for pr in products])
+    append_row(ws, ["完整度", "已公开项占比", "%", ""] + [f"{comp.get(pr.id, 0) * 100:.0f}%" for pr in products])
     r = ws.max_row
     for c in range(1, 5 + len(products)):
         ws.cell(r, c).font = Font(bold=True)
@@ -109,7 +109,7 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
 
     # ── 型号清单 ──────────────────────────────────────────────────
     ws2 = wb.create_sheet("型号清单")
-    ws2.append(["公司", "型号", "产品大类", "类别", "完整度", "已公开项"])
+    append_row(ws2, ["公司", "型号", "产品大类", "类别", "完整度", "已公开项"])
     for cell in ws2[1]:
         cell.font = Font(bold=True)
         cell.fill = HEAD_FILL
@@ -122,7 +122,7 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
             1 for row in rows
             if row.cells.get(pr.id) is not None and not row.cells[pr.id].is_missing
         )
-        ws2.append([
+        append_row(ws2, [
             ent.name if ent else "",
             pr.model,
             cat_label.get(pr.category or "", pr.category or ""),
@@ -150,7 +150,7 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
         ("完整度", "该型号已公开项 / 当前视图的指标总项。"),
     ]
     for row in lines:
-        ws3.append(row)
+        append_row(ws3, row)
     ws3["A1"].font = Font(bold=True, size=13)
     for cell in ws3["A"]:
         if cell.row > 1:
@@ -160,6 +160,4 @@ def matrix_xlsx(data: dict, *, generated_at: datetime | None = None) -> bytes:
     for row in ws3.iter_rows(min_row=2):
         row[1].alignment = Alignment(wrap_text=True, vertical="top")
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+    return xlsx_bytes(wb)

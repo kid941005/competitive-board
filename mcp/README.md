@@ -82,7 +82,7 @@ printf '%s\n' \
 
 ## 工具清单
 
-从 `/api/v1/tools` 动态拉，当前 14 个：
+从 `/api/v1/tools` 动态拉，当前 18 个：
 
 | 用途 | 工具 |
 |---|---|
@@ -90,11 +90,17 @@ printf '%s\n' \
 | 检索 | `search_products`、`search_companies`、`search_metrics` |
 | 改公司 | `update_entity`（名称 / 类型 self·competitor·customer / 英文名 / 地区 / 档位） |
 | 读详情 | `get_product`、`compare_products`、`get_changes` |
+| 客户采用 | `list_adoptions`、`create_adoption`、`update_adoption`、`delete_adoption` |
 | 写产品 | `create_product`、`update_product`、`delete_product` |
 | 写参数 | `write_specs`、`bulk_import` |
 | 审计 | `get_change_log`（需 `admin` scope） |
 
 每个工具的描述里标了后端要求的 scope。写操作记得先用 `dry_run: true` 预演。
+
+`create_product`、`write_specs`、`bulk_import` 支持 `idempotency_key` 参数，映射为 HTTP
+`Idempotency-Key` 请求头；只有相同写入的重试复用同一个键。`update_product` 支持
+`if_match`，传入 `get_product` 返回的 `meta.etag`，版本变化时返回 `CONFLICT_VERSION`。
+`get_changes` 分页时保留初始 `since`，把 `meta.next_cursor` 原样传入 `cursor`，避免同时间更新重复分页。
 
 ## 故障排查
 
@@ -111,5 +117,4 @@ printf '%s\n' \
 
 - **只做 stdio**。没有 HTTP 传输 —— 要给多人共用就每人配一份，令牌各自签发、各自吊销。
 - **不代理文件上传**。规格书 PDF 上传仍是页面上做的事，MCP 侧只有按行导入（`bulk_import`）。
-- **不透传 `If-Match`**。并发保护的乐观锁只在直接调 HTTP 时用；AI 场景下「先 GET 再 PATCH」
-  已经够，因为它是串行对话。
+- **增量流只包含参数新增和更新**。产品元信息与删除需要定期全量核对。

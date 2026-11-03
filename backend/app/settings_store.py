@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-import os
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +49,8 @@ class SettingSpec:
                 value = float(text)
             except ValueError:
                 return None, "必须是数字"
+            if not math.isfinite(value):
+                return None, "必须是有限数字"
             if self.minimum is not None and value < self.minimum:
                 return None, f"不能小于 {self.minimum}"
             if self.maximum is not None and value > self.maximum:
@@ -90,7 +92,7 @@ SPECS: tuple[SettingSpec, ...] = (
         label="规格书最大上传体积 (MB)",
         group="规格书",
         kind="int",
-        default=int(os.getenv("CIB_MAX_UPLOAD_MB", "25")),
+        default=config.env_int("CIB_MAX_UPLOAD_MB", 25, minimum=1, maximum=200),
         minimum=1,
         maximum=200,
         help="超限会被接口直接拒绝，不会进入解析流程。",
@@ -110,7 +112,7 @@ SPECS: tuple[SettingSpec, ...] = (
         label="未入库规格书的保留天数",
         group="规格书",
         kind="int",
-        default=int(os.getenv("CIB_DATASHEET_DAYS", "30")),
+        default=config.env_int("CIB_DATASHEET_DAYS", 30, minimum=1, maximum=3650),
         minimum=1,
         maximum=3650,
         help="上传后没有提交入库的原文，超过该天数在启动时清理；已被参数引用的永久保留。",
@@ -120,7 +122,7 @@ SPECS: tuple[SettingSpec, ...] = (
         label="变更日志保留天数",
         group="安全",
         kind="int",
-        default=int(os.getenv("CIB_AUDIT_DAYS", "180")),
+        default=config.env_int("CIB_AUDIT_DAYS", 180, minimum=7, maximum=3650),
         minimum=7,
         maximum=3650,
         help="启动时清理超期日志；0 不设为禁用，最小值 7 天以免误清。",
@@ -130,7 +132,7 @@ SPECS: tuple[SettingSpec, ...] = (
         label="登录会话有效期 (小时)",
         group="安全",
         kind="int",
-        default=int(os.getenv("CIB_SESSION_HOURS", "12")),
+        default=config.env_int("CIB_SESSION_HOURS", 12, minimum=1, maximum=720),
         minimum=1,
         maximum=720,
         help="只影响新建立的会话；已登录用户的过期时间不回溯调整。",
@@ -180,7 +182,6 @@ def update(session: Session, key: str, raw: Any, actor: str) -> tuple[bool, str 
         row.updated_at = utcnow()
         row.updated_by = actor
         session.add(row)
-    session.commit()
     return True, None
 
 
@@ -213,7 +214,6 @@ def update_many(
             row.updated_at = utcnow()
             row.updated_by = actor
             session.add(row)
-    session.commit()
     return len(pending), []
 
 

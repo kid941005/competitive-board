@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -27,10 +26,10 @@ from sqlalchemy import text
 from sqlmodel import Session, select
 
 from . import audit, range_pair
-from .models import Product, ProductSpec, SpecMetric
+from .models import Adoption, Product, ProductSpec, SpecMetric
 
 # 当前代码期望的表结构版本。加一版就在这里改一个数字，并在 MIGRATIONS 末尾追加一步。
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 _VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -76,7 +75,7 @@ def _dedupe_products(session: Session) -> list[str]:
     rows = session.exec(select(Product)).all()
     groups: dict[tuple[int, str], list[Product]] = {}
     for p in rows:
-        key = (p.entity_id, re.sub(r"\s+", "", (p.model or "")).lower())
+        key = (p.entity_id, (p.model or "").strip().lower())
         groups.setdefault(key, []).append(p)
 
     notes: list[str] = []
@@ -94,6 +93,18 @@ def _dedupe_products(session: Session) -> list[str]:
         held = {s.metric_id for s in specs[winner.id]}
         for loser in losers:
             moved = dropped = 0
+            adoption_count = 0
+            held_customers = {a.customer_id for a in session.exec(
+                select(Adoption).where(Adoption.product_id == winner.id)
+            ).all()}
+            for adoption in session.exec(select(Adoption).where(Adoption.product_id == loser.id)).all():
+                if adoption.customer_id in held_customers:
+                    session.delete(adoption)
+                else:
+                    adoption.product_id = winner.id
+                    session.add(adoption)
+                    held_customers.add(adoption.customer_id)
+                    adoption_count += 1
             for s in specs[loser.id]:
                 if s.metric_id in held:
                     session.delete(s)  # 赢家已有该指标，冲突格以赢家为准
@@ -108,7 +119,7 @@ def _dedupe_products(session: Session) -> list[str]:
             session.flush()
             notes.append(
                 f"合并重复型号 {loser.model}（id={loser.id} → id={winner.id}，"
-                f"迁入 {moved}、丢弃 {dropped}）"
+                f"迁入 {moved}、丢弃 {dropped}，迁移采用关系 {adoption_count}）"
             )
         # 型号名有大小写/空白差异时，统一成赢家的写法
         audit.record(
@@ -237,6 +248,23 @@ def _v3_merge_gas_metrics(session: Session) -> None:
 def _v3_adoption_index(session: Session) -> None:
     """客户采用关系的唯一索引（表本身由 create_all 建）。"""
     _v3_merge_gas_metrics(session)
+    seen = set()
+    removed = 0
+    for row in session.exec(select(Adoption).order_by(
+        Adoption.updated_at.desc(), Adoption.id.desc()
+    )).all():
+        key = (row.customer_id, row.product_id)
+        if key in seen:
+            session.delete(row)
+            removed += 1
+        else:
+            seen.add(key)
+    if removed:
+        session.flush()
+        audit.record(session, actor="system", actor_kind="system", action="delete",
+                     object_type="adoption", label="重复采用关系", origin="migration",
+                     changes=[{"field": "重复记录", "old": str(removed), "new": "0"}],
+                     note="同客户同型号仅保留最近更新的记录")
     conn = session.connection()
     conn.execute(text(UX_ADOPTION))
 
@@ -397,6 +425,25 @@ def _v6_unify_units(session: Session) -> None:
         )
 
 
+def _v7_idempotency_fingerprint(session: Session) -> None:
+    """给幂等记录补请求体指纹，区分「合法重试」与「复用键发了另一个请求」。"""
+    conn = session.connection()
+    if conn.dialect.name == "sqlite":
+        columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(api_idempotency)").fetchall()
+        }
+        if "request_hash" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE api_idempotency "
+                "ADD COLUMN request_hash VARCHAR NOT NULL DEFAULT ''"
+            )
+        return
+    conn.exec_driver_sql(
+        "ALTER TABLE api_idempotency "
+        "ADD COLUMN IF NOT EXISTS request_hash VARCHAR NOT NULL DEFAULT ''"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline（建表由 create_all 完成）", _v1_baseline),
     Migration(2, "型号与参数加唯一索引（先合并存量重复）", _v2_unique_indexes),
@@ -404,6 +451,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "谐振频率/温度/寿命/噪音放宽到三个大类", _v4_widen_applies_to),
     Migration(5, "工作温度拆成下限+上限两个指标（并从原文回填下限）", _v5_temperature_range),
     Migration(6, "三类产品流量统一到 mL/min、压力统一到 kPa", _v6_unify_units),
+    Migration(7, "幂等记录增加请求体指纹", _v7_idempotency_fingerprint),
 )
 
 

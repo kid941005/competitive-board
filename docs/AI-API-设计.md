@@ -17,7 +17,8 @@
 
 - JSON in / JSON out，一律 `application/json`
 - Bearer 令牌鉴权（不走 Cookie → 天然没有 CSRF 风险，也就不必放宽浏览器侧的任何限制）
-- 写操作整批事务 + `dry_run` + `Idempotency-Key`
+- 浏览器 Cookie 调试写接口时，仍须提供页面中的 `X-CSRF-Token`；Bearer 调用无需该头。
+- 写操作整批事务；创建/更新/批量/导入支持 `dry_run`，创建公司/型号、批量写参数与导入支持 `Idempotency-Key`
 
 ---
 
@@ -35,8 +36,17 @@
 | GET | `/api/v1/products/{id}` | 型号详情：参数、缺失项、完整度、`ETag` |
 | GET | `/api/v1/products/{id}/specs` | 只取参数 |
 | GET | `/api/v1/matrix?p=1,2,3` | 横向对比（复用页面同一套计算） |
-| GET | `/api/v1/changes?since=` | 增量变更流，供定期同步 |
+| GET | `/api/v1/changes?since=&cursor=` | 参数增量变更流，按时间与记录 ID 稳定分页 |
 | GET | `/api/v1/audit` | 变更日志（谁把什么改成了什么），需 `admin` scope |
+
+增量分页保留初始 `since`，将响应 `meta.next_cursor` 原样传回 `cursor`，直到
+`meta.has_more=false`。下一轮同步也可保留最后的游标；`next_since` 保留供旧客户端
+兼容，单独使用时间戳无法保证同时间条目不重复。该流只包含当前仍存在的参数，
+删除和产品元信息变更需通过全量核对补齐。
+
+产品 GET 与 PATCH 使用同一种详情表示；ETag 对完整表示计算，关联公司名、来源、
+置信度、采用关系等字段变化也会更新版本。MCP 的 `update_product` 可用 `if_match`
+传回 `get_product` 的 `meta.etag`；支持幂等的创建/导入工具可用 `idempotency_key`。
 
 ### 写入面 `write`
 | 方法 | 路径 | 用途 |
@@ -179,8 +189,8 @@ Authorization: Bearer cib_<prefix>_<secret>
 
 | 扩展点 | 现在的作用 | 后续可承接 |
 |---|---|---|
-| `Idempotency-Key` | 写接口重试不重复 | Agent 自动重试、消息队列至少一次投递 |
-| `dry_run` | 预演，不落库 | 「先给用户看将要改什么，再确认」的交互范式 |
+| `Idempotency-Key` | 创建公司/型号、批量写参数、导入重试不重复 | Agent 自动重试、消息队列至少一次投递 |
+| `dry_run` | 创建、更新、批量与导入预演，不落库 | 「先给用户看将要改什么，再确认」的交互范式 |
 | `ETag` / `If-Match` | 乐观并发 | 多 Agent 并行编辑同一型号 |
 | `/tools` | 静态工具清单（含 JSON Schema） | 直接喂给 function-calling；接 MCP 时映射为 tool 定义 |
 | `/context` | 一次拿骨架 | 模型冷启动，省掉十几轮探查 |

@@ -19,12 +19,13 @@
 
 from __future__ import annotations
 
+import math
 import os
 import uuid
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
@@ -34,6 +35,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
+from starlette.exceptions import HTTPException
 
 from . import api_v1, audit, auth, config, datasheet_store, settings_store
 from .db import engine, init_db
@@ -44,7 +46,7 @@ from .routes_compare import router as compare_router
 from .routes_datasheet import router as datasheet_router
 from .routes_products import router as products_router
 from .timeutil import fmt_local
-from .web_shared import BASE, templates
+from .web_shared import BASE, _safe_next, templates
 
 # 用户不存在时也走一次哈希校验，避免通过响应时间枚举账号
 
@@ -61,10 +63,13 @@ async def lifespan(_app: FastAPI):
         # 日志会无限增长，按保留期在启动时清一次
         d = settings_store.all_values(session)
         audit.purge(session, int(d.get("audit.retention_days", audit.RETENTION_DEFAULT_DAYS)))
+        # 幂等首次响应同样只在客户端重试窗口内有意义，过期记录一并回收
+        api_v1.purge_idempotency(session)
         # 规格书原文同理：没被任何参数引用、且超过保留期的，连同解析结果一起删
         swept = datasheet_store.purge_orphans(
             session, int(d.get("datasheet.keep_days", 30))
         )
+        session.commit()
         if swept["removed"]:
             print(
                 f"[startup] 清理未引用规格书 {swept['removed']} 份"
@@ -82,7 +87,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="1.0.6", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="1.0.7", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -115,6 +120,19 @@ def _wants_html(request: Request) -> bool:
     if path.startswith("/admin/") or path in ("/", "/compare", "/datasheet"):
         return True
     return "text/html" in request.headers.get("accept", "")
+
+
+def _error_back(request: Request) -> str:
+    ref = request.headers.get("referer", "")
+    try:
+        parsed = urlsplit(ref)
+        if parsed.scheme:
+            if parsed.scheme not in ("http", "https") or parsed.netloc != request.url.netloc:
+                return "/compare"
+            ref = parsed.path + ("?" + parsed.query if parsed.query else "")
+    except ValueError:
+        return "/compare"
+    return _safe_next(ref)
 @app.exception_handler(api_v1.ApiError)
 async def _on_api_error(_request: Request, exc: api_v1.ApiError):
     return api_v1.fail(exc)
@@ -136,9 +154,9 @@ async def _on_http_error(request: Request, exc: HTTPException):
     原实现对页面路由也返回 {"detail": ...}：用户在表单里点保存，
     结果浏览器跳到一屏裸 JSON，既没有导航也没有返回按钮。
     """
-    if not request.url.path.startswith("/api/v1"):
+    if not (request.url.path == "/api/v1" or request.url.path.startswith("/api/v1/")):
         if _wants_html(request):
-            back = request.headers.get("referer") or "/compare"
+            back = _error_back(request)
             return templates.TemplateResponse(
                 request=request,
                 name="error.html",
@@ -166,8 +184,17 @@ async def _on_http_error(request: Request, exc: HTTPException):
     )
 @app.exception_handler(RequestValidationError)
 async def _on_validation_error(request: Request, exc: RequestValidationError):
-    errors = jsonable_encoder(exc.errors())
-    if not request.url.path.startswith("/api/v1"):
+    def finite_json(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            return str(value)
+        if isinstance(value, dict):
+            return {k: finite_json(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [finite_json(v) for v in value]
+        return value
+
+    errors = finite_json(jsonable_encoder(exc.errors()))
+    if not (request.url.path == "/api/v1" or request.url.path.startswith("/api/v1/")):
         return JSONResponse({"detail": errors}, status_code=422)
     return JSONResponse(
         {
@@ -236,14 +263,14 @@ async def _on_integrity(request: Request, _exc: IntegrityError):
     IntegrityError 翻译成「冲突，请重试」，而不是让用户看一屏堆栈。
     """
     message = "写入冲突：同一型号或同一参数已存在，可能是并发提交。请刷新后重试。"
-    if request.url.path.startswith("/api/v1"):
+    if request.url.path == "/api/v1" or request.url.path.startswith("/api/v1/"):
         return api_v1.fail(api_v1.ApiError("UNIQUE_CONFLICT", message))
     if _wants_html(request):
         return templates.TemplateResponse(
             request=request,
             name="error.html",
             context={"status": 409, "message": message,
-                     "back": request.headers.get("referer") or "/compare"},
+                     "back": _error_back(request)},
             status_code=409,
         )
     return JSONResponse({"detail": message, "code": "unique_conflict"}, status_code=409)

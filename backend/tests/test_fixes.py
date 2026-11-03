@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix="cib-fix-test-")
@@ -45,7 +46,7 @@ def _c() -> TestClient:
     if "c" in _state:
         return _state["c"]  # type: ignore[return-value]
     init_db()
-    seed()
+    seed(force=True)
     client = TestClient(app)
     client.__enter__()
     client.post("/login", data={"username": "admin", "password": ADMIN_PW}, follow_redirects=False)
@@ -146,8 +147,14 @@ def test_dry_run_does_not_poison_idempotency():
     _c()
     with Session(engine) as s:
         raw, _ = tokens.create_token(s, name="幂等测试", scopes=["read", "write"])
+        s.commit()
     client = _c()
-    headers = {"Authorization": f"Bearer {raw}", "Idempotency-Key": "FIX-KEY-1"}
+    # 共享测试进程里可能已经用过固定键；键的作用域本来就是 token，但仍给
+    # 每次测试唯一值，避免测试顺序改变时把合法重放变成键复用冲突。
+    headers = {
+        "Authorization": f"Bearer {raw}",
+        "Idempotency-Key": f"FIX-KEY-{uuid.uuid4().hex}",
+    }
     body = {"entity_name": "幂等测试公司", "model": "IDEM-FIX", "category": "pump_air"}
 
     preview = client.post("/api/v1/products", json={**body, "dry_run": True}, headers=headers)
@@ -182,6 +189,7 @@ def test_import_respects_size_limit():
     with Session(engine) as s:
         original = settings_store.get_value(s, "datasheet.max_upload_mb")
         settings_store.update(s, "datasheet.max_upload_mb", 1, "test")
+        s.commit()
     try:
         big = ("型号,指标,数值\n" + "BIG-1,空气流量,0.5\n" * 120_000).encode("utf-8")
         assert len(big) > 1024 * 1024
@@ -194,6 +202,20 @@ def test_import_respects_size_limit():
     finally:
         with Session(engine) as s:
             settings_store.update(s, "datasheet.max_upload_mb", original, "test")
+            s.commit()
+
+
+def test_import_rejects_oversized_row_batch():
+    from app import config
+    _c()
+    rows = [{"企业名称": "超限公司", "产品型号": f"OVER-{i}", "产品类别": "压电气泵",
+             "流量L/min": "0.1"} for i in range(config.IMPORT_MAX_ROWS + 1)]
+    with Session(engine) as s:
+        report = import_rows(s, rows, wide_headers(), commit=False)
+        s.rollback()
+    assert report.errors and "单次最多导入" in report.errors[0]
+    with Session(engine) as s:
+        assert s.exec(select(Product).where(Product.model.like("OVER-%"))).first() is None
 
 
 # ── F-11 账号操作要留痕 ────────────────────────────────────────────────────
@@ -271,6 +293,7 @@ def test_batch_specs_still_correct():
     _c()
     with Session(engine) as s:
         raw, _ = tokens.create_token(s, name="批量回归", scopes=["read", "write"])
+        s.commit()
         pid = s.exec(select(Product).where(Product.model == "MZB1001T02")).first().id
     headers = {"Authorization": f"Bearer {raw}"}
     body = {"items": [

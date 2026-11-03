@@ -206,9 +206,9 @@ def admin_set_role(
         }],
         note="调整角色，非管理员会话已失效", request_id=_rid(),
     )
-    session.commit()
     if role != "admin":
         auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
+    session.commit()
     return _redirect("/admin/users", f"{target.username} 的角色已改为 {auth.ROLE_LABEL[role]}")
 
 
@@ -240,9 +240,9 @@ def admin_toggle_user(
         }],
         note="停用后其会话立即失效" if was_active else "重新启用账号", request_id=_rid(),
     )
-    session.commit()
     if not target.is_active:
         auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
+    session.commit()
     state = "启用" if target.is_active else "停用"
     return _redirect("/admin/users", f"{target.username} 已{state}")
 
@@ -270,8 +270,8 @@ def admin_reset_password(
         changes=[{"field": "密码", "old": "（已设置）", "new": "（已重置）"}],
         note="重置密码，该账号全部会话已失效", request_id=_rid(),
     )
-    session.commit()
     auth.revoke_user_sessions(session, target.id)  # type: ignore[arg-type]
+    session.commit()
     return _redirect("/admin/users", f"{target.username} 的密码已重置，其会话已全部失效")
 
 
@@ -330,7 +330,10 @@ async def admin_tokens_create(
     try:
         days = int(str(form.get("expires_days", "0")) or 0)
     except ValueError:
-        days = 0
+        return _render_tokens(request, user, auth_session, session, err="有效期必须是整数天数")
+    if not 0 <= days <= tokens.MAX_EXPIRY_DAYS:
+        return _render_tokens(request, user, auth_session, session,
+                              err=f"有效期须为 0（长期）或 1–{tokens.MAX_EXPIRY_DAYS} 天")
     if not name:
         return _render_tokens(request, user, auth_session, session, err="请填写令牌用途名称")
     if not scopes:
@@ -451,7 +454,7 @@ def admin_logs_purge(
             label="变更日志", changes=[{"field": "清理条数", "old": str(removed), "new": "0"}],
             note=f"按保留期 {days} 天清理", request_id=_rid(),
         )
-        session.commit()
+    session.commit()
     return _redirect("/admin/logs", f"已清理 {removed} 条超过 {days} 天的日志")
 
 
