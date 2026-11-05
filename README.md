@@ -16,6 +16,9 @@
 第一部分「友商 / 客户关联新闻动态」尚未开始；采集栈的编排草稿在 `deploy/`（含 RSSHub / changedetection），
 **不参与看板本体部署**，看板用仓库根目录的单镜像编排即可。
 
+> 当前版本 **v1.0.8**（2026-11-05）。本版修复了 19 项高/中严重度问题，并补上「页面建公司」「客户采用进度推进」
+> 两个闭环入口；数据库结构不变。变更明细见 [v1.0.8 发布说明](docs/releases/v1.0.8.md)。
+
 ---
 
 ## 快速开始
@@ -818,7 +821,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布配置为 `1.0.8`。
+> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布版本为 `1.0.8`（[发布说明](docs/releases/v1.0.8.md)），`latest` 与 GitHub Latest 均指向它。
 
 ---
 
@@ -831,16 +834,18 @@ python tests/test_compare.py          # 20 项：对比逻辑与 CSV 导入
 python tests/test_datasheet.py        # 23 项：规格书识别（含单位跨界、别名边界、PDF 页数与文本解析上限）
 python tests/test_datasheet_import.py # 13 项：规格书导入建档（新公司/新型号/三类拦截、解析失败/资源上限）
 python tests/test_import_export.py    # 22 项：宽表导入、液泵列映射、公司名括注归并、官方链接回填、温度范围往返、口径标注不被覆盖、报错封顶、损坏/超限文件拒绝、全量备份导出（含往返）
-python tests/test_product_edit.py     # 12 项：产品编辑、三类防护、公司列表口径
-python tests/test_api_v1.py           # 34 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址、删除清理、公司括注归一
+python tests/test_product_edit.py     # 13 项：产品编辑、三类防护、公司列表口径
+python tests/test_api_v1.py           # 35 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址、删除清理、公司括注归一
 python tests/test_units.py            # 26 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义 / 温度上下限与「待补充（说明）」）
 python tests/test_adoptions.py        # 16 项：客户采用关系（页面 + API、重复拒收、同名复用、自采拦截、ETag、括号内分隔符、审计）
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
 python tests/test_labels.py           #  6 项：自家公司用公司名，不出现「本方 / 我方」
 python tests/test_fixes.py            # 11 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS / 批量上限）
+python tests/test_review_regressions.py # 12 项：上一轮审查的回归（CSRF 边界、ETag、增量游标、非有限数、MCP 请求头、导出防公式、旧库合并保留采用关系）
 python tests/test_auth.py             # 26 项：权限体系（含接口层拦截与 CSRF）
 python tests/test_channel_parity.py   # 13 项：四条写入通道的规则一致性（applies_to / 置信度 / 出处 / 日志时间）
 python tests/test_schema.py           #  9 项：表结构迁移（新库 / 老库升级去重 / v3 指标合并 / v5 温度拆两格 / v6 单位统一 / 版本过新拒启）
+python tests/test_data_integrity.py   #  8 项：模板列宽、空白关键词、完整度容错、公司名括注归一、新建公司去重、采用进度审计、系统设置本地时间、seed --force 外键顺序
 python tests/test_retention.py        #  8 项：规格书原文保留（被引用的不删、过期的删、未到期留着、孤立来源、中断临时文件回收）
 python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
 python tests/test_datadir.py          #  6 项：数据目录自检（不可写 / 建不出 / 磁盘满各有各的话）
@@ -850,12 +855,12 @@ python tests/test_mcp_server.py       # 20 项：MCP 适配层（协议、参数
 python tests/test_entity_meta.py      # 13 项：建公司不丢字段、导入认自家公司、PATCH 改元信息、客户校验、审计
 python tests/test_ui_contract.py      # 10 项：页面渲染契约（StrictUndefined 下全页面、页脚版本号、选择器折叠与表头吸顶、flash 提示、403 页）
 python tests/test_search.py           # 13 项：检索（公司名/产品名/型号、多词 AND、通配符转义、matched）
-node tests/js/test_datasheet_ui.js    # 11 项：导入页交互（无浏览器依赖）
+node tests/js/test_datasheet_ui.js    # 12 项：导入页交互（无浏览器依赖）
 node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与后端同一套语义）
 # 或 pytest tests/
 ```
 
-当前自动化测试共 **354 项**（后端 335 + 前端 19）；此数字以本仓库当前的 `pytest` 收集与 Node 测试为准。覆盖内容：
+当前自动化测试共 **375 项**（后端 355 + 前端 20）；此数字以本仓库当前的 `pytest` 收集与 Node 测试为准。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限（确认写入时温度会补出下限）、修饰语降权、别名不重复计数、多页页码
@@ -868,6 +873,8 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 - **AI 接口**：无凭证 401 / scope 不足 403 的统一信封、令牌 secret 含下划线仍可校验、dry_run 真不落库（连公司都不建）、幂等重放只写一条、批量写参数逐项回执、`If-Match` 过期 409、JSON 原生数字不崩、`/tools` 清单可被 function-calling 消费、旧页面路由未被影响
 - **通道一致性**（`test_channel_parity.py`）：只改一格不该动别的参数的出处与置信度、导入与规格书提交必须和批量接口一样校验 `applies_to`、置信度在三条通道都钳 0~1、重复建同名公司不记假日志、日志按本地时区显示、勾选复核要留痕、导入不再每行一次查询、重复导入是 no-op、报错行号等于文件真实行号、出处链接只收 http(s)
 - **表结构与迁移**：全新库补齐索引与版本号、0.7.x 老库带着重复数据升级（合并型号 / 去重参数 / 留审计）、库比代码新时拒绝启动、唯一索引在并发下回 409、同一批内重复项不炸
+- **数据完整性**（`test_data_integrity.py`）：导入模板示例行与表头同宽、空白关键词不炸、完整度遇到已删除型号降级为 0、公司名括注归一、新建公司去重、采用进度更新留审计、系统设置显示本地时间、`seed --force` 的外键删除顺序
+- **审查回归**（`test_review_regressions.py`）：Cookie 写接口必须带 CSRF 而 Bearer 不需要、非 ASCII CSRF 与伪数字 id 安全拒绝、路由级 404/405 走统一信封、ETag 覆盖关联字段、增量游标跨相同时间戳前进、令牌有效期有界、MCP 坏消息不退出、PDF 真实提取、导出文本不变成公式、MCP 透传幂等与版本头、单位溢出与多值不跳换算、旧库合并保留采用关系与内部空格
 - **规格书保留**：被参数引用的永不删、过期且无引用的连原文一起删、未到期保留、`keep_days=0` 关闭清理
 - **删除与保留期**：删除型号后只回收已无任何参数/采用记录引用的来源；幂等记录按保留期清理
 - **登录限速**：第 5 次失败后开始退避、第 6 次返回 429 + `Retry-After`、退避期内正确密码也不放行、成功登录清零、不影响其他账号
@@ -881,7 +888,7 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 - **前端过滤**（`test_filter.js`，无 DOM）：大小写、多词 AND、空串、`%` 不具通配含义
 - **导入页交互**（Node + 最小 DOM 桩）：未填齐时点击必须说出缺什么而不是静默无反应、「将新建 / 将更新」判断、近名公司要露出确认勾选、跨大类冲突提前预警、就绪后请求要带公司/大类/型号与 CSRF 头、超大文件被拦截
 
-`test_auth.py` 与 `test_datasheet_import.py` 各用独立临时数据目录，不碰开发库。
+各测试文件在导入期各自设置 `CIB_DATA_DIR` 到独立临时目录，不碰开发库；CI 里每个文件独立进程运行，互不污染。
 
 ---
 
