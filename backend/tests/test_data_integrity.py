@@ -118,6 +118,43 @@ def test_adoption_progress_update_keeps_audit() -> None:
         assert latest is not None and "量产" in latest.changes
 
 
+def test_product_meta_save_preserves_note_when_not_submitted() -> None:
+    """保存型号元信息时，没提交备注不能把已有备注抹掉。
+
+    回归：`product_save_meta` 的 note 默认 ""，而编辑页表单里原本没有这一格，
+    于是每次点「保存信息」都会把导入写进来的「口径与备注」静默清空。
+    """
+    from app.routes_products import product_save_meta
+
+    seed_module.seed()
+    with Session(engine) as session:
+        product = session.exec(select(Product)).first()
+        assert product is not None
+        product.note = "口径：静压@19.5Vdc"
+        session.add(product)
+        session.commit()
+        pid = product.id
+
+        def save(note: str | None) -> None:
+            product_save_meta(
+                product_id=pid, model=product.model, name=product.name or "",
+                category=product.category, status=product.status,
+                datasheet_url=product.datasheet_url or "", note=note,
+                _csrf=None, _user=_user(), session=session,
+            )
+            session.refresh(product)
+
+        save(None)
+        assert product.note == "口径：静压@19.5Vdc", "没提交备注时不能清空"
+        save("")
+        assert product.note is None, "显式提交空串才表示清空"
+
+
+def test_product_edit_template_has_note_field() -> None:
+    template = Path(__file__).resolve().parent.parent / "app" / "templates" / "product_edit.html"
+    assert 'name="note"' in template.read_text(encoding="utf-8"), "编辑页必须有备注输入框"
+
+
 def test_settings_snapshot_uses_local_time() -> None:
     with Session(engine) as session:
         settings_store.update(session, "compare.max_products", 5, "tester")
@@ -156,6 +193,8 @@ ORDER = [
     test_company_name_normalization_ignores_parenthetical,
     test_company_create_bootstraps_and_blocks_duplicates,
     test_adoption_progress_update_keeps_audit,
+    test_product_meta_save_preserves_note_when_not_submitted,
+    test_product_edit_template_has_note_field,
     test_settings_snapshot_uses_local_time,
     test_seed_force_clears_adoptions,
 ]

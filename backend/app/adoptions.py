@@ -15,7 +15,7 @@ import re
 
 from sqlmodel import Session, select
 
-from . import entity_names
+from . import lookups
 from .models import ADOPTION_STATUS, Adoption, Entity
 
 # 「关联客户（有公开证据）」这类自由文本里，一条记录用这些符号分隔
@@ -24,10 +24,6 @@ _SPLIT_CHARS = "；;、\n"
 _PAREN = re.compile(r"^([^（(]+)[（(](.*)[）)]\s*$")
 # 这些是「没有客户证据」的占位写法，不能当成客户名建出实体
 _PLACEHOLDERS = {"待补充", "待定", "无", "暂无", "未知", "—", "-", "na", "n/a", "无公开信息"}
-
-
-def norm_name(name: str) -> str:
-    return entity_names.key(name)
 
 
 def _split_outside_parens(text: str) -> list[str]:
@@ -55,13 +51,12 @@ def _split_outside_parens(text: str) -> list[str]:
 
 
 def find_by_name(session: Session, name: str) -> Entity | None:
-    key = norm_name(name)
-    if not key:
-        return None
-    for ent in session.exec(select(Entity)).all():
-        if norm_name(ent.name) == key:
-            return ent
-    return None
+    """按名称找客户。
+
+    归一规则只保留一份：`lookups.find_entity_exact`（页面、API、导入共用）。
+    这里再写一遍循环，就会出现「页面复用了、导入又新建一份」的老问题。
+    """
+    return lookups.find_entity_exact(session, name)
 
 
 def resolve_customer(

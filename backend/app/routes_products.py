@@ -17,7 +17,16 @@ from .config import category_label
 from .db import get_session
 from .importer import CSV_TEMPLATE, ImportFileError, import_csv, import_xlsx, xlsx_template
 from .lookups import find_entity, find_product
-from .models import ADOPTION_STATUS, Adoption, Entity, Product, ProductSpec, SpecMetric, SpecSource
+from .models import (
+    ADOPTION_STATUS,
+    PRODUCT_STATUS_LABELS,
+    Adoption,
+    Entity,
+    Product,
+    ProductSpec,
+    SpecMetric,
+    SpecSource,
+)
 from .numeric import parse_number
 from .sanitize import safe_url
 from .selection import _load
@@ -393,7 +402,7 @@ def product_edit_page(
             entity=ent_by_id.get(product.entity_id),
             rows=rows,
             categories=list(config.CATEGORY_LABEL.items()),
-            statuses=[("active", "在售"), ("eol", "停产"), ("rumored", "传闻")],
+            statuses=list(PRODUCT_STATUS_LABELS.items()),
             adoptions=_adoptions_of(session, product.id, ent_by_id),
             customers=[e for e in entities if e.kind == "customer"],
             adoption_status=ADOPTION_STATUS,
@@ -595,7 +604,10 @@ def product_save_meta(
     category: str = Form(...),
     status: str = Form(default="active"),
     datasheet_url: str = Form(default=""),
-    note: str = Form(default=""),
+    # 不传 note 与「传空串」是两件事：前者是「这次不动备注」，后者才是「清空」。
+    # 之前默认 "" 且表单里没有这一格，于是每次保存型号信息都会把导入写进来的
+    # 「口径与备注」静默抹掉。
+    note: str | None = Form(default=None),
     _csrf: None = Depends(auth.verify_csrf),
     _user: User = Depends(_perm_user(P_WRITE)),
     session: Session = Depends(get_session),
@@ -634,7 +646,8 @@ def product_save_meta(
     product.category = category
     product.status = status
     product.datasheet_url = safe_url(datasheet_url)
-    product.note = note.strip() or None
+    if note is not None:
+        product.note = note.strip() or None
     session.add(product)
     audit.record(
         session, actor=_user.username, action="update", object_type="product",

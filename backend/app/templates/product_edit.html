@@ -45,6 +45,11 @@
       <input type="text" name="datasheet_url" class="ds-input" value="{{ product.datasheet_url or '' }}"
              placeholder="https://…">
     </label>
+    <label class="ds-field grow">
+      <span>备注</span>
+      <input type="text" name="note" class="ds-input" value="{{ product.note or '' }}"
+             placeholder="口径说明、来源限制、未公开项清单…">
+    </label>
     <button type="submit" class="btn">保存信息</button>
   </form>
   <p class="hint">已有参数时不允许改大类 —— 那会让历史参数落到错误的指标体系里。要改先清空参数。</p>

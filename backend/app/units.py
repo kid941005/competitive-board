@@ -96,19 +96,6 @@ _UNITS: dict[str, tuple[str, float]] = {
     "%": ("percent", 1.0),
 }
 
-BASE_UNIT: dict[str, str] = {
-    "flow": "mL/min",
-    "pressure": "kPa",
-    "voltage": "Vpp",
-    "power": "mW",
-    "frequency": "kHz",
-    "length": "mm",
-    "mass": "g",
-    "time": "h",
-    "sound": "dB(A)",
-    "percent": "%",
-}
-
 # 近似换算的坦白说明：值还是照换，但不假装它是精确的。
 _APPROX: dict[tuple[str, str], str] = {
     ("sccm", "flow"): "sccm 按标况 mL/min 计（0.001 L/min），未做温压修正",
