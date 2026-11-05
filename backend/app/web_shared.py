@@ -1,4 +1,4 @@
-"""页面路由共用的小工具：模板环境、权限依赖、表单校验、公司/型号查找。
+"""页面路由共用的小工具：模板环境、权限依赖、表单校验、跳转。
 
 这几样被 5 个路由模块同时用到。如果留在 main.py，路由要 import main，
 而 main 又要 import 路由来注册 —— 典型的循环依赖。
@@ -13,11 +13,10 @@ from urllib.parse import quote
 from fastapi import Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlmodel import Session, select
 
-from . import auth, config, entity_names
+from . import auth, config
 from .auth import AuthSession, User
-from .models import PRODUCT_STATUSES, Entity, Product
+from .models import PRODUCT_STATUSES
 from .timeutil import fmt_local
 
 BASE = Path(__file__).resolve().parent
@@ -25,6 +24,7 @@ BASE = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 # 库里存 UTC、界面按部署时区显示：模板里一律用 {{ ts | localtime }}，不要裸 strftime
 templates.env.filters["localtime"] = fmt_local
+
 
 def _perm(perm: str):
     """要求某权限位的依赖，同时把 (user, auth_session) 交给路由用。"""
@@ -74,37 +74,7 @@ def _safe_next(target: str | None) -> str:
     return target
 
 
-# ── 数据装载 ────────────────────────────────────────────────────────────────
-
-
-def _find_company(session: Session, name: str) -> tuple[Entity | None, list[Entity]]:
-    """返回 (完全同名, 近名列表)。
-
-    近名用于拦「村田」与「村田制作所」建成两份档案 —— 名称归一的前提是先别造出重复。
-    """
-    key = entity_names.key(name)
-    exact: Entity | None = None
-    similar: list[Entity] = []
-    if not key:
-        return None, []
-    for e in session.exec(select(Entity)).all():
-        other = entity_names.key(e.name)
-        if not other:
-            continue
-        if other == key:
-            exact = e
-        elif len(key) >= 2 and (key in other or other in key):
-            similar.append(e)
-    return exact, similar
-
-
-def _find_product(session: Session, entity_id: int, model: str) -> Product | None:
-    """同公司内按型号查（忽略大小写与首尾空白）。"""
-    target = (model or "").strip().casefold()
-    for p in session.exec(select(Product).where(Product.entity_id == entity_id)).all():
-        if (p.model or "").strip().casefold() == target:
-            return p
-    return None
+# ── 表单校验 ────────────────────────────────────────────────────────────────
 
 
 def _validate_status(status: str | None) -> str:

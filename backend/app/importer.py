@@ -107,6 +107,9 @@ def metric_for_column(col: WideColumn, metrics: dict, category: str | None):
         table = QUANTITY_METRIC[col.quantity]
         return metrics.get(table.get(category or "", table["*"]))
     return metrics.get(col.metric_key)
+
+
+# 表头必须同时出现的两列（缺任一个就整份读不进来）
 REQUIRED_META = ("entity", "model")
 
 # 表头别名：同一列可能被写成别的说法（业务方手改、或旧文件）
@@ -239,7 +242,7 @@ def _map_header(cells: list[str]) -> tuple[dict[int, WideColumn], bool]:
         if col is not None:
             mapping[i] = col
     fields = {c.field for c in mapping.values()}
-    ok = {"entity", "model"} <= fields
+    ok = set(REQUIRED_META) <= fields
     return mapping, ok
 
 
@@ -859,12 +862,12 @@ TEMPLATE_EXAMPLE: list[list] = [
      "11.5–21 Vdc", "待补充", "待补充", "20×20×1.85 mm", 1.4, "0~70 ℃", "待补充",
      "https://www.murata.com/zh-cn/products/mechatronics/fluid", 0.90,
      "待补充（无公开客户证据）", "流量型；静压@15Vpp",
-     "", "", "", "", "", "", ""],
+     "", "", "", "", ""],
     ["村田制作所（Murata）", "MZB3004T04", "压电气泵", 0.155, 50000, "21.5–24.5 kHz",
      "8–21 Vdc", "待补充", "待补充", "21×19×3.4 mm", "待补充", "0~45 ℃", "待补充",
      "https://www.murata.com/zh-cn/products/mechatronics/fluid", 0.90,
      "华为（WATCH D2 第三方拆解确认）；欧姆龙（HeartGuide 2019 拆解）",
-     "压力型（带喷嘴）；静压@19.5Vdc", "", "", "", "", "", "", ""],
+     "压力型（带喷嘴）；静压@19.5Vdc", "", "", "", "", ""],
 ]
 
 CSV_TEMPLATE = (

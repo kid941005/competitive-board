@@ -138,7 +138,14 @@
 
   {% if pages > 1 %}
   <div class="pager">
-    {% set base = '/admin/logs?days=' ~ days ~ '&actor=' ~ filters.actor ~ '&action=' ~ filters.action ~ '&object_type=' ~ filters.object_type ~ '&origin=' ~ filters.origin ~ '&q=' ~ filters.q %}
+    {# 每个筛选值都要 urlencode：关键词里带 & 或 # 时，不编码会把后面的参数整段截断，
+       「翻到第二页筛选条件就没了」正是这么来的 #}
+    {% set base = '/admin/logs?days=' ~ days
+         ~ '&actor=' ~ (filters.actor | urlencode)
+         ~ '&action=' ~ (filters.action | urlencode)
+         ~ '&object_type=' ~ (filters.object_type | urlencode)
+         ~ '&origin=' ~ (filters.origin | urlencode)
+         ~ '&q=' ~ (filters.q | urlencode) %}
     {% if page > 1 %}<a class="link" href="{{ base }}&page={{ page - 1 }}">← 上一页</a>{% endif %}
     <span class="dim">{{ (page - 1) * 50 + 1 }}–{{ [(page * 50), total]|min }} / {{ total }}</span>
     {% if page < pages %}<a class="link" href="{{ base }}&page={{ page + 1 }}">下一页 →</a>{% endif %}

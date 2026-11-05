@@ -41,7 +41,7 @@ import urllib.parse
 import urllib.request
 
 SERVER_NAME = "competitive-board"
-SERVER_VERSION = "1.0.7"
+SERVER_VERSION = "1.0.8"
 
 # 支持的协议版本，新的在前。客户端请求哪个就回哪个，都不认时回最新的。
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -366,9 +366,6 @@ class McpServer:
             # 明确告知「没有这个能力」，比报错更友好；客户端一般不会走到这里
             key = "resources" if method.startswith("resources") else "prompts"
             return _result(request_id, {key: []})
-
-        if is_notification:
-            return None
 
         return _error(request_id, -32601, f"不支持的方法：{method}")
 

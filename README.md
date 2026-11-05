@@ -32,7 +32,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:1.0.7
+  ghcr.io/kid941005/competitive-board:1.0.8
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -155,7 +155,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 导出 | **Excel（带格式：最优加粗、缺失「—」、完整度行、说明页）**、CSV（带 BOM）、JSON |
 | 规格书导入 | 上传 PDF，自动识别参数，人工复核后入库（见下节） |
 | 批量导入 | Excel / CSV 一次写入多型号多参数，自动建档（见下节） |
-| 产品管理 | 管理员直接改型号元信息与参数值、增删参数、标记复核、删除型号；列表按大类分段，支持关键词 + 公司 + 大类筛选；型号详情页可记录**客户采用**（谁在用这款泵） |
+| 产品管理 | 管理员直接建公司、建型号，改型号元信息与参数值、增删参数、标记复核、删除型号；列表按大类分段，支持关键词 + 公司 + 大类筛选；型号详情页可记录并推进**客户采用**（谁在用这款泵、到哪一步） |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 | 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
 | 页脚版本号 | 每页底部显示当前运行的 `vX.Y.Z`（含登录页），`/api/v1/health` 也回 `app_version` |
@@ -319,8 +319,8 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 
 | 页面 | 能做什么 |
 |---|---|
-| `/products` | 全部型号清单（含完整度，**按压电气泵 / 压电风扇 / 压电液泵分段**）+ 新建型号 + 删除 |
-| `/products/{id}` | 改型号元信息；逐项改参数值 / 测试条件 / 复核状态；清空数值即删除该项；**客户采用**：记录谁在用这款泵 |
+| `/products` | 全部型号清单（含完整度，**按压电气泵 / 压电风扇 / 压电液泵分段**）+ 新建公司 + 新建型号 + 删除 |
+| `/products/{id}` | 改型号元信息；逐项改参数值 / 测试条件 / 复核状态；清空数值即删除该项；**客户采用**：记录谁在用这款泵，并可推进进度（传闻 → 送样 → 导入设计 → 量产 → 已停用） |
 
 五条实现约定：
 
@@ -428,7 +428,7 @@ Cursor、Cline…）都能直接发现并调用，不用自己拼 HTTP。**单�
 }
 ```
 
-工具清单从 `GET /api/v1/tools` **动态拉取**（当前 14 个），看板改了接口它跟着变，
+工具清单从 `GET /api/v1/tools` **动态拉取**（当前 19 个），看板改了接口它跟着变，
 不存在两份真相。配置细节与故障排查见 [mcp/README.md](mcp/README.md)。
 
 > **它不解决「外部 AI 访问不到你的内网」。** MCP server 跑在 AI 客户端那台机器上，
@@ -644,10 +644,14 @@ python -m app.seed --force
 | GET | `/api/import/template` | CSV 模板 | `data:write` |
 | GET | `/export.xlsx?p=...` | 导出 Excel 对比表 | `data:export` |
 | GET | `/products` | 产品管理页 | `data:write` |
+| POST | `/companies` | 新建公司（页面表单） | `data:write` |
 | POST | `/products` | 新建型号 | `data:write` |
 | GET | `/products/{id}` | 型号编辑页 | `data:write` |
 | POST | `/products/{id}` | 保存型号元信息 | `data:write` |
 | POST | `/products/{id}/specs` | 保存参数值 / 条件 / 复核状态 | `data:write` |
+| POST | `/products/{id}/adoptions` | 记录客户采用 | `data:write` |
+| POST | `/products/{id}/adoptions/{aid}` | 改进度 / 年份 / 备注 | `data:write` |
+| POST | `/products/{id}/adoptions/{aid}/delete` | 删除采用记录 | `data:write` |
 | POST | `/products/{id}/delete` | 删除型号及其参数 | `data:write` |
 | GET | `/admin/users` | 账号管理页 | `admin:users` |
 | POST | `/admin/users/create` · `/{uid}/profile` · `/{uid}/role` · `/{uid}/toggle` · `/{uid}/password` | 建号 / 改账号名与显示名 / 改角色 / 停用启用 / 重置密码 | `admin:users` |
@@ -667,9 +671,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.0.7`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.0.8`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.7` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
+版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.8` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -712,19 +716,19 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:1.0.7
+  ghcr.io/kid941005/competitive-board:1.0.8
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=1.0.7 -t competitive-board:1.0.7 ./backend
+docker build --build-arg APP_VERSION=1.0.8 -t competitive-board:1.0.8 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:1.0.7
+  competitive-board:1.0.8
 ```
 
 ### 配置项在哪改
@@ -735,7 +739,7 @@ docker run -d --name competitive-board \
 
 | 位置 | 当前值 | 作用 |
 |---|---|---|
-| `image:` 的标签 | `1.0.7` | 镜像版本。升级就改这里，再 `docker compose pull` |
+| `image:` 的标签 | `1.0.8` | 镜像版本。升级就改这里，再 `docker compose pull` |
 | `user:` | `10001:10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）改这里，就不必 `chown` 目录；改 `"0:0"` 则以 root 运行 |
 | `ports:` | `127.0.0.1:8000:8000` | 宿主端口。只绑回环，对外访问需反向代理 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
@@ -814,7 +818,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布配置为 `1.0.7`。
+> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布配置为 `1.0.8`。
 
 ---
 

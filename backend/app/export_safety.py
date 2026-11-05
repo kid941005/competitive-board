@@ -38,7 +38,9 @@ def xlsx_bytes(workbook) -> bytes:
 
 def csv_text(value: str) -> str:
     candidate = value.lstrip()
-    if candidate and candidate[0] in "=+-@" or value.startswith(("\t", "\r", "\n")):
+    # 括号写清楚：两个条件是「或」，不能靠 and/or 的优先级读出来
+    dangerous = bool(candidate) and candidate[0] in "=+-@"
+    if dangerous or value.startswith(("\t", "\r", "\n")):
         try:
             if math.isfinite(float(value)):
                 return value

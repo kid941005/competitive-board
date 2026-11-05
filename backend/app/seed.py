@@ -27,11 +27,12 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from . import config
 from .db import engine, init_db
-from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
+from .models import Adoption, Entity, Product, ProductSpec, SpecMetric, SpecSource
 
 # ── 指标字典 ───────────────────────────────────────────────────────────────
 # (key, 指标组, 名称, 单位, 值类型, better, 精度, 排序, 关键指标, 适用大类, 说明)
@@ -241,9 +242,15 @@ CONDITIONS = {
 
 
 def _clear(session: Session) -> None:
-    for model in (ProductSpec, SpecSource, Product, SpecMetric, Entity):
-        for row in session.exec(select(model)).all():  # type: ignore[arg-type]
-            session.delete(row)
+    """清空业务数据（不动账号、令牌、日志与系统参数）。
+
+    删除顺序必须从「引用方」到「被引用方」：adoptions / product_specs 引用
+    products、entities 与 spec_sources。SQLite 连接开了 PRAGMA foreign_keys=ON，
+    顺序反了会在删 products 时直接 IntegrityError —— 而 --force 恰恰是运维在
+    已经有客户采用记录之后才会用到的入口。
+    """
+    for model in (Adoption, ProductSpec, Product, SpecSource, SpecMetric, Entity):
+        session.execute(delete(model))
     session.commit()
 
 

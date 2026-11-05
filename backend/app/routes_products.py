@@ -16,6 +16,7 @@ from .compare import format_number, metrics_for_categories
 from .config import category_label
 from .db import get_session
 from .importer import CSV_TEMPLATE, ImportFileError, import_csv, import_xlsx, xlsx_template
+from .lookups import find_entity, find_product
 from .models import ADOPTION_STATUS, Adoption, Entity, Product, ProductSpec, SpecMetric, SpecSource
 from .numeric import parse_number
 from .sanitize import safe_url
@@ -23,7 +24,6 @@ from .selection import _load
 from .uploads import read_upload_limited
 from .web_shared import (
     _ctx,
-    _find_product,
     _perm,
     _perm_user,
     _redirect,
@@ -34,16 +34,84 @@ from .web_shared import (
 )
 
 SHEET_EXT = {".xlsx", ".xlsm", ".csv", ".txt"}
+# 公司类型与档位：与 /api/v1 的 VALID_ENTITY_* 同一组取值，只是这里带中文名给人看
+ENTITY_KINDS: tuple[tuple[str, str], ...] = (
+    ("competitor", "友商"),
+    ("self", "自家公司"),
+    ("customer", "客户"),
+)
+ENTITY_TIERS: tuple[str, ...] = ("A", "B", "C")
 
 router = APIRouter()
+
+
+@router.post("/companies")
+def company_create(
+    name: str = Form(...),
+    kind: str = Form(default="competitor"),
+    name_en: str = Form(default=""),
+    region: str = Form(default=""),
+    tier: str = Form(default="B"),
+    _csrf: None = Depends(auth.verify_csrf),
+    _user: User = Depends(_perm_user(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    """新建公司。
+
+    没有这个入口时，空库在页面上**根本建不出第一家公司** ——「新建型号」的公司
+    下拉是空的，只能绕道去导入一张表。空库提示里写的「在产品管理里手工建公司」
+    因此一直是一句做不到的话。
+    """
+    name = name.strip()
+    if not name:
+        return _redirect("/products", "公司名称不能为空", "err")
+    if len(name) > 64:
+        return _redirect("/products", "公司名称过长（≤ 64 字符）", "err")
+    if kind not in dict(ENTITY_KINDS):
+        return _redirect("/products", "公司类型不合法", "err")
+    if tier not in ENTITY_TIERS:
+        return _redirect("/products", "档位只能是 A / B / C", "err")
+
+    exact, _similar = find_entity(session, name)
+    if exact is not None:
+        return _redirect(
+            "/products", f"已存在同名公司「{exact.name}」，直接用它建型号即可", "err",
+        )
+    if kind == "self" and session.exec(
+        select(Entity).where(Entity.kind == "self")
+    ).first() is not None:
+        return _redirect("/products", "自家公司只能有一家，已存在时请直接使用", "err")
+
+    entity = Entity(
+        kind=kind,
+        name=name,
+        name_en=name_en.strip() or None,
+        region=region.strip() or None,
+        tier=tier,
+    )
+    session.add(entity)
+    session.flush()
+    audit.record(
+        session, actor=_user.username, action="create", object_type="entity",
+        object_id=entity.id, label=entity.name, origin="web",
+        changes=audit.diff(
+            {},
+            {"name": entity.name, "kind": entity.kind, "name_en": entity.name_en,
+             "region": entity.region, "tier": entity.tier},
+            {"name": "名称", "kind": "类型", "name_en": "英文名",
+             "region": "地区", "tier": "档位"},
+        ),
+        note="新建公司", request_id=_rid(),
+    )
+    session.commit()
+    return _redirect("/products", f"已新建公司「{name}」，现在可以给它建型号")
+
 
 @router.get("/import", response_class=HTMLResponse)
 def import_page(
     request: Request,
     pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
     session: Session = Depends(get_session),
-    ok: str | None = Query(default=None),
-    err: str | None = Query(default=None),
 ):
     user, auth_session = pair
     sset = settings_store.all_values(session)
@@ -59,8 +127,6 @@ def import_page(
             page_title="批量导入",
             page_sub="用 Excel 或 CSV 批量写入参数；型号与友商不存在会自动建档",
             active="import",
-            ok=ok,
-            err=err,
             entities=entities,
             ent_by_id=ent_by_id,
             product_total=len(products),
@@ -227,6 +293,8 @@ def products_page(
             filter_companies=filter_companies,
             categories=list(config.CATEGORY_LABEL.items()),
             cat_all=config.CATEGORY_LABEL,
+            entity_kinds=ENTITY_KINDS,
+            entity_tiers=ENTITY_TIERS,
             product_total=len(products),
         ),
     )
@@ -250,7 +318,7 @@ def product_create(
         raise HTTPException(400, "客户不是竞品来源")
     model = _validate_target(category, model)
     status = _validate_status(status)
-    if _find_product(session, entity_id, model):
+    if find_product(session, entity_id, model):
         return _redirect("/products", f"型号 {model} 已存在于该公司，未重复创建", "err")
 
     product = Product(entity_id=entity_id, model=model, name=name.strip() or model,
@@ -430,6 +498,65 @@ def adoption_create(
     return _redirect(f"/products/{product_id}", f"已记录：{customer.name} 采用 {product.model}")
 
 
+@router.post("/products/{product_id}/adoptions/{adoption_id}")
+def adoption_update(
+    product_id: int,
+    adoption_id: int,
+    status: str = Form(...),
+    year: str = Form(default=""),
+    note: str = Form(default=""),
+    _csrf: None = Depends(auth.verify_csrf),
+    _pair: tuple[User, AuthSession] = Depends(_perm(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    """改进度（传闻 → 送样 → 导入设计 → 量产 → 已停用）、年份与备注。
+
+    采用关系表达的是**进度**，不是一条一次性记录。只给「新增 / 删除」时，
+    想把「送样」改成「量产」只能删了重建 —— 审计里看起来像换了一家公司，
+    「谁在什么时候把它推进到量产」这个问题就答不上了。
+    """
+    user, _ = _pair
+    row = session.get(Adoption, adoption_id)
+    if row is None or row.product_id != product_id:
+        return _redirect(f"/products/{product_id}", "这条采用记录不存在", "err")
+    if status not in ADOPTION_STATUS:
+        return _redirect(f"/products/{product_id}", f"状态「{status}」不可识别", "err")
+    year_val, year_err = adoptions.validate_year(year)
+    if year_err:
+        return _redirect(f"/products/{product_id}", year_err, "err")
+
+    new_note = (note or "").strip() or None
+    pairs = (
+        ("状态", ADOPTION_STATUS.get(row.status, row.status), ADOPTION_STATUS[status]),
+        ("年份", row.year, year_val),
+        ("备注", row.note, new_note),
+    )
+    changes = [
+        {"field": field, "old": audit.as_text(old), "new": audit.as_text(new)}
+        for field, old, new in pairs
+        if (old or None) != (new or None)
+    ]
+    if not changes:
+        return _redirect(f"/products/{product_id}", "采用记录没有变化")
+
+    product = session.get(Product, product_id)
+    customer = session.get(Entity, row.customer_id)
+    row.status = status
+    row.year = year_val
+    row.note = new_note
+    row.updated_at = datetime.now(timezone.utc)
+    session.add(row)
+    audit.record(
+        session, actor=user.username, action="update", object_type="adoption",
+        object_id=row.id,
+        label=f"{customer.name if customer else row.customer_id} · "
+              f"{product.model if product else product_id}",
+        origin="web", changes=changes, request_id=_rid(),
+    )
+    session.commit()
+    return _redirect(f"/products/{product_id}", "采用记录已更新")
+
+
 @router.post("/products/{product_id}/adoptions/{adoption_id}/delete")
 def adoption_delete(
     product_id: int,
@@ -479,7 +606,7 @@ def product_save_meta(
     model = _validate_target(category, model)
     status = _validate_status(status)
 
-    other = _find_product(session, product.entity_id, model)
+    other = find_product(session, product.entity_id, model)
     if other and other.id != product.id:
         owner = session.get(Entity, product.entity_id)
         return _redirect(
@@ -664,7 +791,7 @@ def product_delete(
         select(Adoption).where(Adoption.product_id == product.id)
     ).all()
     changes = [
-        {"field": f"型号 · {audit.PRODUCT_LABELS.get(k, k)}", "old": audit._s(v), "new": None}
+        {"field": f"型号 · {audit.PRODUCT_LABELS.get(k, k)}", "old": audit.as_text(v), "new": None}
         for k, v in audit.product_snapshot(product).items() if v not in (None, "")
     ]
     changes += [{"field": k, "old": v, "new": None} for k, v in snapshot.items()]

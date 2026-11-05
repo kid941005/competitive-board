@@ -199,7 +199,15 @@
   var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
   var emptyBox = document.getElementById("tableEmpty");
 
-  var state = { cat: "", onlyDiff: false, onlyMissing: false, q: "" };
+  // ?cat= 选中了哪个指标组，就带着这个筛选进来 —— 否则链接里的参数只在服务端
+  // 点了个 tab 的高亮，表格其实没过滤（两边状态不同步）
+  var activeTab = tabs.filter(function (t) { return t.classList.contains("on"); })[0];
+  var state = {
+    cat: (activeTab && activeTab.dataset.cat) || "",
+    onlyDiff: false,
+    onlyMissing: false,
+    q: "",
+  };
 
   if (onlyDiff) state.onlyDiff = onlyDiff.checked;
   if (onlyMissing) state.onlyMissing = onlyMissing.checked;

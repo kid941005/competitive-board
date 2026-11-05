@@ -21,14 +21,13 @@ from .compare import metric_applies, metrics_for_categories
 from .config import category_label
 from .datasheet import DocumentLimitError, extract_candidates, read_document, summarize
 from .db import get_session
+from .lookups import find_entity, find_product
 from .models import Entity, Product, ProductSpec, SpecMetric, SpecSource
 from .numeric import clamp_confidence
 from .selection import _load, _self_name
 from .uploads import read_upload_limited
 from .web_shared import (
     _ctx,
-    _find_company,
-    _find_product,
     _perm,
     _perm_user,
     _rid,
@@ -86,12 +85,10 @@ def _ds_meta(doc_id: str) -> dict:
     return meta
 
 
-def _ds_file(doc_id: str) -> Path:
+def _ds_file(doc_id: str) -> tuple[Path, dict]:
+    """返回 (原文路径, 元数据)。元数据已经校验过扩展名与原文存在，调用方不必再查一次。"""
     meta = _ds_meta(doc_id)
-    path = DATASHEET_DIR / f"{doc_id}{meta.get('ext', '')}"
-    if not path.exists():
-        raise HTTPException(404, "文档文件已丢失，请重新上传")
-    return path
+    return DATASHEET_DIR / f"{doc_id}{meta['ext']}", meta
 
 
 def _check_doc_id(doc_id: str) -> None:
@@ -168,9 +165,9 @@ async def api_ds_analyze(
         if not name:
             raise HTTPException(400, "请选择公司，或填写新公司名称")
         # 同名直接复用；近名在提交时才拦，此处只做归属判断，不落库
-        entity, _ = _find_company(session, name)
+        entity, _ = find_entity(session, name)
 
-    product = _find_product(session, entity.id, model) if entity and entity.id else None
+    product = find_product(session, entity.id, model) if entity and entity.id else None
 
     sset = settings_store.all_values(session)
     max_bytes = int(sset["datasheet.max_upload_mb"]) * 1024 * 1024
@@ -288,7 +285,7 @@ def api_ds_commit(
         name = (target.entity_name or "").strip()
         if not name:
             raise HTTPException(400, "请选择公司，或填写新公司名称")
-        exact, similar = _find_company(session, name)
+        exact, similar = find_entity(session, name)
         if exact:
             entity = exact
         elif similar and not target.force_new_entity:
@@ -306,7 +303,7 @@ def api_ds_commit(
             entity_created = True
 
     # ── 2) 定位型号，必要时就地建档 ──────────────────────────────────
-    product = _find_product(session, entity.id, model)
+    product = find_product(session, entity.id, model)
     product_created = False
     if product:
         if product.category and product.category != target.category:
@@ -494,11 +491,6 @@ def api_ds_commit(
 @router.get("/datasheet/{doc_id}/file")
 def ds_file(doc_id: str, _pair=Depends(_perm(P_VIEW))):
     _check_doc_id(doc_id)
-    path = _ds_file(doc_id)
-    meta = _ds_meta(doc_id)
+    path, meta = _ds_file(doc_id)
     media = "application/pdf" if path.suffix.lower() == ".pdf" else "text/plain; charset=utf-8"
     return FileResponse(path, media_type=media, filename=meta.get("filename") or path.name)
-
-
-# ── 导入 / 导出 ────────────────────────────────────────────────────────────
-SHEET_EXT = {".xlsx", ".xlsm", ".csv", ".txt"}

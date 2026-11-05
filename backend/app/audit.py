@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import delete
 from sqlmodel import Session, func, select
 
 from . import search
@@ -26,8 +27,12 @@ MAX_CHANGES = 200
 RETENTION_DEFAULT_DAYS = 180
 
 
-def _s(value) -> str | None:
-    """统一成可比较、可读的字符串。None 表示「没有值」。"""
+def as_text(value) -> str | None:
+    """统一成可比较、可读的字符串。None 表示「没有值」。
+
+    路由层写「旧值 → 新值」时也要用同一套格式化：日期、布尔、浮点的写法
+    若在日志里与别处不同，人读起来会以为数据被改过。
+    """
     if value is None:
         return None
     if isinstance(value, bool):
@@ -44,7 +49,7 @@ def diff(before: dict, after: dict, labels: dict[str, str] | None = None) -> lis
     labels = labels or {}
     out: list[dict] = []
     for key in list(before.keys()) + [k for k in after if k not in before]:
-        old, new = _s(before.get(key)), _s(after.get(key))
+        old, new = as_text(before.get(key)), as_text(after.get(key))
         if old == new:
             continue
         out.append({"field": labels.get(key, key), "old": old, "new": new})
@@ -90,7 +95,7 @@ def spec_snapshot(
         if m is None:
             continue
         # 值与条件分两行：只改条件时不应表现为「值从 A 变成 B」
-        out[m.name] = _s(s.value_num) if s.value_num is not None else (s.value_text or "")
+        out[m.name] = as_text(s.value_num) if s.value_num is not None else (s.value_text or "")
         if s.condition:
             out[f"{m.name} · 测试条件"] = s.condition
         # 复核状态同样要留痕：它是「有人为这个数字背书」的唯一信号。
@@ -168,8 +173,11 @@ def query(
         stmt = stmt.where(AuditLog.object_type == object_type)
     if origin:
         stmt = stmt.where(AuditLog.origin == origin)
-    if q:
-        like = search.pattern(search.normalize(q))
+    # 先归一：只有空白的关键词等价于「没搜」，不能把它当成一个空模式拼进 LIKE
+    # （早期直接 pattern(normalize(q))，normalize 返回 None 时会在 escape_like 里炸成 500）
+    keyword = search.normalize(q)
+    if keyword:
+        like = search.pattern(keyword)
         stmt = stmt.where(
             (AuditLog.object_label.ilike(like, escape="\\"))  # type: ignore[attr-defined]
             | (AuditLog.changes.ilike(like, escape="\\"))  # type: ignore[attr-defined]
@@ -189,14 +197,16 @@ def distinct_actors(session: Session) -> list[str]:
 
 
 def purge(session: Session, days: int = RETENTION_DEFAULT_DAYS) -> int:
-    """按保留期清理。日志本身会无限增长，必须有出口。"""
+    """按保留期清理。日志本身会无限增长，必须有出口。
+
+    用一条 DELETE 而不是「全查出来再逐条删」：日志表可以到几十万行，
+    把过期行全部载入内存只为了数个数，是启动阶段最没必要的一次开销。
+    """
     if days <= 0:
         return 0
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    rows = list(session.exec(select(AuditLog).where(AuditLog.at < cutoff)).all())
-    for row in rows:
-        session.delete(row)
-    return len(rows)
+    result = session.execute(delete(AuditLog).where(AuditLog.at < cutoff))
+    return int(result.rowcount or 0)
 
 
 def log_import(

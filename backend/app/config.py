@@ -80,6 +80,7 @@ SELF_COMPANY_NAME = "左蓝微"
 # 历史版本用过的占位名，启动时会被替换成 SELF_COMPANY_NAME（老数据卷兼容）
 SELF_LEGACY_NAMES: tuple[str, ...] = ("本公司", "本方", "我方")
 
+
 def category_label(code: str | None) -> str:
     if not code:
         return "未分类"

@@ -174,7 +174,27 @@
         {% for a in adoptions %}
         <tr>
           <td>{{ a.customer.name if a.customer else '—' }}</td>
-          <td>{{ a.status_label }}</td>
+          <td>
+            {# 进度是可推进的状态，不是一个一次性标签：点开即可改成「量产」，
+               不必删了重建（否则审计里看起来像换了一家公司） #}
+            <details class="adopt-edit">
+              <summary class="link">{{ a.status_label }}</summary>
+              <form method="post" action="/products/{{ product.id }}/adoptions/{{ a.row.id }}"
+                    class="inlinerow">
+                <input type="hidden" name="_csrf" value="{{ csrf }}">
+                <select name="status" aria-label="采用进度">
+                  {% for code, label in adoption_status.items() %}
+                  <option value="{{ code }}"{% if code == a.row.status %} selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+                <input type="text" name="year" value="{{ a.row.year or '' }}"
+                       placeholder="年份" aria-label="年份" style="width:64px">
+                <input type="text" name="note" value="{{ a.row.note or '' }}"
+                       placeholder="备注" aria-label="备注">
+                <button type="submit" class="link">保存</button>
+              </form>
+            </details>
+          </td>
           <td>{{ a.row.year or '—' }}</td>
           <td>{{ a.row.note or '—' }}</td>
           <td class="rowacts">
@@ -200,7 +220,7 @@
         data-confirm="删除 {{ product.model }} 及其全部参数？此操作不可撤销。">
     <input type="hidden" name="_csrf" value="{{ csrf }}">
     <button type="submit" class="btn danger">删除该型号</button>
-    <span class="hint">连同其全部参数一起删除，来源记录保留</span>
+    <span class="hint">连同其全部参数一起删除；不再被引用的来源记录会一并清理</span>
   </form>
 </section>
 {% endblock %}

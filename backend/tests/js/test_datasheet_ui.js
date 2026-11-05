@@ -228,6 +228,17 @@ check("新建公司：完全同名时直接归入已有，不建新档案", () =
   assertEqual(els.forceWrap.hidden, true, "同名不需要确认新建");
 });
 
+check("新建公司：括注写法归入已有公司（与后端归一规则一致）", () => {
+  // 后端 entity_names.key 会整段去掉括注：「村田制作所（Murata）」就是「村田制作所」。
+  // 前端少这一步时，这里会提示「将新建公司」，而后端其实会归入已有 —— 提示与结果相反。
+  els.companySel.value = "__new__";
+  els.companySel.dispatch("change");
+  els.newCompanyInput.value = "村田制作所（Murata）";
+  els.newCompanyInput.dispatch("input");
+  assertIncludes(els.resolveHint.textContent, "已有同名公司", "括注不应被当成另一家");
+  assertEqual(els.forceWrap.hidden, true, "同名不需要确认新建");
+});
+
 check("齐备后进入就绪", () => {
   els.companySel.value = "2";
   els.companySel.dispatch("change");

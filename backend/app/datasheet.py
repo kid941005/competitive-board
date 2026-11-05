@@ -153,17 +153,26 @@ def read_pdf(path: str | Path) -> list[tuple[int, str]]:
 
 
 def read_plain(path: str | Path) -> list[tuple[int, str]]:
+    """纯文本：按 UTF-8 → GBK 依次尝试。
+
+    上限按**字符数**判，不按字节数：中文一个字符占 3 字节，用字节数当字符数
+    会把一份远未超限的中文规格书误判成超限。
+    """
     raw = Path(path).read_bytes()
-    if len(raw) > config.DATASHEET_MAX_CHARS:
+    text: str | None = None
+    for enc in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
+    if len(text) > config.DATASHEET_MAX_CHARS:
         raise DocumentLimitError(
             f"文本超过单次解析上限 {config.DATASHEET_MAX_CHARS} 字符"
         )
-    for enc in ("utf-8-sig", "utf-8", "gbk"):
-        try:
-            return [(1, raw.decode(enc))]
-        except UnicodeDecodeError:
-            continue
-    return [(1, raw.decode("utf-8", errors="replace"))]
+    return [(1, text)]
 
 
 def read_document(path: str | Path) -> list[tuple[int, str]]:

@@ -59,9 +59,16 @@
     });
   });
 
-  // ── 名称归一：与后端 _norm_company 保持同一口径 ──────────────
+  // ── 名称归一：与后端 app/entity_names.py 的 key() 保持同一口径 ──────────
+  // 先整段去掉括注（「村田制作所（Murata）」→「村田制作所」），再删标点与空白。
+  // 少这一步，页面会提示「将新建公司」，而后端其实会归入已有公司 —— 提示与结果相反。
+  var PAREN = /[（(][^（()）]*[)）]/g;
+
   function normName(s) {
-    return String(s || "").replace(/[\s\-_.·/\\()（）&]+/g, "").toLowerCase();
+    return String(s || "")
+      .replace(PAREN, "")
+      .replace(/[\s\-_.·/\\()（）&]+/g, "")
+      .toLowerCase();
   }
 
   function isNewCompany() {

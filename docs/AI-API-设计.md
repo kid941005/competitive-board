@@ -31,7 +31,7 @@
 |---|---|---|
 | GET | `/api/v1/context` | **一次拿全骨架**：公司、型号、指标 key、各类数量 |
 | GET | `/api/v1/metrics?category=` | 指标字典（含 `key`、`unit`、`better`、`applies_to`） |
-| GET | `/api/v1/entities?kind=` | 公司清单 |
+| GET | `/api/v1/entities?kind=&q=&limit=&cursor=` | 公司清单（关键词 + 游标分页） |
 | GET | `/api/v1/products?entity_id=&category=&status=&q=&limit=&cursor=` | 型号筛选 + 游标分页 |
 | GET | `/api/v1/products/{id}` | 型号详情：参数、缺失项、完整度、`ETag` |
 | GET | `/api/v1/products/{id}/specs` | 只取参数 |
@@ -202,7 +202,7 @@ Authorization: Bearer cib_<prefix>_<secret>
 ### 接 MCP 的方式（已实现：`mcp/cib_mcp.py`）
 
 `/api/v1/tools` 的每一项一对一映射成 MCP tool：`name` → tool name，`description` → description，
-`parameters` → inputSchema，`method+path` → 内部 HTTP 调用。**业务代码零改动**，一共 400 行。
+`parameters` → inputSchema，`method+path` → 内部 HTTP 调用。**业务代码零改动**，不到 500 行。
 
 实现时有四处是踩过才知道的：
 
@@ -218,8 +218,9 @@ Authorization: Bearer cib_<prefix>_<secret>
 - **默认禁用系统代理**。设了 `http_proxy` 的机器上，urllib 会把 `127.0.0.1` 与 `192.168.*`
   也送进代理然后超时，表现得像「看板没起来」。内网访问必须绕开，要代理时显式设
   `CIB_USE_ENV_PROXY=1`。
-- **不透传 `If-Match`**。乐观并发锁只在直接调 HTTP 时用；AI 是串行对话，「先 GET 再 PATCH」够了。
-  为它引入一层「参数名 → HTTP 头」的映射不划算。
+- **`If-Match` 经工具参数透传**：MCP 的 `update_product` 接受 `if_match`，映射到 `If-Match`
+  请求头；直接调 HTTP 的客户端仍可用同名请求头。头在 function-calling 的 JSON Schema 里
+  没有位置，所以必须留一个同义参数名。
 
 顺带补了清单本身的两处缺失：`update_product` 原来只有 path、没说要传什么，
 `bulk_import` **完全没有 parameters** —— 直接吃 `/tools` 的 function-calling 客户端同样会调不通，
@@ -241,5 +242,6 @@ Authorization: Bearer cib_<prefix>_<secret>
 
 - **不让 AI 写 SQL**：所有读写都走受控接口，字段与范围由代码决定。
 - **不做细粒度行级权限**（如「只能看某几个友商」）：需要时在 `require_scope` 之后加一层 domain 过滤，位置已预留。
-- **不做审计日志**：`ApiToken.last_used_at` 只记最近一次；完整审计需要单独的表与保留策略。
+- **审计只覆盖业务写入**：`audit_logs` 记型号 / 参数 / 公司 / 令牌 / 系统参数的变更与保留期清理，
+  不记逐次请求流水。需要访问日志时用反向代理的 access log，两者不要混在一张表里。
 - **不开放 webhook**：`/changes` 是拉模式，推模式等有明确消费方再加。

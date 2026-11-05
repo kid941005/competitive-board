@@ -29,7 +29,9 @@ LOG_OBJECTS = (
 router = APIRouter()
 
 def _active_admin_count(session: Session) -> int:
-    rows = session.exec(select(User).where(User.role == "admin", User.is_active == True)).all()
+    rows = session.exec(
+        select(User).where(User.role == "admin", User.is_active.is_(True))
+    ).all()
     return len(rows)
 
 
@@ -508,9 +510,9 @@ async def admin_settings_save(
 
     after = settings_store.all_values(session)
     diff = [
-        {"field": k, "old": audit._s(before.get(k)), "new": audit._s(after.get(k))}
+        {"field": k, "old": audit.as_text(before.get(k)), "new": audit.as_text(after.get(k))}
         for k in values
-        if audit._s(before.get(k)) != audit._s(after.get(k))
+        if audit.as_text(before.get(k)) != audit.as_text(after.get(k))
     ]
     if diff:
         audit.record(

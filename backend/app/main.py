@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import math
-import os
 import uuid
 from contextlib import asynccontextmanager
 from urllib.parse import quote, urlsplit
@@ -48,16 +47,13 @@ from .routes_products import router as products_router
 from .timeutil import fmt_local
 from .web_shared import BASE, _safe_next, templates
 
-# 用户不存在时也走一次哈希校验，避免通过响应时间枚举账号
-
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    admin_name = (os.getenv("CIB_ADMIN_USER") or "admin").strip() or "admin"
     with Session(engine) as session:
         auth.purge_expired(session)
-        generated = auth.ensure_bootstrap_admin(session)
+        bootstrap = auth.ensure_bootstrap_admin(session)
         # 老数据卷里自家公司可能还叫「本公司」，启动时改成真实名称（幂等）
         _rename_legacy_self(session)
         # 日志会无限增长，按保留期在启动时清一次
@@ -77,8 +73,9 @@ async def lifespan(_app: FastAPI):
                 f"保留在用 {swept['referenced']} 份、未到期 {swept['kept']} 份",
                 flush=True,
             )
-    if generated:
+    if bootstrap:
         # 只在此打印一次。请立即登录后修改密码。
+        admin_name, generated = bootstrap
         print("=" * 62, flush=True)
         print(f"  已创建初始管理员：{admin_name}", flush=True)
         print(f"  初始密码：{generated}", flush=True)
@@ -87,7 +84,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="竞品情报看板", version="1.0.7", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="1.0.8", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -108,6 +105,11 @@ templates.env.filters["localtime"] = fmt_local
 
 
 # ── 认证 / 授权异常：页面层与接口层分别处置 ────────────────────────────────
+def _is_api_v1(path: str) -> bool:
+    """机器接口的准确边界：/api/v1 与 /api/v1/*，不含 /api/v10 这类前缀巧合。"""
+    return path == "/api/v1" or path.startswith("/api/v1/")
+
+
 def _wants_html(request: Request) -> bool:
     """页面返回 HTML、接口返回 JSON —— 按路径判定，不依赖 Accept 头。
 
@@ -115,7 +117,10 @@ def _wants_html(request: Request) -> bool:
     排查问题时很难判断到底是被拦了还是路由不存在。
     """
     path = request.url.path
-    if path.startswith("/api/") or path.startswith("/export.") or path.endswith("/file"):
+    if _is_api_v1(path) or path.startswith("/api/") or path.startswith("/export."):
+        return False
+    # 规格书原文下载：浏览器会直接打开 PDF，但调用方拿到的是文件而不是页面
+    if path.startswith("/datasheet/") and path.endswith("/file"):
         return False
     if path.startswith("/admin/") or path in ("/", "/compare", "/datasheet"):
         return True
@@ -133,6 +138,8 @@ def _error_back(request: Request) -> str:
     except ValueError:
         return "/compare"
     return _safe_next(ref)
+
+
 @app.exception_handler(api_v1.ApiError)
 async def _on_api_error(_request: Request, exc: api_v1.ApiError):
     return api_v1.fail(exc)
@@ -143,10 +150,12 @@ _V1_CODE_BY_STATUS = {
     401: "UNAUTHENTICATED",
     403: "FORBIDDEN",
     404: "NOT_FOUND",
-    405: "VALIDATION_FAILED",
+    405: "METHOD_NOT_ALLOWED",
     409: "CONFLICT_VERSION",
     422: "VALIDATION_FAILED",
 }
+
+
 @app.exception_handler(HTTPException)
 async def _on_http_error(request: Request, exc: HTTPException):
     """页面错误渲染成页面，接口错误保持 JSON；/api/v1 走统一信封。
@@ -154,7 +163,7 @@ async def _on_http_error(request: Request, exc: HTTPException):
     原实现对页面路由也返回 {"detail": ...}：用户在表单里点保存，
     结果浏览器跳到一屏裸 JSON，既没有导航也没有返回按钮。
     """
-    if not (request.url.path == "/api/v1" or request.url.path.startswith("/api/v1/")):
+    if not _is_api_v1(request.url.path):
         if _wants_html(request):
             back = _error_back(request)
             return templates.TemplateResponse(
@@ -194,7 +203,7 @@ async def _on_validation_error(request: Request, exc: RequestValidationError):
         return value
 
     errors = finite_json(jsonable_encoder(exc.errors()))
-    if not (request.url.path == "/api/v1" or request.url.path.startswith("/api/v1/")):
+    if not _is_api_v1(request.url.path):
         return JSONResponse({"detail": errors}, status_code=422)
     return JSONResponse(
         {
@@ -209,6 +218,8 @@ async def _on_validation_error(request: Request, exc: RequestValidationError):
         },
         status_code=422,
     )
+
+
 @app.exception_handler(auth.NotAuthenticated)
 async def _on_unauthenticated(request: Request, _exc: auth.NotAuthenticated):
     if _wants_html(request):
@@ -217,6 +228,8 @@ async def _on_unauthenticated(request: Request, _exc: auth.NotAuthenticated):
             target += "?" + request.url.query
         return RedirectResponse(f"/login?next={quote(target)}", status_code=303)
     return JSONResponse({"detail": "未登录", "code": "unauthenticated"}, status_code=401)
+
+
 @app.exception_handler(auth.Forbidden)
 async def _on_forbidden(request: Request, exc: auth.Forbidden):
     if _wants_html(request):
@@ -239,6 +252,8 @@ async def _on_forbidden(request: Request, exc: auth.Forbidden):
         },
         status_code=403,
     )
+
+
 @app.exception_handler(auth.CsrfInvalid)
 async def _on_csrf(request: Request, _exc: auth.CsrfInvalid):
     if _wants_html(request):
@@ -254,6 +269,8 @@ async def _on_csrf(request: Request, _exc: auth.CsrfInvalid):
             status_code=403,
         )
     return JSONResponse({"detail": "CSRF 校验失败", "code": "csrf"}, status_code=403)
+
+
 @app.exception_handler(IntegrityError)
 async def _on_integrity(request: Request, _exc: IntegrityError):
     """唯一索引挡住并发写入时，回 409 而不是 500。
@@ -263,7 +280,7 @@ async def _on_integrity(request: Request, _exc: IntegrityError):
     IntegrityError 翻译成「冲突，请重试」，而不是让用户看一屏堆栈。
     """
     message = "写入冲突：同一型号或同一参数已存在，可能是并发提交。请刷新后重试。"
-    if request.url.path == "/api/v1" or request.url.path.startswith("/api/v1/"):
+    if _is_api_v1(request.url.path):
         return api_v1.fail(api_v1.ApiError("UNIQUE_CONFLICT", message))
     if _wants_html(request):
         return templates.TemplateResponse(
@@ -274,6 +291,8 @@ async def _on_integrity(request: Request, _exc: IntegrityError):
             status_code=409,
         )
     return JSONResponse({"detail": message, "code": "unique_conflict"}, status_code=409)
+
+
 def _rename_legacy_self(session: Session) -> None:
     """把历史占位名（本公司 / 本方 / 我方）改成真实公司名。
 
@@ -287,6 +306,8 @@ def _rename_legacy_self(session: Session) -> None:
             session.add(ent)
             print(f"[startup] 自家公司名 {old} → {config.SELF_COMPANY_NAME}", flush=True)
     session.commit()
+
+
 @app.get("/healthz")
 def healthz():
     """容器健康检查用，不鉴权。带版本号：镜像升级后能一眼确认跑的是哪个版本。"""

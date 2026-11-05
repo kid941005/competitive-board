@@ -29,6 +29,7 @@ from .adoptions import status_label
 from .export_safety import append_row, xlsx_bytes
 from .importer import WIDE_COLUMNS, metric_for_column
 from .models import Adoption, Entity, Product, ProductSpec, SpecMetric, SpecSource
+from .timeutil import fmt_local
 
 HEAD_FILL = PatternFill("solid", fgColor="EEF2FF")
 
@@ -145,7 +146,8 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
                 spec.value_text or "", metric.unit, spec.condition or "",
                 (src.url or "") if src else "", spec.confidence,
                 "是" if spec.verified else "否",
-                spec.updated_at.strftime("%Y-%m-%d %H:%M") if spec.updated_at else "",
+                # 备份里的时间也要是本地时区：与页面、日志同一口径，否则对不上
+                fmt_local(spec.updated_at),
             ])
     for i, width in enumerate([22, 18, 12, 16, 12, 10, 22, 10, 20, 44, 8, 6, 16], start=1):
         ws2.column_dimensions[get_column_letter(i)].width = width
@@ -164,7 +166,7 @@ def export_all_xlsx(session, *, generated_at: datetime | None = None) -> bytes:
             prod.model if prod else f"#{a.product_id}",
             owner.name if owner else "",
             status_label(a.status), a.year or "", a.note or "",
-            a.updated_at.strftime("%Y-%m-%d %H:%M") if a.updated_at else "",
+            fmt_local(a.updated_at),
         ])
     for i, width in enumerate([24, 20, 20, 10, 8, 40, 16], start=1):
         ws3.column_dimensions[get_column_letter(i)].width = width

@@ -159,7 +159,12 @@ def completeness(
     out: dict[int, float] = {}
     total = len(rows)
     for pid in product_ids:
-        filled = sum(1 for r in rows if not r.cells[pid].is_missing)
+        # .get 而不是 [pid]：调用方可能传入已被并发删除的型号 id，
+        # 少一列完整度不该让整页 500
+        filled = sum(
+            1 for r in rows
+            if (cell := r.cells.get(pid)) is not None and not cell.is_missing
+        )
         out[pid] = filled / total
     return out
 

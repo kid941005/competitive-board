@@ -9,6 +9,41 @@
 
 <section class="panel">
   <div class="panel-head">
+    <h2>新建公司</h2>
+    <span class="hint">空库先在这里建第一家公司；同名（忽略空格 / 标点 / 大小写）会被拦住</span>
+  </div>
+  <form method="post" action="/companies" class="userform">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="ds-field">
+      <span>公司名称</span>
+      <input type="text" name="name" class="ds-input" placeholder="如 江苏江佳电子" required maxlength="64">
+    </label>
+    <label class="ds-field">
+      <span>类型</span>
+      <select name="kind" class="ds-select">
+        {% for code, label in entity_kinds %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>英文名（可选）</span>
+      <input type="text" name="name_en" class="ds-input" placeholder="如 JIANGJIA">
+    </label>
+    <label class="ds-field">
+      <span>地区（可选）</span>
+      <input type="text" name="region" class="ds-input" placeholder="如 中国">
+    </label>
+    <label class="ds-field">
+      <span>档位</span>
+      <select name="tier" class="ds-select">
+        {% for t in entity_tiers %}<option value="{{ t }}"{% if t == 'B' %} selected{% endif %}>{{ t }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn">创建公司</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
     <h2>新建型号</h2>
     <span class="hint">先建档，再进去录参数；也可以直接用批量导入一次建好</span>
   </div>

@@ -19,9 +19,11 @@ from .export_safety import csv_text
 from .exporters import matrix_xlsx
 from .models import Product, ProductSpec, SpecMetric, SpecSource
 from .selection import _load, _matrix_payload, _parse_ids
+from .timeutil import iso_utc
 from .web_shared import _ctx, _perm, templates
 
 router = APIRouter()
+
 
 @router.get("/compare", response_class=HTMLResponse)
 def compare_page(
@@ -59,6 +61,10 @@ def compare_page(
     )
     data = _matrix_payload(session, ids, sset, loaded=loaded)
     data["picker_groups"] = _picker_groups(products)
+    # ?cat= 指向一个当前视图里不存在的指标组时回落「全部」，否则页面上没有任何一个
+    # tab 是选中的，看起来像样式坏了
+    if cat and cat not in data["categories"]:
+        cat = ""
     data.update(
         _ctx(
             user,
@@ -103,6 +109,19 @@ def _picker_groups(products: list[Product]) -> list[dict]:
 # ── JSON API（只读，需要 data:view）────────────────────────────────────────
 
 
+def _matrix_product_row(product: Product, data: dict) -> dict:
+    """矩阵响应里的一个型号。公司被并发删除时给 None，而不是 KeyError。"""
+    ent = data["ent_by_id"].get(product.entity_id)
+    return {
+        "id": product.id,
+        "model": product.model,
+        "name": product.name,
+        "entity": ent.name if ent else None,
+        "entity_kind": ent.kind if ent else None,
+        "completeness": round(data["completeness"].get(product.id, 0), 4),
+    }
+
+
 @router.get("/api/matrix")
 def api_matrix(
     p: str | None = Query(default=None),
@@ -121,17 +140,7 @@ def api_matrix(
     data = _matrix_payload(session, ids, sset, loaded=loaded)
     payload = {
         "selected": ids,
-        "products": [
-            {
-                "id": pr.id,
-                "model": pr.model,
-                "name": pr.name,
-                "entity": data["ent_by_id"][pr.entity_id].name,
-                "entity_kind": data["ent_by_id"][pr.entity_id].kind,
-                "completeness": round(data["completeness"].get(pr.id, 0), 4),
-            }
-            for pr in data["products"]
-        ],
+        "products": [_matrix_product_row(pr, data) for pr in data["products"]],
         "rows": [
             {
                 "metric": r.metric.name,
@@ -220,7 +229,7 @@ def api_trace(
         "condition": spec.condition,
         "confidence": spec.confidence,
         "verified": spec.verified,
-        "captured_at": spec.captured_at.isoformat() if spec.captured_at else None,
+        "captured_at": iso_utc(spec.captured_at),
         "source": {
             "kind": src.kind if src else None,
             "url": src.url if src else None,

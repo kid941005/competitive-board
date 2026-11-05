@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 
 from . import config
 from .models import AppSetting, utcnow
+from .timeutil import fmt_local
 
 
 @dataclass(frozen=True)
@@ -230,7 +231,8 @@ def snapshot(session: Session) -> list[dict]:
                 "value": current[spec.key],
                 "default": spec.default,
                 "modified": row is not None and row.value != spec.serialize(spec.default),
-                "updated_at": row.updated_at.isoformat()[:16] if row else None,
+                # 与页面其它时间同一口径：库里存 UTC，展示按部署时区
+                "updated_at": fmt_local(row.updated_at) if row else None,
                 "updated_by": row.updated_by if row else None,
             }
         )

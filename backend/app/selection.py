@@ -146,7 +146,7 @@ def _matrix_payload(session: Session, ids: list[int], sset: dict, loaded=None) -
     }
 
 
-# ── 登录 / 登出 ────────────────────────────────────────────────────────────
+# ── 自家公司名 ──────────────────────────────────────────────────────────────
 
 
 def _self_name(session: Session) -> str:

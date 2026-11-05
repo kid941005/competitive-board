@@ -82,13 +82,13 @@ printf '%s\n' \
 
 ## 工具清单
 
-从 `/api/v1/tools` 动态拉，当前 18 个：
+从 `/api/v1/tools` 动态拉，当前 19 个：
 
 | 用途 | 工具 |
 |---|---|
 | 摸骨架 | `get_context` |
 | 检索 | `search_products`、`search_companies`、`search_metrics` |
-| 改公司 | `update_entity`（名称 / 类型 self·competitor·customer / 英文名 / 地区 / 档位） |
+| 改公司 | `create_entity`（新建）、`update_entity`（名称 / 类型 self·competitor·customer / 英文名 / 地区 / 档位） |
 | 读详情 | `get_product`、`compare_products`、`get_changes` |
 | 客户采用 | `list_adoptions`、`create_adoption`、`update_adoption`、`delete_adoption` |
 | 写产品 | `create_product`、`update_product`、`delete_product` |
@@ -97,7 +97,7 @@ printf '%s\n' \
 
 每个工具的描述里标了后端要求的 scope。写操作记得先用 `dry_run: true` 预演。
 
-`create_product`、`write_specs`、`bulk_import` 支持 `idempotency_key` 参数，映射为 HTTP
+`create_entity`、`create_product`、`write_specs`、`bulk_import` 支持 `idempotency_key` 参数，映射为 HTTP
 `Idempotency-Key` 请求头；只有相同写入的重试复用同一个键。`update_product` 支持
 `if_match`，传入 `get_product` 返回的 `meta.etag`，版本变化时返回 `CONFLICT_VERSION`。
 `get_changes` 分页时保留初始 `since`，把 `meta.next_cursor` 原样传入 `cursor`，避免同时间更新重复分页。

@@ -270,8 +270,13 @@ def view_ctx(user: User, auth_session: AuthSession) -> dict:
 
 
 # ── 初始化 ─────────────────────────────────────────────────────────────────
-def ensure_bootstrap_admin(session: Session) -> str | None:
-    """没有管理员时创建一个。返回自动生成的明文密码（仅此一次可见），否则 None。
+def ensure_bootstrap_admin(session: Session) -> tuple[str, str] | None:
+    """没有管理员时创建一个。
+
+    返回 (账号名, 自动生成的明文密码)；已有管理员时返回 None。明文密码仅此一次
+    可见，由调用方打印到启动日志。把账号名一起返回，是为了让日志里的
+    「已创建初始管理员：X」与实际建出来的账号同源 —— 两边各读一次环境变量，
+    改了一处就会打印出错误的账号名。
 
     密码来源优先级：CIB_ADMIN_PASSWORD → 随机生成并打印到日志。
     显式配置的密码若不合规，直接抛错拒绝启动 —— 不静默降级成弱口令。
@@ -300,4 +305,4 @@ def ensure_bootstrap_admin(session: Session) -> str | None:
         )
     )
     session.commit()
-    return password if generated else None
+    return (username, password) if generated else None

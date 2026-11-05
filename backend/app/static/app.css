@@ -42,7 +42,9 @@
 * { box-sizing: border-box; }
 
 body {
-  margin: 0;
+  margin: 0 auto;
+  max-width: 1680px;
+  padding: 0 24px 40px;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
@@ -50,8 +52,6 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
-
-body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 
 /* ── 顶栏 ── */
 .topbar {
@@ -65,7 +65,6 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 }
 .topbar h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
 .topbar p { margin: 1px 0 0; font-size: 12px; color: var(--text-3); }
-.actions { display: flex; gap: 8px; }
 
 .btn {
   display: inline-flex; align-items: center; height: 32px; padding: 0 14px;
@@ -385,8 +384,8 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 .pop-body dd { margin: 0; color: var(--text); word-break: break-all; }
 .pop-body dd a { color: var(--accent); text-decoration: none; }
 .pop-body dd a:hover { text-decoration: underline; }
-.pill-ok { color: var(--best-fg); }
-.pill-warn { color: var(--warn); }
+.pill-ok { color: var(--best-fg); font-size: 12px; }
+.pill-warn { color: var(--warn); font-size: 12px; }
 
 /* ── 规格书导入 ── */
 .ds-form { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; }
@@ -412,7 +411,6 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 .ds-input:focus, .ds-select:focus { border-color: var(--accent); }
 .ds-resolve { margin: 10px 0 0; font-size: 12.5px; color: var(--text-2); min-height: 18px; }
 .ds-resolve.warn { color: var(--warn); }
-.ds-resolve.ready { color: var(--best-fg); }
 .ds-check-line {
   display: flex; gap: 7px; align-items: flex-start;
   margin: 6px 0 0; font-size: 12.5px; color: var(--text-2);
@@ -587,7 +585,6 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
   font-size: 10px; padding: 0 5px; border-radius: 4px;
   background: var(--accent-soft); color: var(--accent); margin-left: 4px;
 }
-.pill-ok { color: var(--best-fg); font-size: 12px; }
 .pill-off { color: var(--text-3); font-size: 12px; }
 .rowacts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .inlinerow { display: flex; gap: 5px; align-items: center; margin: 0; }
@@ -598,6 +595,9 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
 }
 .inlinerow input { width: 110px; }
 .link.danger { color: #b91c1c; }
+.adopt-edit summary { cursor: pointer; list-style: none; }
+.adopt-edit summary::-webkit-details-marker { display: none; }
+.adopt-edit[open] { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .pwdreset summary { cursor: pointer; list-style: none; }
 .pwdreset summary::-webkit-details-marker { display: none; }
 .pwdreset[open] { display: flex; gap: 6px; align-items: center; }
@@ -657,6 +657,11 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
   border: 1px solid var(--line); border-radius: 14px; padding: 32px;
 }
 .empty-state h1 { font-size: 18px; margin: 0 0 8px; }
+/* 错误页顶部的状态码：没有这条规则时它只是一行普通正文，看不出是「出错」 */
+.empty-mark {
+  font-size: 40px; font-weight: 700; line-height: 1.1;
+  color: var(--text-3); letter-spacing: .02em; margin-bottom: 4px;
+}
 .empty-state p { color: var(--text-2); font-size: 13px; }
 .empty-state code {
   font-family: var(--mono); background: var(--surface-3);
@@ -782,8 +787,6 @@ body { padding: 0 24px 40px; max-width: 1680px; margin: 0 auto; }
  */
 [hidden] { display: none !important; }
 
-.panel-head.with-search { align-items: center; }
-.picker-search { margin-left: auto; width: 220px; }
 
 .prod-filters {
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px;

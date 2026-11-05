@@ -11,7 +11,7 @@
     —— 字典为空时，导入进去的参数匹配不到任何指标，页面上不会有任何一行。
   </p>
   <p>
-    最省事的做法是应用内置的压电指标模板（当前字典 {{ counts.metrics }} 项，带适用大类：
+    最省事的做法是应用内置的压电指标模板（当前字典 {{ counts.metrics if counts is defined and counts else 0 }} 项，带适用大类：
     压电气泵 / 压电风扇 / 压电液泵）。它<b>只写字典，不创建任何公司或型号</b>，
     那些数据应当由你自己导入。
   </p>
@@ -24,7 +24,7 @@
   <p>指标字典已就绪（{{ counts.metrics }} 个指标）。接下来三选一：</p>
   <ol>
     <li>用 CSV 批量导入真实参数：<a href="/api/import/template">下载模板</a></li>
-    <li>在<a href="/products">产品管理</a>里手工建公司、型号，再逐项填参数</li>
+    <li>在<a href="/products">产品管理</a>里先「新建公司」，再给它建型号，然后逐项填参数</li>
     <li>想先看效果：<code>docker compose exec app python -m app.seed</code> 写入示例公司</li>
   </ol>
   {% endif %}

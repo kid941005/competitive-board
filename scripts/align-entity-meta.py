@@ -21,9 +21,18 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE = os.environ.get("CIB_BASE_URL", "https://sappland.hqgg.top:59826").rstrip("/")
-TOKEN = os.environ["CIB_TOKEN"]
+# 默认指向本机：把某个线上实例写死成默认值，等于让「忘了设 CIB_BASE_URL」
+# 变成一次对着生产库的批量写。要改线上实例就显式设环境变量。
+BASE = os.environ.get("CIB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+TOKEN = (os.environ.get("CIB_TOKEN") or "").strip()
 APPLY = "--apply" in sys.argv
+
+if not TOKEN:
+    print(
+        "缺少 CIB_TOKEN：先在「API 令牌」页签发一个，再 CIB_TOKEN=cib_xxx 运行本脚本。",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
 # 只放「与 seed 一致」的权威值。seed 里 self 的 name_en 本来就是 None，这里也留空。
 TARGET = {
@@ -55,9 +64,17 @@ def call(method: str, path: str, body: dict | None = None) -> dict:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         return {"ok": False, "http": e.code, "body": e.read().decode(errors="replace")}
+    except urllib.error.URLError as e:
+        # 连不上（地址错、服务没起、被代理拦）不该以 traceback 收场
+        return {"ok": False, "error": {"code": "UNREACHABLE", "message": str(e.reason)}}
 
 
-ents = call("GET", "/api/v1/entities?limit=100")["data"]
+print(f"目标实例：{BASE}\n")
+first = call("GET", "/api/v1/entities?limit=100")
+if not first.get("ok"):
+    print(f"读取公司清单失败：{first.get('error') or first}", file=sys.stderr)
+    raise SystemExit(1)
+ents = first.get("data") or []
 print(f"实例上共 {len(ents)} 家公司，目标 {len(TARGET)} 家\n")
 
 unknown = [e["name"] for e in ents if e["name"] not in TARGET]

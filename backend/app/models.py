@@ -40,7 +40,7 @@ class Product(SQLModel, table=True):
     entity_id: int = Field(foreign_key="entities.id", index=True)
     model: str = Field(index=True, description="型号，如 SX-1200")
     name: str | None = None
-    category: str | None = Field(default=None, index=True, description="产品大类，如 声表滤波器")
+    category: str | None = Field(default=None, index=True, description="产品大类代码，如 pump_air")
     status: str = Field(default="active", description="active / eol / rumored")
     launch_date: date | None = None
     datasheet_url: str | None = None
@@ -67,8 +67,9 @@ class SpecMetric(SQLModel, table=True):
     display_order: int = Field(default=100)
     is_key_metric: bool = Field(default=False, description="关键指标，对比页默认置顶")
     # 该指标适用于哪些产品大类（逗号分隔，如 "pump_air,pump_liquid"）。留空 = 全类别通用。
-    # 气泵看流量/静压、风扇看风量/厚度、液泵看 µL 级流量/背压，三套口径不通用，
-    # 不按类别过滤会出现大量无意义的空格，更会让同类别名（流量/压力）互相串味。
+    # 气泵与风扇看空气流量/静压，液泵看液体流量/背压 —— 单位已统一（mL/min、kPa），
+    # 但介质与适用大类不同。不按类别过滤会让同类别名（流量/压力）互相串味，
+    # 一处文本产出两条互斥候选。
     applies_to: str = Field(default="", description="适用产品大类，逗号分隔；空=通用")
     # 规格书里可能出现的其他写法，供自动识别用（逗号分隔）
     aliases: str = Field(default="", description="识别别名，逗号分隔")

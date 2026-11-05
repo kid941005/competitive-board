@@ -89,5 +89,6 @@ class AdoptionPatch(BaseModel):
 
 class TokenIn(BaseModel):
     name: str
-    scopes: list[str] = ["read"]
+    # 不要写可变默认值：Pydantic 会复制，但读代码的人不该靠「框架替我兜住了」来判断
+    scopes: list[str] = Field(default_factory=lambda: ["read"])
     expires_days: int | None = Field(default=None, ge=1, le=tokens.MAX_EXPIRY_DAYS)

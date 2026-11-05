@@ -33,7 +33,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, delete, func, or_
 from sqlmodel import Session, select
 
 from . import (
@@ -42,6 +42,7 @@ from . import (
     auth,
     config,
     entity_names,
+    lookups,
     references,
     search,
     settings_store,
@@ -463,16 +464,9 @@ def _resolve_entity_for_create(
             "VALIDATION_FAILED", "需要 entity_id 或 entity_name",
             hint="已有公司传 entity_id；新公司传 entity_name",
         )
-    key = _norm_name(name)
-    similar: list[Entity] = []
-    for e in session.exec(select(Entity)).all():
-        other = _norm_name(e.name)
-        if not other:
-            continue
-        if other == key:
-            return e, False
-        if len(key) >= 2 and (key in other or other in key):
-            similar.append(e)
+    exact, similar = lookups.find_entity(session, name)
+    if exact is not None:
+        return exact, False
     if similar and not force:
         raise ApiError(
             "ENTITY_SIMILAR",
@@ -488,11 +482,12 @@ def _resolve_entity_for_create(
 
 
 def _find_product_ci(session: Session, entity_id: int, model: str) -> Product | None:
-    target = model.strip().casefold()
-    for p in session.exec(select(Product).where(Product.entity_id == entity_id)).all():
-        if (p.model or "").strip().casefold() == target:
-            return p
-    return None
+    """同公司内按型号查（忽略大小写与首尾空白）。
+
+    保留这一层包装而不是直接调 lookups：并发场景的测试会替换本函数来模拟
+    「查的时候还没有、插入时已被别人建好」，名字是那个测试的接缝。
+    """
+    return lookups.find_product(session, entity_id, model)
 
 
 # ── 幂等 ───────────────────────────────────────────────────────────────────
@@ -502,12 +497,11 @@ def purge_idempotency(session: Session, keep_days: int | None = None) -> int:
     if days <= 0:
         return 0
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    rows = list(session.exec(
-        select(ApiIdempotency).where(ApiIdempotency.created_at < cutoff)
-    ).all())
-    for row in rows:
-        session.delete(row)
-    return len(rows)
+    # 与 audit.purge 同理：一条 DELETE，不把过期行全载入内存
+    result = session.execute(
+        delete(ApiIdempotency).where(ApiIdempotency.created_at < cutoff)
+    )
+    return int(result.rowcount or 0)
 
 
 def _idem_key(principal: Principal, header: str | None) -> str | None:
@@ -647,6 +641,8 @@ def list_metrics(
 def list_entities(
     kind: str | None = Query(default=None, description="self / competitor / customer"),
     q: str | None = Query(default=None, description="公司名关键词（中英文都匹配，空格分隔多个词）"),
+    limit: int = Query(default=500, ge=1, le=2000, description="最多返回多少条"),
+    cursor: int | None = Query(default=None, description="上一页最后一条的 id"),
     _p: Principal = Depends(require_scope("read")),
     session: Session = Depends(get_session),
 ):
@@ -657,13 +653,25 @@ def list_entities(
     if keyword:
         # 公司总量很小（几十条），在内存里筛比拼 SQL 条件更好读，也顺带支持多词
         rows = [e for e in rows if search.hits(e.name, e.name_en, keyword=keyword)]
+    if cursor is not None:
+        rows = [e for e in rows if (e.id or 0) > cursor]
+    total = len(rows)
+    has_more = total > limit
+    rows = rows[:limit]
     data = []
     for e in rows:
         item = _entity_dict(e)
         if keyword:
             item["matched"] = search.matched_fields(keyword, name=e.name, name_en=e.name_en)
         data.append(item)
-    return ok(data, total=len(data), q=keyword)
+    # 与 /products 同一套分页说法：count 是本页条数，has_more + next_cursor 说明还有没有下一页。
+    # total 保留给旧调用方：默认 limit=500 远大于实际公司数，它与「本页条数」取值相同；
+    # 真超过 500 时它表示「匹配总数」—— 这本来就是 total 该表达的意思。
+    return ok(
+        data, total=total, count=len(data), has_more=has_more,
+        next_cursor=data[-1]["id"] if has_more and data else None,
+        q=keyword,
+    )
 
 
 @router.get("/products")
@@ -1587,9 +1595,9 @@ def list_tokens(
     return ok([
         {
             "id": t.id, "name": t.name, "prefix": t.prefix, "scopes": t.scopes,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "last_used_at": t.last_used_at.isoformat() if t.last_used_at else None,
-            "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+            "created_at": iso_utc(t.created_at),
+            "last_used_at": iso_utc(t.last_used_at),
+            "expires_at": iso_utc(t.expires_at),
             "revoked": t.revoked_at is not None,
         }
         for t in tokens.list_tokens(session)
@@ -1675,7 +1683,7 @@ def get_audit_log(
         [
             {
                 "id": r.id,
-                "at": r.at.isoformat() if r.at else None,
+                "at": iso_utc(r.at),
                 "actor": r.actor,
                 "actor_kind": r.actor_kind,
                 "action": r.action,
@@ -1723,7 +1731,7 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                 "properties": {
                     "entity_id": {"type": "integer"},
                     "category": {"type": "string", "enum": list(config.CATEGORY_LABEL)},
-                    "status": {"type": "string", "enum": ["active", "eol", "rumored"]},
+                    "status": {"type": "string", "enum": list(PRODUCT_STATUSES)},
                     "q": {"type": "string",
                           "description": "型号 / 产品名 / 公司名关键词，空格分隔多个词"},
                     "limit": {"type": "integer", "maximum": 200, "default": 50},
@@ -1761,6 +1769,27 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "name_en": {"type": "string"},
                     "region": {"type": "string"},
                     "tier": {"type": "string", "enum": list(VALID_ENTITY_TIERS)},
+                    "dry_run": {"type": "boolean"},
+                },
+            },
+        },
+        {
+            "name": "create_entity",
+            "method": "POST", "path": "/api/v1/entities",
+            "description": (
+                "新建公司（self 本方 / competitor 友商 / customer 客户）。"
+                "名称与已有公司相近时返回 409；确认是另一家再传 force=true。"
+            ),
+            "scope": "write",
+            "parameters": {
+                "type": "object", "required": ["name"],
+                "properties": {
+                    "name": {"type": "string", "description": "公司名称"},
+                    "kind": {"type": "string", "enum": list(VALID_ENTITY_KINDS)},
+                    "name_en": {"type": "string"},
+                    "region": {"type": "string"},
+                    "tier": {"type": "string", "enum": list(VALID_ENTITY_TIERS)},
+                    "force": {"type": "boolean", "description": "名称相近时仍新建"},
                     "dry_run": {"type": "boolean"},
                 },
             },
@@ -1882,7 +1911,7 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "model": {"type": "string"},
                     "category": {"type": "string", "enum": list(config.CATEGORY_LABEL)},
                     "name": {"type": "string"},
-                    "status": {"type": "string", "enum": ["active", "eol", "rumored"]},
+                    "status": {"type": "string", "enum": list(PRODUCT_STATUSES)},
                     "force": {"type": "boolean", "description": "公司名相似时强制新建"},
                     "dry_run": {"type": "boolean"},
                 },
@@ -1903,7 +1932,7 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "model": {"type": "string", "description": "型号；同公司内必须唯一"},
                     "name": {"type": "string", "description": "产品名"},
                     "category": {"type": "string", "enum": list(config.CATEGORY_LABEL)},
-                    "status": {"type": "string", "enum": ["active", "eol", "rumored"]},
+                    "status": {"type": "string", "enum": list(PRODUCT_STATUSES)},
                     "datasheet_url": {"type": "string", "description": "规格书链接，只收 http(s)"},
                     "note": {"type": "string"},
                     "dry_run": {"type": "boolean"},
@@ -1982,7 +2011,10 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "until": {"type": "string", "format": "date-time"},
                     "actor": {"type": "string"},
                     "action": {"type": "string", "enum": ["create", "update", "delete", "import"]},
-                    "object_type": {"type": "string", "enum": ["product", "spec", "entity", "user", "token", "setting"]},
+                    "object_type": {"type": "string", "enum": [
+                        "product", "spec", "entity", "adoption", "metric",
+                        "user", "token", "setting",
+                    ]},
                     "q": {"type": "string", "description": "型号 / 指标 / 值关键词"},
                     "limit": {"type": "integer", "maximum": 500},
                     "offset": {"type": "integer"},

@@ -80,9 +80,9 @@
 
 <section class="toolbar">
   <div class="tabs" id="catTabs">
-    <button type="button" class="tab on" data-cat="">全部指标</button>
+    <button type="button" class="tab{% if not cat %} on{% endif %}" data-cat="">全部指标</button>
     {% for c in categories %}
-    <button type="button" class="tab" data-cat="{{ c }}">{{ c }}</button>
+    <button type="button" class="tab{% if cat == c %} on{% endif %}" data-cat="{{ c }}">{{ c }}</button>
     {% endfor %}
   </div>
 
