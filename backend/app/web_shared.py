@@ -70,7 +70,7 @@ def _safe_next(target: str | None) -> str:
         or chr(92) in target        # 反斜杠：部分浏览器把 /\host 当 //host
         or any(ord(ch) < 32 or ord(ch) == 127 for ch in target)
     ):
-        return "/compare"
+        return "/news"
     return target
 
 

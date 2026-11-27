@@ -89,6 +89,16 @@ SPECS: tuple[SettingSpec, ...] = (
         help="打开对比页且未指定型号时，默认进入该大类。",
     ),
     SettingSpec(
+        key="news.refresh_minutes",
+        label="市场消息自动抓取间隔 (分钟)",
+        group="市场消息",
+        kind="int",
+        default=60,  # 与 news.DEFAULT_REFRESH_MINUTES 一致；不 import 以免循环依赖
+        minimum=0,
+        maximum=1440,
+        help="0 表示关闭自动抓取，只能手动点「立即抓取」；改完下一轮生效，无需重启。",
+    ),
+    SettingSpec(
         key="datasheet.max_upload_mb",
         label="规格书最大上传体积 (MB)",
         group="规格书",

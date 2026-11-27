@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}市场消息 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if ok %}<p class="flash ok">{{ ok }}</p>{% endif %}
+{% if err %}<p class="flash err">{{ err }}</p>{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>时间线</h2>
+    <span class="hint" id="newsCount">{{ total }} 条消息 · 按发布时间倒序，越往下越早</span>
+    {% if can_refresh %}
+    <a class="btn ghost sm" href="/news/clip" title="把公众号或网页链接贴进来，批量补录成消息">补录</a>
+    <form method="post" action="/news/refresh" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <button type="submit" class="btn ghost sm" title="立即抓取所有启用的源，抓完刷新页面查看">立即抓取</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <form method="get" action="/news" class="filters news-filters">
+    <input type="search" name="q" value="{{ keyword }}" class="search"
+           placeholder="搜索标题 / 摘要…" aria-label="搜索消息">
+    <select name="entity" class="ds-select" aria-label="按公司筛选">
+      <option value="">全部公司</option>
+      {% for e in options.entities %}
+      <option value="{{ e.id }}"{% if entity_id == e.id %} selected{% endif %}>{{ e.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="source" class="ds-select" aria-label="按来源筛选">
+      <option value="">全部来源</option>
+      {% for s in options.sources %}
+      <option value="{{ s.id }}"{% if source_id == s.id %} selected{% endif %}>{{ s.name }}（{{ s.count }}）</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn sm">筛选</button>
+    {% if keyword or entity_id or source_id %}<a class="btn ghost sm" href="/news">清空</a>{% endif %}
+  </form>
+
+  {% if groups %}
+  {% from "_news_card.html" import card %}
+  {# 单列时间线：按天分组，组头可折叠。无限滚动的新卡片由 news.js 接到对应组末尾。 #}
+  <div class="news-timeline" id="newsWall"
+       data-cursor="{{ next_cursor }}" data-last-day="{{ last_day }}"
+       data-entity="{{ entity_id }}" data-source="{{ source_id }}" data-q="{{ keyword }}">
+    {% for group in groups %}
+    <section class="news-day" data-day="{{ group.day }}">
+      <button type="button" class="news-day-head" aria-expanded="true">
+        <span class="news-day-date">{{ group.label }}</span>
+        <span class="news-day-count">{{ group.count }} 条</span>
+        <span class="news-day-caret" aria-hidden="true">▾</span>
+      </button>
+      <div class="news-day-body">
+        {% for item in group["items"] %}{{ card(item) }}{% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+  </div>
+  {% if next_cursor %}
+  <div class="news-more" id="newsMore">
+    <button type="button" class="btn ghost sm" id="newsMoreBtn">加载更多</button>
+  </div>
+  {% endif %}
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-mark">◷</div>
+    <h1>还没有市场消息</h1>
+    {% if keyword or entity_id or source_id %}
+    <p>当前筛选条件下没有消息，换个条件或 <a href="/news">清空筛选</a> 看看。</p>
+    {% else %}
+    <p>消息源已预置好，点右上角「立即抓取」拉一次，或等后台定时抓取（默认每 60 分钟一次）。</p>
+    {% if can_refresh %}
+    <p>某个源抓不到时，可在 <a href="/admin/news">消息源管理</a> 里看具体原因并单独重试。</p>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}<script src="/static/news.js?v={{ asset_v }}" defer></script>{% endblock %}

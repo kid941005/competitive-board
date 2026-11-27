@@ -1,0 +1,28 @@
+{# 单张消息卡片：首屏与无限滚动共用这一份宏，避免两处结构漂移。
+
+   版式参考 aihot.news：左侧时刻 + 时间轴圆点 + 右侧卡片。
+   圆点与竖线由 CSS 画，这里只给结构。 #}
+{% macro card(item) %}
+<article class="news-card" data-day="{{ item.day }}" data-lang="{{ item.lang }}">
+  <div class="news-time">
+    <time datetime="{{ item.published_iso }}" title="{{ item.published_full }}">{{ item.published_hm }}</time>
+  </div>
+  <div class="news-rail" aria-hidden="true"></div>
+  <div class="news-body">
+    <div class="news-meta">
+      <span class="news-source">{{ item.source_name }}</span>
+      {% if item.entity_name %}<span class="news-entity">{{ item.entity_name }}</span>{% endif %}
+    </div>
+    <h3 class="news-title">
+      {% if item.link %}
+      <a href="{{ item.link }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>
+      {% else %}{{ item.title }}{% endif %}
+    </h3>
+    {% if item.summary %}<p class="news-summary">{{ item.summary }}</p>{% endif %}
+    <div class="news-foot">
+      <time class="news-full" datetime="{{ item.published_iso }}">{{ item.published_full }}</time>
+      {% if item.link %}<a class="news-link" href="{{ item.link }}" target="_blank" rel="noopener noreferrer">原文 ↗</a>{% endif %}
+    </div>
+  </div>
+</article>
+{% endmacro %}

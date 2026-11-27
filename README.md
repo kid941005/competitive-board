@@ -2,7 +2,11 @@
 
 [![build-image](https://github.com/kid941005/competitive-board/actions/workflows/build-image.yml/badge.svg)](https://github.com/kid941005/competitive-board/actions/workflows/build-image.yml)
 
-压电领域友商竞品情报看板。当前已实现**第二部分：性能参数横向对比**（P0），覆盖三类器件：
+压电领域友商竞品情报看板。两块已实现：
+
+**第一部分：友商市场消息看板** —— 订阅 RSS/Atom 源，后台定时抓取入库，页面按发布时间倒序排成**按天分组的单列时间线**，滚到底自动加载下一页（见 [市场消息看板](#市场消息看板)）。
+
+**第二部分：性能参数横向对比**（P0），覆盖三类器件：
 
 | 产品大类 | 代码 | 型号数 | 友商 |
 |---|---|---|---|
@@ -13,11 +17,14 @@
 压电陶瓷（材料牌号 PZT-4 / 5H / 8，d33/Qm 那套典型值表）**不在本看板范围内**——
 它是材料，不是器件，规格书形态与器件 datasheet 不同，混进来只会让指标池变成大片空白。
 
-第一部分「友商 / 客户关联新闻动态」尚未开始；采集栈的编排草稿在 `deploy/`（含 RSSHub / changedetection），
-**不参与看板本体部署**，看板用仓库根目录的单镜像编排即可。
+看板自带轻量 RSS/Atom 抓取，不需要外部采集组件；`deploy/` 里的采集栈编排草稿（RSSHub / changedetection）
+仍**不参与看板本体部署**——要抓没有 RSS 的站点，再用 RSSHub 生成 feed 喂进来即可。
 
-> 当前版本 **v1.0.8**（2026-11-05）。本版修复了 19 项高/中严重度问题，并补上「页面建公司」「客户采用进度推进」
-> 两个闭环入口；数据库结构不变。变更明细见 [v1.0.8 发布说明](docs/releases/v1.0.8.md)。
+> 当前版本 **v1.3.0**（2026-11-26）。本版补上第一部分「市场消息看板」（RSS/Atom 定时抓取 + 按天分组的时间线 +
+> 无限滚动 + 来源管理），并加了**手工补录**（把公众号 / 没有 RSS 的网页链接批量贴进来入时间线）；
+> 还把 Google News 检索源的**跳转链接解析成真实原文地址**，点「原文」直接到文章页。
+> 数据库升到 v9（新增 `news_sources` / `news_items` 两张表；v9 给 `news_items` 加了 `real_url` 列，缓存解析出的原文地址）。
+> 变更明细见 [v1.3.0 发布说明](docs/releases/v1.3.0.md)。
 
 ---
 
@@ -35,7 +42,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:1.0.8
+  ghcr.io/kid941005/competitive-board:1.3.0
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -65,7 +72,7 @@ python -m app.seed --metrics-only
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-打开 <http://127.0.0.1:8000/compare>，会先跳到登录页。
+打开 <http://127.0.0.1:8000/>（默认落地「市场消息」，未登录会先跳到登录页）。
 
 首次启动若库里没有任何管理员，会自动创建一个，密码打印在启动日志里：
 
@@ -159,6 +166,8 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 规格书导入 | 上传 PDF，自动识别参数，人工复核后入库（见下节） |
 | 批量导入 | Excel / CSV 一次写入多型号多参数，自动建档（见下节） |
 | 产品管理 | 管理员直接建公司、建型号，改型号元信息与参数值、增删参数、标记复核、删除型号；列表按大类分段，支持关键词 + 公司 + 大类筛选；型号详情页可记录并推进**客户采用**（谁在用这款泵、到哪一步） |
+| 市场消息 | `/news` 时间线看板：按发布时间倒序、按天分组的单列时间线、滚到底自动加载；按公司 / 来源 / 关键词筛选；管理员可增删改 RSS 源、手动刷新单个或全部源，抓取间隔在系统设置里调（见下节） |
+| 手工补录 | `/news/clip`：把公众号或没有 RSS 的网页链接批量贴进来（每批 12 条），抓标题 / 摘要 / 发布时间入库，与 RSS 共用去重；同一入口在 `/news` 右上角「补录」按钮 |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 | 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
 | 页脚版本号 | 每页底部显示当前运行的 `vX.Y.Z`（含登录页），`/api/v1/health` 也回 `app_version` |
@@ -177,6 +186,102 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 命中的字段会在结果里回 `matched`，例如 `["company","model"]`。
 
 ---
+
+## 市场消息看板
+
+入口：<http://127.0.0.1:8000/>（首页即市场消息，顶栏第一个入口）。**任何角色登录后默认都落到这里**，看板只要 `data:view`，管理来源要 `data:write`。
+
+页面是**按天分组的单列时间线**（版式参考 aihot.news）：日期组头显示「11月27日 星期五 · N 条」并可点击折叠，
+每条左侧是本地时刻与时间轴圆点，右侧卡片带来源、公司标签、标题、摘要和原文链接；滚到距底部一屏时自动取下一页，
+按钮「加载更多」保留给禁用 JS 的环境。
+
+### 数据从哪来
+
+| 环节 | 实现 | 关键取舍 |
+|---|---|---|
+| 抓取 | `app/news_fetch.py`：标准库 `urllib` 发条件请求（`If-None-Match` / `If-Modified-Since`），支持 gzip，4 MB 上限、单次最多 200 条 | 不引第三方依赖（`feedparser` / `httpx` 都不加），后端依赖表保持不变 |
+| 解析 | 自写 RSS 2.0 / Atom 解析，**遇到 DOCTYPE 直接拒** | `xml.etree` 会展开外部实体，订阅源是外部输入，必须先挡 XXE |
+| 时间 | RFC 822（RSS）与 ISO 8601（Atom）都认，统一转 UTC 入库 | 库里一律 UTC，渲染交给 `localtime` 过滤器 |
+| 去重 | `dedupe_key` = `sha1(归一化链接)`，没有链接时用 `sha1(源:id|guid)`；归一会去掉 `utm_*` 等跟踪参数与锚点 | 全表唯一索引，重复抓同一篇不会翻倍 |
+| 抓取状态 | 每个源记 `last_fetch_at` / `last_status` / `last_error` / `ok_count` / `err_count` | 源挂了在管理页直接看见原因，不是静默失败 |
+
+内置 11 个源（村田 / xMEMS / Frore / 巴特尔斯等的新闻与 IR 页），首次启动自动预置；`news_sources` 表非空就不再动它。
+
+### 原文链接为什么不是 Google 跳转页
+
+内置的 7 个 Google News 检索源（村田 / xMEMS / Frore / 巴特尔斯等关键词）吐出来的 `<link>` 是
+`https://news.google.com/rss/articles/CBMi…?oc=5` 这种跳转页，直接当「原文」点过去可能打不开。
+所以 `app/news_link.py` 会把它们解成真实地址：
+
+- **怎么解**：先 GET 文章页取 `data-n-a-sg` / `data-n-a-ts` 两个签名，再 POST 到
+  `https://news.google.com/_/DotsSplashUi/data/batchexecute`（`f.req` 里带 `Fbv4je` + `garturlreq`），
+  从返回的 `garturlres` 里拿到真实 URL。这是 Google 页面前端自己用的接口，不保证永久可用。
+- **什么时候解**：卡片上的「原文」指向 `/news/item/{id}/go`——已解析过就 302 到真实地址；
+  没解析过就**当场解一次**（约 1–3 秒）并写回 `news_items.real_url`，之后都走缓存。
+- **后台补**：启动时、每轮自动抓取后各起一个后台线程，把存量里 `real_url IS NULL` 的 Google 条目逐条补上（每批 40 条、并发 6），
+  不阻塞请求；失败（页面改版 / 网络不通）就保留原跳转链接，不会让「原文」变成死链。
+- **其余来源不受影响**：官网 RSS 与手工补录本来就是真实链接，`resolve_url` 原样返回。
+
+### 为什么是游标分页而不是 offset
+
+无限滚动用 offset 分页会漏数据：翻页期间新消息插到最前面，第 2 页的 offset 就整体错位，用户会看到重复卡片或直接漏掉一条。
+这里按 `(published_at, id)` 做游标（`GET /news/items?cursor=…&limit=24`），游标是 `微秒时间戳|id` 的整数对——
+刻意不用 ISO 串，因为 ISO 里的 `+` 在查询串会被解成空格，任何没做 URL 转义的调用方都会静默拿回第一页。
+
+### 自动抓取
+
+- 后台任务在 `lifespan` 里起（`news.start_scheduler()`），关闭时 `finally` 里 cancel，不会留下悬挂任务；
+- 间隔来自系统设置 **市场消息自动抓取间隔 (分钟)**（`news.refresh_minutes`，默认 60，`0` = 关闭自动抓取，改完下一轮生效）；
+- **只适合单实例**：多副本会各自抓一遍。要扩容就把自动抓取关掉，改由外部定时任务打 `POST /admin/news/refresh`。
+
+### 手工补录（贴链接）
+
+RSS 覆盖不到的站点（尤其**公众号**——微信没有公开 RSS，别人的号订阅不了）不用等：把文章链接贴进来就行。
+入口是看板右上角的「补录」按钮，或直接访问 `GET /news/clip`（要 `data:write`）。
+
+- **一行一条链接，每批最多 12 条**，可统一挂到一家公司；提交后同步抓取并当场列出「新增 / 重复 / 失败」和每条结果。
+- **只取公开页面的标题、一句摘要、发布时间**，不抓正文——时间线只需要这些，正文涉及版权与体积，
+  想看全文点「原文」跳过去。页面上确实没有发布时间时按抓取时间入库（宁可时间偏晚，也不让一条消息沉底）。
+- **猜字段的优先级写在 `app/news_clip.py`**：标题 `og:title` → `twitter:title` → `<title>` → `<h1>`；
+  摘要 `description` → `og:description` → `twitter:description` → 公众号 `#js_content` 截断；
+  时间「公众号 `var ct` 秒级时间戳 → `article:published_time` / `og:release_date` / `publishdate` / `pubdate`
+  → JSON-LD `datePublished` / `<time datetime>`」。猜不到就留空，不编造。
+- **和 RSS 共用去重键**：`dedupe_key` 都是 `sha1(归一化链接)`，所以「先补录、后来又被订阅抓到」只留一条。
+- **补录条目挂在一条固定源上**（`name=手工补录`、`url=manual://clip`、`kind=manual`）：时间线要 `source_id`，
+  按来源筛选也能单独看到；这条源没有 feed 地址，**自动抓取跳过它**，管理页里只显示为只读行、没有「抓取」按钮。
+- **边界**：单条 8 秒超时、整批 10 秒总预算（超时的链接判失败并说明原因），并发 6 条；页面超 2 MB 跳过；
+  只接受 `http(s)` 链接。一条失败不影响同批其它链接。
+
+### 抓取与写请求的并发
+
+SQLite 同一时刻只允许一个写事务，所以抓取链路刻意把网络 IO 放在事务外：先读出待抓清单并 `commit` 结束只读事务，
+逐源抓取/解析，只有「入库那一小段」才进写锁（`app/db.py` 的 `WRITE_LOCK`，仅 SQLite 生效，`acquire(timeout=30)`）。
+手动全量刷新走独立后台线程（`news.refresh_background()`，带防重入闸门），不挂在请求作用域里，
+避免后台任务与请求级写锁互相等待。连接层另设 `busy_timeout=30000`、`timeout=30`，`journal_mode=WAL` 只在启动时设一次。
+
+已知取舍：管理页的**单源刷新**是同步的（点了要马上看到结果），最坏会把其它写请求挡一次抓取时长
+（实测 1–3 秒，超时上限 10 秒）；自动抓取与全量刷新不占请求锁。压测（3 线程每 0.5 秒登录、40 秒，
+并在期间触发全量刷新）209 次请求全部成功、最慢 0.17 秒。
+
+### 为什么没上 React 组件库
+
+第一版需求里点名「React 时间线 + 瀑布流 + 无限滚动组件」，调研过的 `react-chrono` / `masonic` /
+`react-infinite-scroll-component` / `@tanstack/react-virtual` 都能做，但**这个项目刻意没有前端构建链**
+（见 `app/main.py` 顶部说明：一条 `uvicorn app.main:app` 就能跑）。为一块列表引入 npm + 打包 + 产物托管，
+是把「一条命令起服务」的部署契约换掉，收益只是省几十行 CSS/JS。
+
+实际实现用了项目已有的做法（`app/static/news.js`，约 150 行）：
+
+- **单列按天分组**：日期组由服务端切好（`news.group_by_day`），无限滚动的新卡片由前端按 `data-day` 接到对应组末尾——
+  一页可能正好从某天中间开始，只有前端知道要不要新开组头，服务端预先分组会重复日期头；
+- **为什么不用多列瀑布流**：倒序时间线拆到多列后，视线要来回跳、越往下越难判断哪条更新；
+  而 CSS `columns` 是列优先填充，会把倒序读成「先左列到底、再右列」，根本不是一条时间线；
+- **DOM 顺序始终是时间倒序**，键盘 Tab 与读屏顺序与视觉一致；
+- **折叠**：日期组头是按钮，点击切换 `is-collapsed`，`aria-expanded` 同步给读屏；
+- **无限滚动**：`IntersectionObserver`（`rootMargin: 600px`）观察底部的「加载更多」，老浏览器自动退回手动点按钮；
+- **分页**：`fetch` 取回服务端渲染好的卡片片段（`_news_cards.html`）直接插入，前后端只有一套卡片模板。
+
+整套前端仍然零依赖、无构建。
 
 ## 导入规格书，自动识别参数
 
@@ -674,9 +779,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.0.8`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.3.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.0.8` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
+版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.3.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -685,7 +790,7 @@ docker compose up -d
 docker compose logs -f app      # 首次启动的初始管理员密码在这里
 ```
 
-打开 <http://127.0.0.1:8000/compare>。数据落在命名卷 `competitive-board-data`（SQLite + 上传的规格书）。
+打开 <http://127.0.0.1:8000/>（默认落地市场消息看板）。数据落在命名卷 `competitive-board-data`（SQLite + 上传的规格书）。
 
 ### 方式二：compose 从源码构建
 
@@ -719,19 +824,19 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:1.0.8
+  ghcr.io/kid941005/competitive-board:1.3.0
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=1.0.8 -t competitive-board:1.0.8 ./backend
+docker build --build-arg APP_VERSION=1.3.0 -t competitive-board:1.3.0 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:1.0.8
+  competitive-board:1.3.0
 ```
 
 ### 配置项在哪改
@@ -742,7 +847,7 @@ docker run -d --name competitive-board \
 
 | 位置 | 当前值 | 作用 |
 |---|---|---|
-| `image:` 的标签 | `1.0.8` | 镜像版本。升级就改这里，再 `docker compose pull` |
+| `image:` 的标签 | `1.3.0` | 镜像版本。升级就改这里，再 `docker compose pull` |
 | `user:` | `10001:10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）改这里，就不必 `chown` 目录；改 `"0:0"` 则以 root 运行 |
 | `ports:` | `127.0.0.1:8000:8000` | 宿主端口。只绑回环，对外访问需反向代理 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
@@ -821,7 +926,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布版本为 `1.0.8`（[发布说明](docs/releases/v1.0.8.md)），`latest` 与 GitHub Latest 均指向它。
+> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布版本为 `1.3.0`（[发布说明](docs/releases/v1.3.0.md)），`latest` 与 GitHub Latest 均指向它。
 
 ---
 
@@ -898,7 +1003,10 @@ node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与�
 - 多条件参数透视（如同时看 @1.9GHz 与 @2.4GHz）
 - 细粒度权限（当前是两角色；如需「只读某几个友商」这类行级控制，需在 `auth` 之上再加数据域）
 - 参数变更历史与趋势（表结构已留 `captured_at`，视图未做）
-- 新闻动态流（第一部分）
+- 市场消息的**客户侧**消息源（第一部分当前只覆盖友商；客户动态还没有可靠源）
+- 消息全文抓取（当前只存源给的标题 + 摘要，点链接去原文）
+- 多实例部署下的自动抓取选主（当前自动抓取只适合单实例，见上文）
+- 公众号**自动**订阅（微信无公开 RSS；当前靠「手工补录」贴链接，或用 wewe-rss 自建订阅再当普通 RSS 源接入）
 
 ---
 
@@ -935,16 +1043,20 @@ backend/
 │   ├── datasheet_store.py 规格书原文的保留与清理
 │   ├── timeutil.py       库里存 UTC、界面按 TZ 渲染
 │   ├── sanitize.py       出处链接协议白名单
-│   ├── templates/        登录 / 对比 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
+│   ├── news.py           市场消息：查询 / 游标分页 / 抓取入库 / 定时任务 / 内置源预置
+│   ├── news_clip.py      手工补录：从网页 HTML 猜标题 / 摘要 / 发布时间并批量入库
+│   ├── news_fetch.py     RSS / Atom 抓取与解析（标准库 urllib，条件请求 + 拒 DTD）
+│   ├── news_sources.py   11 个内置订阅源清单
+│   ├── templates/        登录 / 对比 / 市场消息 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
 │   └── static/           app.css, filter.js, compare.js, products.js, datasheet.js,
-│                         import.js, product-edit.js（零依赖）
+│                         import.js, product-edit.js, news.js（零依赖）
 ├── tests/                test_compare / test_datasheet / test_datasheet_import
 │                         test_import_export / test_product_edit / test_api_v1
 │                         test_audit / test_labels / test_fixes / test_auth
 │                         test_channel_parity / test_schema / test_retention / test_throttle
 │                         test_datadir / test_empty_startup / test_user_profile
 │                         test_mcp_server（测 mcp/ 那一层，走真实 stdio + 假 API）
-│                         test_entity_meta / test_ui_contract
+│                         test_entity_meta / test_ui_contract / test_news / test_news_clip
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt

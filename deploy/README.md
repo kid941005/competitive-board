@@ -115,3 +115,11 @@ docker run --rm -v ci-board_cdiodata:/data -v "$PWD":/backup alpine \
 3. 10–20 个必看新闻源、5–10 个必抓参数页 URL
 
 三项确认后即可产出新闻流的最小闭环（采集 → 去重 → 首页时间线）；参数对比页已经交付。
+
+> 2026-11-26 追加：新闻流的最小闭环已由**看板本体**实现（v1.3.0）——`/news` 时间线看板 +
+> 内置 RSS/Atom 抓取（`backend/app/news_fetch.py`，标准库 urllib，无需外部采集组件）+
+> 来源管理 `/admin/news`。本目录的 RSSHub / changedetection 仍然只对「没有 RSS 的站点」有用：
+> 用 RSSHub 把目标页面生成 feed，再加到 `/admin/news` 里即可。
+>
+> 2026-11-27 追加：公众号这类既不能订阅也没有 feed 的源，用看板右上角的**手工补录**（`/news/clip`）
+> 贴文章链接即可，每批 12 条，抓标题 / 摘要 / 发布时间入库，与 RSS 共用去重键；自动抓取会跳过这条补录源。

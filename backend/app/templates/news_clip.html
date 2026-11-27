@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}手工补录 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if msg %}<p class="flash {{ msg_kind }}">{{ msg }}</p>{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>批量补录</h2>
+    <span class="hint">一行一条链接，每批最多 {{ max_urls }} 条</span>
+  </div>
+  <form method="post" action="/news/clip" class="clip-form">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="ds-field">
+      <span>链接（公众号文章直接贴 mp.weixin.qq.com/s/... 即可）</span>
+      <textarea name="urls" class="clip-urls" rows="8" spellcheck="false"
+                placeholder="https://mp.weixin.qq.com/s/xxxxxxxx&#10;https://example.com/news/123">{{ urls_text }}</textarea>
+    </label>
+    <div class="clip-row">
+      <label class="ds-field">
+        <span>归属公司（可留空）</span>
+        <select name="entity_id" class="ds-select">
+          <option value="">不归属</option>
+          {% for e in entities %}
+          <option value="{{ e.id }}"{% if entity_id == e.id|string %} selected{% endif %}>{{ e.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn">开始补录</button>
+    </div>
+    <p class="hint">只抓公开网页的标题、摘要和发布时间，不抓正文；页面上没有发布时间时按当前时间入库。重复链接会自动跳过。</p>
+  </form>
+</section>
+
+{% if report %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>本次结果</h2>
+    <span class="hint">
+      新增 {{ report.added }} · 重复 {{ report.duplicated }} · 失败 {{ report['failed']|length }}{% if report.skipped %} · 输入里重复 {{ report.skipped }}{% endif %}{% if report.truncated %} · 超出上限未处理 {{ report.truncated }}{% endif %}
+    </span>
+  </div>
+
+  {% if report['items'] %}
+  <div class="table-wrap">
+    <table class="usertable">
+      <thead><tr><th>标题</th><th>发布时间</th><th>链接</th></tr></thead>
+      <tbody>
+        {% for it in report['items'] %}
+        <tr>
+          <td>{{ it.title }}</td>
+          <td class="num-col">{% if it.published_at %}{{ it.published_at | localtime }}{% else %}（用抓取时间）{% endif %}</td>
+          <td><a href="{{ it.url }}" target="_blank" rel="noopener">原文 ↗</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if report['duplicated_urls'] %}
+  <p class="hint">已在库里，直接跳过：{{ report['duplicated_urls'] | join(' · ') }}</p>
+  {% endif %}
+
+  {% if report['failed'] %}
+  <div class="table-wrap">
+    <table class="usertable">
+      <thead><tr><th>链接</th><th>原因</th></tr></thead>
+      <tbody>
+        {% for f in report['failed'] %}
+        <tr><td>{{ f.url }}</td><td class="pill-err">{{ f.error }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <p class="hint"><a href="/news">回市场消息</a> 看补录结果（按发布时间插到时间线对应位置）</p>
+</section>
+{% endif %}
+{% endblock %}

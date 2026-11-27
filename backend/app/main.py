@@ -11,6 +11,8 @@
     routes_compare.py  对比页、只读 JSON、导出
     routes_products.py 产品管理与批量导入
     routes_datasheet.py 规格书导入
+    routes_news.py     市场消息时间线与消息源管理
+    news.py            消息采集、入库、翻页查询、定时刷新
     routes_admin.py    账号 / 令牌 / 日志 / 系统参数
 
 权限边界见 auth.py 的 ROLE_PERMISSIONS —— 所有路由只声明「需要哪个权限位」，
@@ -36,13 +38,24 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from starlette.exceptions import HTTPException
 
-from . import api_v1, audit, auth, config, datasheet_store, settings_store
+from . import (
+    api_v1,
+    audit,
+    auth,
+    config,
+    datasheet_store,
+    news,
+    news_link,
+    news_sources,
+    settings_store,
+)
 from .db import engine, init_db
 from .models import Entity
 from .routes_admin import router as admin_router
 from .routes_auth import router as auth_router
 from .routes_compare import router as compare_router
 from .routes_datasheet import router as datasheet_router
+from .routes_news import router as news_router
 from .routes_products import router as products_router
 from .timeutil import fmt_local
 from .web_shared import BASE, _safe_next, templates
@@ -65,6 +78,8 @@ async def lifespan(_app: FastAPI):
         swept = datasheet_store.purge_orphans(
             session, int(d.get("datasheet.keep_days", 30))
         )
+        # 内置消息源只在空库时预置；用户删掉的源不会每次重启又长回来
+        seeded = news.seed_builtin(session, news_sources.BUILTIN_SOURCES)
         session.commit()
         if swept["removed"]:
             print(
@@ -73,6 +88,8 @@ async def lifespan(_app: FastAPI):
                 f"保留在用 {swept['referenced']} 份、未到期 {swept['kept']} 份",
                 flush=True,
             )
+    if seeded:
+        print(f"[startup] 预置 {seeded} 个内置消息源", flush=True)
     if bootstrap:
         # 只在此打印一次。请立即登录后修改密码。
         admin_name, generated = bootstrap
@@ -81,10 +98,18 @@ async def lifespan(_app: FastAPI):
         print(f"  初始密码：{generated}", flush=True)
         print("  登录后请立刻在「账号管理」里修改密码。", flush=True)
         print("=" * 62, flush=True)
-    yield
+    # 存量消息里 Google News 的跳转链接在后台逐条换成原文地址（不阻塞启动）
+    news_link.backfill_async()
+    # 定时抓取放在后台任务里：抓 20 个源要几十秒，不能卡住启动和健康检查
+    scheduler = news.start_scheduler()
+    try:
+        yield
+    finally:
+        # 不 cancel 会在 --reload / 测试收尾时留下悬挂任务
+        await news.stop_scheduler(scheduler)
 
 
-app = FastAPI(title="竞品情报看板", version="1.0.8", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="1.3.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -93,6 +118,7 @@ app.include_router(auth_router)
 app.include_router(compare_router)
 app.include_router(products_router)
 app.include_router(datasheet_router)
+app.include_router(news_router)
 app.include_router(admin_router)
 # 静态资源版本号：前端改动后改 app.version 即可让浏览器重新拉取，
 # 避免「代码已修复但用户还跑着缓存里的旧脚本」这种假象。
@@ -122,7 +148,7 @@ def _wants_html(request: Request) -> bool:
     # 规格书原文下载：浏览器会直接打开 PDF，但调用方拿到的是文件而不是页面
     if path.startswith("/datasheet/") and path.endswith("/file"):
         return False
-    if path.startswith("/admin/") or path in ("/", "/compare", "/datasheet"):
+    if path.startswith("/admin/") or path in ("/", "/compare", "/datasheet", "/news"):
         return True
     return "text/html" in request.headers.get("accept", "")
 
@@ -133,10 +159,10 @@ def _error_back(request: Request) -> str:
         parsed = urlsplit(ref)
         if parsed.scheme:
             if parsed.scheme not in ("http", "https") or parsed.netloc != request.url.netloc:
-                return "/compare"
+                return "/news"
             ref = parsed.path + ("?" + parsed.query if parsed.query else "")
     except ValueError:
-        return "/compare"
+        return "/news"
     return _safe_next(ref)
 
 

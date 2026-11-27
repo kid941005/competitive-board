@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
+from fastapi import Request
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -16,6 +18,8 @@ from .models import (  # noqa: F401  确保建表时模型已注册
     ApiToken,
     AuditLog,
     Entity,
+    NewsItem,
+    NewsSource,
     Product,
     ProductSpec,
     SpecMetric,
@@ -24,11 +28,15 @@ from .models import (  # noqa: F401  确保建表时模型已注册
 
 _url = config.database_url()
 _is_sqlite = _url.startswith("sqlite")
+IS_SQLITE = _is_sqlite
 
 engine = create_engine(
     _url,
     echo=False,
-    connect_args={"check_same_thread": False} if _is_sqlite else {},
+    # timeout 是 sqlite3 的**锁等待秒数**（默认 5 秒）：后台定时抓取在写库时，
+    # 用户点登录/保存这类写请求会撞上写锁。5 秒不够就抛 "database is locked"，
+    # 页面直接 500。放到 30 秒，把「偶发撞锁」变成「稍等一下」。
+    connect_args={"check_same_thread": False, "timeout": 30} if _is_sqlite else {},
     pool_pre_ping=not _is_sqlite,
 )
 
@@ -37,8 +45,8 @@ if _is_sqlite:
     @event.listens_for(engine, "connect")
     def _sqlite_pragmas(dbapi_conn, _record):  # pragma: no cover - 连接级设置
         cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA busy_timeout=30000")
         cur.execute("PRAGMA foreign_keys=ON")
-        cur.execute("PRAGMA journal_mode=WAL")
         cur.close()
 
 
@@ -123,6 +131,13 @@ def init_db() -> None:
     """
     if _is_sqlite:
         _diagnose_data_dir(config.DATA_DIR)
+        # WAL 只需设置一次：它是持久属性。而且 PRAGMA journal_mode 不能在事务里执行
+        # （BEGIN IMMEDIATE 之后会报 cannot change into wal mode），所以走裸连接。
+        raw = engine.raw_connection()
+        try:
+            raw.cursor().execute("PRAGMA journal_mode=WAL")
+        finally:
+            raw.close()
     # 规格书原文目录：SQLite 模式下上面已确认可写；PostgreSQL 模式下目录不可写
     # 不致命（只影响规格书上传），不该因此拒绝启动，所以这里吞掉异常。
     try:
@@ -136,6 +151,30 @@ def init_db() -> None:
               flush=True)
 
 
-def get_session() -> Iterator[Session]:
-    with Session(engine) as session:
-        yield session
+# 进程级写锁：SQLite 同时只允许一个写事务。默认的「先读后写」事务在 WAL 下
+# 要把读锁升级成写锁，若这期间别的连接写过库，SQLite 会**立刻**抛
+# SQLITE_BUSY_SNAPSHOT（"database is locked"），busy_timeout 不管这种情况。
+# 后台定时抓取写库时，前台登录/保存偶发 500 就是这么来的（v1.1.1 本地 Docker 冒烟复现）。
+# 做法：所有写请求与后台写入串行化（读请求不受影响），冲突改为排队等待而不是失败。
+#
+# 必须是普通 Lock 而不是 RLock：FastAPI 的 yield 依赖「取」和「放」可能落在
+# 线程池的不同线程上，而 RLock 有线程归属，跨线程 release 会抛
+# RuntimeError: cannot release un-acquired lock —— 锁一旦漏放，后续写请求全卡死
+# （本地压测里表现为登录请求 120 秒超时）。普通 Lock 允许任意线程释放。
+WRITE_LOCK = threading.Lock()
+
+
+def get_session(request: Request) -> Iterator[Session]:
+    """只对 SQLite 的写请求串行化；PostgreSQL 不需要也不会被拖慢。
+
+    等待带 30 秒上限：锁再拥挤也不该让请求无限期挂着。真拿不到就照常执行，
+    由 SQLite 自己的 busy_timeout 兜底 —— 这里的写事务都很短，正常不会走到那条路。
+    """
+    write = IS_SQLITE and request.method not in ("GET", "HEAD", "OPTIONS")
+    acquired = WRITE_LOCK.acquire(timeout=30) if write else False
+    try:
+        with Session(engine) as session:
+            yield session
+    finally:
+        if acquired:
+            WRITE_LOCK.release()

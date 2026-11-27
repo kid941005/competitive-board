@@ -261,3 +261,56 @@ class AuditLog(SQLModel, table=True):
     request_id: str | None = Field(default=None, index=True, description="同一次请求的多行共享")
     changes: str = Field(default="[]", description="JSON：[{field, old, new}]")
     note: str | None = None
+
+
+# ── 市场消息（友商新闻动态）────────────────────────────────────────────────
+class NewsSource(SQLModel, table=True):
+    """一个 RSS / Atom / RDF 新闻源。
+
+    归属公司可以为空 —— 行业媒体的消息不挂在任何一家友商名下。
+    etag / last_modified 是条件请求用的：源没更新时回 304，既省带宽也省解析。
+    """
+
+    __tablename__ = "news_sources"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    url: str = Field(description="RSS / Atom / RDF 地址，唯一（大小写与首尾空格不计）")
+    kind: str = Field(default="rss", description="rss / atom / rdf，仅供展示，解析按实际内容判定")
+    entity_id: int | None = Field(default=None, foreign_key="entities.id", index=True)
+    lang: str = Field(default="zh", description="zh / en")
+    enabled: bool = Field(default=True, index=True)
+    last_fetch_at: datetime | None = None
+    last_status: str | None = Field(default=None, description="ok / empty / error")
+    last_error: str | None = None
+    etag: str | None = None
+    last_modified: str | None = None
+    item_count: int = Field(default=0, description="该源当前入库的条数，列表页直接用")
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class NewsItem(SQLModel, table=True):
+    """一条市场消息。
+
+    dedupe_key 是全局唯一去重键：同一篇稿子被两个源同时收录时只留一条，
+    否则时间线里会出现两条一模一样的标题。键的算法见 news_fetch.dedupe_key。
+    published_at 统一 UTC（源里没给时间就落抓取时间），展示时再转本地时区。
+    """
+
+    __tablename__ = "news_items"
+
+    id: int | None = Field(default=None, primary_key=True)
+    source_id: int = Field(foreign_key="news_sources.id", index=True)
+    entity_id: int | None = Field(default=None, foreign_key="entities.id", index=True)
+    guid: str = Field(default="", description="源里的 guid / id，没有就留空")
+    url: str | None = None
+    # Google News 的 <link> 是跳转页（news.google.com/rss/articles/...），浏览器打开
+    # 常只看到一个需要 JS 的空白页。这里缓存解析出的原文地址，模板优先用它。
+    real_url: str | None = Field(default=None, max_length=1000)
+    title: str
+    summary: str | None = None
+    lang: str = Field(default="zh")
+    published_at: datetime = Field(index=True)
+    fetched_at: datetime = Field(default_factory=utcnow)
+    dedupe_key: str = Field(description="sha1(规范化链接) 或 sha1(源 + guid)，全局唯一")
+

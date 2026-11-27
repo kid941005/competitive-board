@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}消息源管理 · 竞品情报看板{% endblock %}
+
+{% block body %}
+{% include "_header.html" %}
+
+{% if ok %}<p class="flash ok">{{ ok }}</p>{% endif %}
+{% if err %}<p class="flash err">{{ err }}</p>{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>新增消息源</h2>
+    <span class="hint">填 RSS / Atom 地址即可；同一地址只能登记一次</span>
+  </div>
+  <form method="post" action="/admin/news/create" class="userform">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="ds-field">
+      <span>名称</span>
+      <input type="text" name="name" class="ds-input" placeholder="如 村田制作所 · 官方新闻" required maxlength="120">
+    </label>
+    <label class="ds-field">
+      <span>Feed 地址</span>
+      <input type="url" name="url" class="ds-input" placeholder="https://example.com/feed/" required maxlength="500">
+    </label>
+    <label class="ds-field">
+      <span>语言</span>
+      <select name="lang" class="ds-select">
+        {% for code, label in langs.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="ds-field">
+      <span>归属公司（可选）</span>
+      <select name="entity_id" class="ds-select">
+        <option value="">不归属</option>
+        {% for e in entities %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="ds-check-line">
+      <input type="checkbox" name="enabled" value="1" checked> 立即启用
+    </label>
+    <button type="submit" class="btn">添加</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>全部消息源</h2>
+    <span class="hint">{{ sources|length }} 个源 · 抓取失败会写明原因，改完地址点「抓取」重试</span>
+  </div>
+
+  {% if sources %}
+  <div class="source-list">
+    {% for s in sources %}
+    <div class="source-item{% if not s.enabled %} is-off{% endif %}">
+      {% if s.kind == 'manual' %}
+      <div class="source-row">
+        <strong>{{ s.name }}</strong>
+        <span class="hint">手工补录源 · 没有 feed 地址，不参与自动抓取</span>
+      </div>
+      {% else %}
+      <form method="post" action="/admin/news/{{ s.id }}/update" class="source-row">
+        <input type="hidden" name="_csrf" value="{{ csrf }}">
+        <input type="text" name="name" class="ds-input" value="{{ s.name }}" required maxlength="120"
+               aria-label="名称">
+        <input type="url" name="url" class="ds-input" value="{{ s.url }}" required maxlength="500"
+               aria-label="Feed 地址">
+        <select name="lang" class="ds-select" aria-label="语言">
+          {% for code, label in langs.items() %}
+          <option value="{{ code }}"{% if s.lang == code %} selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <select name="entity_id" class="ds-select" aria-label="归属公司">
+          <option value="">不归属</option>
+          {% for e in entities %}
+          <option value="{{ e.id }}"{% if s.entity_id == e.id %} selected{% endif %}>{{ e.name }}</option>
+          {% endfor %}
+        </select>
+        <label class="ds-check-line">
+          <input type="checkbox" name="enabled" value="1"{% if s.enabled %} checked{% endif %}> 启用
+        </label>
+        <button type="submit" class="btn sm">保存</button>
+      </form>
+      {% endif %}
+
+      <div class="source-foot">
+        <span class="source-stat">
+          {% if s.last_status == 'ok' %}<span class="pill-ok">正常</span>
+          {% elif s.last_status == 'empty' %}<span class="pill-warn">无条目</span>
+          {% elif s.last_status == 'error' %}<span class="pill-err">失败</span>
+          {% else %}<span class="pill-off">未抓取</span>{% endif %}
+          <span>{{ counts.get(s.id, 0) }} 条</span>
+          {% if s.last_fetch_at %}<span>上次抓取 {{ s.last_fetch_at | localtime }}</span>{% endif %}
+        </span>
+        <span class="source-btns">
+          {% if s.kind != 'manual' %}
+          <form method="post" action="/admin/news/{{ s.id }}/refresh" class="inline-form">
+            <input type="hidden" name="_csrf" value="{{ csrf }}">
+            <button type="submit" class="btn ghost sm">抓取</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/admin/news/{{ s.id }}/toggle" class="inline-form">
+            <input type="hidden" name="_csrf" value="{{ csrf }}">
+            <button type="submit" class="btn ghost sm">{% if s.enabled %}停用{% else %}启用{% endif %}</button>
+          </form>
+          <form method="post" action="/admin/news/{{ s.id }}/delete" class="inline-form"
+                data-confirm="删除「{{ s.name }}」后，它的 {{ counts.get(s.id, 0) }} 条消息也会一起删除，确定吗？">
+            <input type="hidden" name="_csrf" value="{{ csrf }}">
+            <button type="submit" class="btn danger sm">删除</button>
+          </form>
+        </span>
+      </div>
+
+      {% if s.last_error %}<p class="source-error">{{ s.last_error }}</p>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-mark">◷</div>
+    <h1>还没有消息源</h1>
+    <p>在上面添加一个 RSS 地址，或删库重来让系统重新预置内置源。</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

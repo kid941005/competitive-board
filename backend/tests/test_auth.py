@@ -396,6 +396,36 @@ def test_invalid_setting_revealed_not_saved():
         assert settings_store.get_value(s, "compare.max_products") == 8
 
 
+# ── 默认落地页 ─────────────────────────────────────────────────────────────
+def test_default_landing_is_news_for_viewer():
+    """首页 = 市场消息：普通账号登录后默认落到 /news，导航顺序也是市场消息在前。"""
+    _, viewer = _boot()
+    _login(viewer, VIEWER_NAME, VIEWER_PW)
+
+    # 首页用 RedirectResponse 的默认状态码 307（GET 重定向，保持原行为）
+    r = viewer.get("/", follow_redirects=False)
+    assert r.status_code in (303, 307), r.status_code
+    assert r.headers["location"] == "/news", r.headers["location"]
+
+    # 登录表单没带 next 时同样落 /news
+    fresh = TestClient(app)
+    fresh.__enter__()
+    r2 = fresh.post(
+        "/login",
+        data={"username": VIEWER_NAME, "password": VIEWER_PW},
+        follow_redirects=False,
+    )
+    assert r2.status_code == 303, r2.status_code
+    assert r2.headers["location"] == "/news", r2.headers["location"]
+
+    # 只读账号能看到市场消息页
+    assert viewer.get("/news").status_code == 200
+
+    # 顶栏顺序：市场消息 在 参数对比 之前
+    html = viewer.get("/news").text
+    assert html.index('href="/news"') < html.index('href="/compare"')
+
+
 # ── 运行器 ─────────────────────────────────────────────────────────────────
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

@@ -73,6 +73,16 @@ def _temp_engine(name: str):
     return create_engine(f"sqlite:///{Path(_TMP) / name}")
 
 
+# 全库唯一索引清单（_indexes 已排序）。加新表/新唯一约束时同步这里。
+UX_INDEXES = [
+    "ux_adoptions_customer_product",
+    "ux_news_items_dedupe",
+    "ux_news_sources_url",
+    "ux_products_entity_model",
+    "ux_specs_product_metric",
+]
+
+
 def _indexes(engine) -> list[str]:
     with engine.connect() as conn:
         rows = conn.execute(text(
@@ -99,8 +109,7 @@ def test_fresh_database_gets_indexes_and_version():
     assert _version(engine) == 0, "新库还没有版本号"
     result = schema.migrate(engine)
     assert result["to"] == schema.CURRENT_SCHEMA_VERSION
-    assert _indexes(engine) == ["ux_adoptions_customer_product", "ux_products_entity_model",
-                              "ux_specs_product_metric"]
+    assert _indexes(engine) == UX_INDEXES
     assert _version(engine) == schema.CURRENT_SCHEMA_VERSION
 
     # 幂等：再跑一次不重复建、不报错
@@ -149,8 +158,7 @@ def test_upgrade_from_old_database_merges_duplicates():
         assert logs, "合并动作必须留审计，否则数据凭空少了一条没人说得清"
         assert all(row.actor == "system" for row in logs)
 
-    assert _indexes(engine) == ["ux_adoptions_customer_product", "ux_products_entity_model",
-                              "ux_specs_product_metric"]
+    assert _indexes(engine) == UX_INDEXES
 
 
 # ── 3. v3：合并风量/静压两套指标 ────────────────────────────────────────────
@@ -393,6 +401,23 @@ def test_import_file_with_same_model_twice_keeps_one_spec():
         rows = s.exec(select(ProductSpec).where(ProductSpec.product_id == p.id)).all()
     assert len(rows) == 1 and rows[0].value_num == 600, (
         f"后一行覆盖前一行，且 0.6 L/min 按 v6 换算成 600 mL/min，实际 {rows[0].value_num}")
+
+
+# ── 8. SQLite 并发写锁防护（v1.1.1 本地 Docker 冒烟发现）───────────────────
+def test_sqlite_pragmas_guard_against_lock_errors():
+    """后台定时抓取写库时，前台登录/保存不能因为 "database is locked" 回 500。
+
+    修法有两道：连接 busy_timeout ≥ 5s；journal_mode=WAL 只在 init_db 设一次
+    （每条连接都执行 PRAGMA journal_mode 需要短暂独占锁，正是撞锁来源）。
+    """
+    init_db()
+    with app_engine.connect() as conn:
+        busy = conn.exec_driver_sql("PRAGMA busy_timeout").scalar()
+        mode = conn.exec_driver_sql("PRAGMA journal_mode").scalar()
+        fk = conn.exec_driver_sql("PRAGMA foreign_keys").scalar()
+    assert int(busy or 0) >= 5000, f"busy_timeout={busy}，后台抓取写库时前台写请求会 500"
+    assert str(mode).lower() == "wal", f"journal_mode={mode}，期望 wal"
+    assert int(fk or 0) == 1, "foreign_keys 必须开启"
 
 
 # ── 运行器 ─────────────────────────────────────────────────────────────────

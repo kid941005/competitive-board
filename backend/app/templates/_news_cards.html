@@ -1,0 +1,4 @@
+{# 无限滚动的分片：只吐卡片，日期分组由 news.js 接到已有分组末尾。
+   服务端不切组 —— 一页可能正好从某天中间开始，交给前端判断才能避免重复日期头。 #}
+{% from "_news_card.html" import card %}
+{% for item in items %}{{ card(item) }}{% endfor %}

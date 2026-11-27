@@ -17,7 +17,7 @@ router = APIRouter()
 _DUMMY_HASH = auth.hash_password("__nonexistent__")
 
 @router.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, next: str = Query(default="/compare")):
+def login_page(request: Request, next: str = Query(default="/news")):
     return templates.TemplateResponse(
         request=request, name="login.html", context={"next": _safe_next(next), "error": None}
     )
@@ -28,7 +28,7 @@ def login_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    next: str = Form(default="/compare"),
+    next: str = Form(default="/news"),
     session: Session = Depends(get_session),
 ):
     name = username.strip()
@@ -97,4 +97,5 @@ def logout(
 
 @router.get("/", include_in_schema=False)
 def index(request: Request, pair=Depends(_perm(P_VIEW))) -> RedirectResponse:
-    return RedirectResponse(url="/compare")
+    # 首页 = 市场消息：普通账号只有 data:view，落地就能看到友商动态
+    return RedirectResponse(url="/news")

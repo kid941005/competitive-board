@@ -29,7 +29,7 @@ from . import audit, range_pair
 from .models import Adoption, Product, ProductSpec, SpecMetric
 
 # 当前代码期望的表结构版本。加一版就在这里改一个数字，并在 MIGRATIONS 末尾追加一步。
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 9
 
 _VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -362,6 +362,51 @@ def _v5_temperature_range(session: Session) -> None:
         )
 
 
+
+# v8：市场消息看板（友商新闻动态）。
+# 表本身由 create_all 建，这一步只补索引 —— 去重键必须由数据库兜底，
+# 否则两个进程同时抓到同一篇稿子就会写出两行，时间线里出现重复标题。
+UX_NEWS_SOURCE_URL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_news_sources_url "
+    "ON news_sources (lower(trim(url)))"
+)
+UX_NEWS_ITEM_DEDUPE = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_news_items_dedupe ON news_items (dedupe_key)"
+)
+# 翻页按 (发布时间, id) 倒序走游标，索引顺序与之对齐，避免每次翻页都全表排序。
+IX_NEWS_ITEM_TIME = (
+    "CREATE INDEX IF NOT EXISTS ix_news_items_published "
+    "ON news_items (published_at DESC, id DESC)"
+)
+
+
+def _v8_news_tables(session: Session) -> None:
+    conn = session.connection()
+    conn.exec_driver_sql(UX_NEWS_SOURCE_URL)
+    conn.exec_driver_sql(UX_NEWS_ITEM_DEDUPE)
+    conn.exec_driver_sql(IX_NEWS_ITEM_TIME)
+
+
+def _v9_news_real_url(session: Session) -> None:
+    """news_items 加 real_url：Google News 跳转链接解析后的原文地址。
+
+    SQLite 的 ALTER TABLE 不支持 IF NOT EXISTS，先查 PRAGMA 再决定；PostgreSQL 直接用
+    ADD COLUMN IF NOT EXISTS。两边都幂等，重复升级不出错。
+    """
+    conn = session.connection()
+    if conn.dialect.name == "sqlite":
+        columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(news_items)").fetchall()
+        }
+        if "real_url" in columns:
+            return
+        conn.exec_driver_sql("ALTER TABLE news_items ADD COLUMN real_url VARCHAR(1000)")
+        return
+    conn.exec_driver_sql(
+        "ALTER TABLE news_items ADD COLUMN IF NOT EXISTS real_url VARCHAR(1000)"
+    )
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -452,6 +497,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "工作温度拆成下限+上限两个指标（并从原文回填下限）", _v5_temperature_range),
     Migration(6, "三类产品流量统一到 mL/min、压力统一到 kPa", _v6_unify_units),
     Migration(7, "幂等记录增加请求体指纹", _v7_idempotency_fingerprint),
+    Migration(8, "市场消息：新闻源与消息表（去重键 + 翻页索引）", _v8_news_tables),
+    Migration(9, "市场消息：缓存 Google News 跳转链接解析出的原文地址", _v9_news_real_url),
 )
 
 
