@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --bg: #f5f6f8;
   --surface: #ffffff;
   --surface-2: #fafbfc;
@@ -20,22 +21,44 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
+/* 主题：显式深色（<html data-theme="dark">），以及「跟随系统」在 JS 未接管前
+   的兜底（data-theme="auto" + 系统深色）。JS 会把 auto 解析成实际 light/dark，
+   所以正常路径命中的是上面的显式规则，下面这段只服务禁用 JS 的浏览者。 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #101215;
+  --surface: #171a1f;
+  --surface-2: #1c2026;
+  --surface-3: #232830;
+  --line: #2a3038;
+  --line-strong: #3a424c;
+  --text: #e8ebef;
+  --text-2: #a3acb8;
+  --text-3: #78818d;
+  --accent: #6b9bff;
+  --accent-soft: #1b2740;
+  --best-bg: #12301f;
+  --best-fg: #7ee2ab;
+  --best-line: #2f7a52;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #101215;
-    --surface: #171a1f;
-    --surface-2: #1c2026;
-    --surface-3: #232830;
-    --line: #2a3038;
-    --line-strong: #3a424c;
-    --text: #e8ebef;
-    --text-2: #a3acb8;
-    --text-3: #78818d;
-    --accent: #6b9bff;
-    --accent-soft: #1b2740;
-    --best-bg: #12301f;
-    --best-fg: #7ee2ab;
-    --best-line: #2f7a52;
+  :root[data-theme="auto"] {
+    color-scheme: dark;
+  --bg: #101215;
+  --surface: #171a1f;
+  --surface-2: #1c2026;
+  --surface-3: #232830;
+  --line: #2a3038;
+  --line-strong: #3a424c;
+  --text: #e8ebef;
+  --text-2: #a3acb8;
+  --text-3: #78818d;
+  --accent: #6b9bff;
+  --accent-soft: #1b2740;
+  --best-bg: #12301f;
+  --best-fg: #7ee2ab;
+  --best-line: #2f7a52;
   }
 }
 
@@ -485,9 +508,14 @@ body {
 
 .ds-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 
+:root[data-theme="dark"] .conf-badge.mid,
+:root[data-theme="dark"] .tag-warn { background: #3a2c0a; color: #fbbf24; }
+:root[data-theme="dark"] .conf-badge.low { background: #3b1113; color: #fca5a5; }
+
 @media (prefers-color-scheme: dark) {
-  .conf-badge.mid, .tag-warn { background: #3a2c0a; color: #fbbf24; }
-  .conf-badge.low { background: #3b1113; color: #fca5a5; }
+  :root[data-theme="auto"] .conf-badge.mid,
+  :root[data-theme="auto"] .tag-warn { background: #3a2c0a; color: #fbbf24; }
+  :root[data-theme="auto"] .conf-badge.low { background: #3b1113; color: #fca5a5; }
 }
 
 /* ── 导航与身份 ── */
@@ -634,10 +662,16 @@ body {
 .panel.notes { background: var(--surface-2); }
 .plainlist { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-2); line-height: 1.9; }
 
+:root[data-theme="dark"] .loginerr,
+:root[data-theme="dark"] .flash.err { background: #3b1113; color: #fca5a5; border-color: #7f1d1d; }
+:root[data-theme="dark"] .tag-modified { background: #3a2c0a; color: #fbbf24; }
+:root[data-theme="dark"] .link.danger { color: #fca5a5; }
+
 @media (prefers-color-scheme: dark) {
-  .loginerr, .flash.err { background: #3b1113; color: #fca5a5; border-color: #7f1d1d; }
-  .tag-modified { background: #3a2c0a; color: #fbbf24; }
-  .link.danger { color: #fca5a5; }
+  :root[data-theme="auto"] .loginerr,
+  :root[data-theme="auto"] .flash.err { background: #3b1113; color: #fca5a5; border-color: #7f1d1d; }
+  :root[data-theme="auto"] .tag-modified { background: #3a2c0a; color: #fbbf24; }
+  :root[data-theme="auto"] .link.danger { color: #fca5a5; }
 }
 
 @media (max-width: 900px) {
@@ -732,8 +766,10 @@ body {
 }
 .edit-dot:hover { color: var(--accent); opacity: 1; }
 
+:root[data-theme="dark"] .btn.danger { background: #7f1d1d; border-color: #7f1d1d; }
+
 @media (prefers-color-scheme: dark) {
-  .btn.danger { background: #7f1d1d; border-color: #7f1d1d; }
+  :root[data-theme="auto"] .btn.danger { background: #7f1d1d; border-color: #7f1d1d; }
 }
 
 /* ── API 令牌 ── */
@@ -776,9 +812,12 @@ body {
 .chg .arrow { color: var(--text-3); font-size: 11px; }
 .lognote { margin-top: 3px; font-size: 11.5px; color: var(--text-3); }
 .pager { display: flex; gap: 14px; align-items: center; margin-top: 12px; font-size: 12.5px; }
+:root[data-theme="dark"] .act-delete { background: #3b1113; color: #fca5a5; }
+:root[data-theme="dark"] .act-import { background: #3a2c0a; color: #fbbf24; }
+
 @media (prefers-color-scheme: dark) {
-  .act-delete { background: #3b1113; color: #fca5a5; }
-  .act-import { background: #3a2c0a; color: #fbbf24; }
+  :root[data-theme="auto"] .act-delete { background: #3b1113; color: #fca5a5; }
+  :root[data-theme="auto"] .act-import { background: #3a2c0a; color: #fbbf24; }
 }
 
 /* ── 搜索与筛选 ───────────────────────────────────────────────
@@ -911,8 +950,72 @@ body {
 .source-btns { display: inline-flex; gap: 8px; margin-left: auto; }
 .source-error { margin: 6px 0 0; font-size: 11.5px; color: #b91c1c; }
 .pill-err { color: #b91c1c; font-size: 12px; }
+:root[data-theme="dark"] .pill-err { color: #fca5a5; }
+:root[data-theme="dark"] .source-error { color: #fca5a5; }
+:root[data-theme="dark"] .news-body:hover { box-shadow: none; }
+
 @media (prefers-color-scheme: dark) {
-  .pill-err { color: #fca5a5; }
-  .source-error { color: #fca5a5; }
-  .news-body:hover { box-shadow: none; }
+  :root[data-theme="auto"] .pill-err { color: #fca5a5; }
+  :root[data-theme="auto"] .source-error { color: #fca5a5; }
+  :root[data-theme="auto"] .news-body:hover { box-shadow: none; }
 }
+/* ── 主题切换控件 ───────────────────────────────────────────
+ * 三档：跟随系统 / 浅色 / 深色。选择存 localStorage，由 theme.js 落到
+ * <html data-theme>；CSS 只认 data-theme，所以换主题不需要重载页面。
+ */
+.theme-pick { display: inline-flex; align-items: center; }
+.theme-select {
+  height: 28px; padding: 0 7px;
+  border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface); color: var(--text-2);
+  font-size: 12.5px; font-family: var(--font); cursor: pointer;
+}
+.theme-select:hover { border-color: var(--accent); color: var(--accent); }
+.theme-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* ── 自适应（窄屏） ─────────────────────────────────────────
+ * 900px 一档已在文件各处处理侧栏/表格；这里补 640px 以下的手机布局：
+ * 顶栏改成「品牌 + 用户区」一行、导航单独一行可横向滑动，表单与卡片单列。
+ */
+@media (max-width: 640px) {
+  body { padding: 0 10px 24px; }
+  .topbar { flex-wrap: wrap; gap: 8px 10px; padding: 12px 0 10px; }
+  .brand { flex: 1 1 auto; min-width: 0; gap: 9px; }
+  .brand > div { min-width: 0; }
+  .brand-mark { width: 26px; height: 26px; }
+  .topbar h1 { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar p { display: none; }
+  .userbox { gap: 6px; }
+  .uname { max-width: 84px; font-size: 12px; }
+  .rolebadge { font-size: 10px; padding: 1px 6px; }
+  .mainnav {
+    order: 3; flex-basis: 100%; justify-content: flex-start;
+    flex-wrap: nowrap; gap: 2px; padding-bottom: 2px;
+    overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .mainnav::-webkit-scrollbar { display: none; }
+  .mainnav a { padding: 5px 9px; font-size: 12.5px; }
+  .panel { padding: 12px 12px; }
+  .panel-head { flex-wrap: wrap; gap: 6px 10px; }
+  .filters, .news-filters, .prod-filters, .ds-form, .logfilters, .scope-pick, .import-actions {
+    flex-wrap: wrap; gap: 8px;
+  }
+  .search, .news-filters .search, .picker-tools .picker-search {
+    flex: 1 1 100%; width: auto; min-width: 0;
+  }
+  .news-filters .ds-select, .filters .ds-select {
+    flex: 1 1 calc(50% - 4px); width: auto; min-width: 0;
+  }
+  .news-filters .btn, .filters .btn { flex: 0 0 auto; }
+  .ds-input { width: 100%; min-width: 0; }
+  .ds-field .ds-select { width: 100%; min-width: 0; }
+  .ds-field, .ds-field.grow, .clip-row .ds-field { flex: 1 1 100%; }
+  .userform { flex-direction: column; align-items: stretch; }
+  .userform .btn { width: 100%; }
+  .clip-row { flex-direction: column; align-items: stretch; }
+  .settings-actions { flex-wrap: wrap; }
+  .empty-state { margin: 6vh auto; padding: 22px 16px; }
+  .report-grid { gap: 8px; }
+  .rcell { min-width: calc(50% - 4px); flex: 1 1 calc(50% - 4px); }
+}
+

@@ -9,6 +9,22 @@
      需要令牌的页面由 _ctx() 统一注入，忘记传的后果是表单里渲染成空、提交时校验失败，
      不会静默放行。 #}
   {% if csrf is defined and csrf %}<meta name="csrf-token" content="{{ csrf }}">{% endif %}
+  {# 主题要在首个样式表之前定下来，否则深色用户会先看到一帧白底（FOUC）。
+     这里只读 localStorage 并把解析结果写到 <html data-theme>，具体切换在 theme.js。 #}
+  <script>
+    (function () {
+      try {
+        var pref = localStorage.getItem("cib-theme") || "auto";
+        var dark = pref === "dark" || (pref === "auto" && window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: dark)").matches);
+        var el = document.documentElement;
+        el.setAttribute("data-theme", dark ? "dark" : "light");
+        el.setAttribute("data-theme-pref", pref);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "light");
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
 </head>
 <body>
@@ -17,6 +33,7 @@
     <span>竞品情报看板 · 压电领域友商参数对比</span>
     <span class="ver" title="当前运行版本，升级后这里会跟着变">v{{ app_version }}</span>
   </footer>
+  <script src="/static/theme.js?v={{ asset_v }}" defer></script>
   <script src="/static/confirm.js?v={{ asset_v }}" defer></script>
   {% block scripts %}{% endblock %}
 </body>

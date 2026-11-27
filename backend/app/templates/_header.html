@@ -27,6 +27,13 @@
   <div class="userbox">
     <span class="uname" title="{{ user.username }}">{{ user.display_name or user.username }}</span>
     <span class="rolebadge {{ user.role }}">{{ role_label }}</span>
+    <label class="theme-pick">
+      <select id="themeSelect" class="theme-select" aria-label="主题">
+        <option value="auto">跟随系统</option>
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+      </select>
+    </label>
     <form method="post" action="/logout" class="logoutform">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <button type="submit" class="link">退出</button>

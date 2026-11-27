@@ -7,6 +7,7 @@
 - **第一部分 · 市场消息看板**（`/news`）—— 订阅 RSS / Atom 源，后台定时抓取入库，按发布时间倒序排成**按天分组的单列时间线**，滚到底自动加载下一页；可按公司 / 来源 / 关键词筛选，管理员可增删改源、手动抓取（见 [市场消息看板](#市场消息看板)）。
 - **第一部分 · 手工补录**（`/news/clip`）—— 公众号或没有 RSS 的网页，把链接批量贴进来（每批 12 条），自动抓标题 / 摘要 / 发布时间入库，与 RSS 共用去重。
 - **第一部分 · 原文链接解析** —— Google News 检索源给的跳转页在后台解析成**真实文章地址**并缓存，点「原文」直接到文章页；解析失败回落原链接。
+- **主题与自适应** —— 顶栏右侧可切「跟随系统 / 浅色 / 深色」，选择记在本机、即切即生效；≤640px 窄屏下顶栏换行、导航横向滑动、表单与卡片单列。
 - **第二部分 · 性能参数横向对比**（`/compare`，P0）—— 三类压电器件、11 个型号、80+ 指标横向拉平：最优值高亮、差异 / 缺失过滤、溯源浮层、Excel / CSV / JSON 导出。
 
 型号覆盖（P0）：
@@ -23,11 +24,10 @@
 看板自带轻量 RSS/Atom 抓取，不需要外部采集组件；`deploy/` 里的采集栈编排草稿（RSSHub / changedetection）
 仍**不参与看板本体部署**——要抓没有 RSS 的站点，再用 RSSHub 生成 feed 喂进来即可。
 
-> 当前版本 **v1.3.0**（2026-11-26）。本版补上第一部分「市场消息看板」（RSS/Atom 定时抓取 + 按天分组的时间线 +
-> 无限滚动 + 来源管理），并加了**手工补录**（把公众号 / 没有 RSS 的网页链接批量贴进来入时间线）；
-> 还把 Google News 检索源的**跳转链接解析成真实原文地址**，点「原文」直接到文章页。
-> 数据库升到 v9（新增 `news_sources` / `news_items` 两张表；v9 给 `news_items` 加了 `real_url` 列，缓存解析出的原文地址）。
-> 变更明细见 [v1.3.0 发布说明](docs/releases/v1.3.0.md)。
+> 当前版本 **v1.4.0**（2026-11-27）。本版新增**主题切换（跟随系统 / 浅色 / 深色）与自适应界面**：
+> 顶栏右侧下拉框即切即生效、选择记在本机；≤640px 窄屏下顶栏换行、导航改为横向滑动、表单与卡片单列。
+> 这是纯前端改动，数据库仍是 **schema v9**，不新增迁移、不改 `/api/v1`。
+> 变更明细见 [v1.4.0 发布说明](docs/releases/v1.4.0.md)。
 
 ## 界面预览
 
@@ -59,7 +59,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:1.3.0
+  ghcr.io/kid941005/competitive-board:1.4.0
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -186,6 +186,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 市场消息 | `/news` 时间线看板：按发布时间倒序、按天分组的单列时间线、滚到底自动加载；按公司 / 来源 / 关键词筛选；管理员可增删改 RSS 源、手动刷新单个或全部源，抓取间隔在系统设置里调（见下节） |
 | 手工补录 | `/news/clip`：把公众号或没有 RSS 的网页链接批量贴进来（每批 12 条），抓标题 / 摘要 / 发布时间入库，与 RSS 共用去重；同一入口在 `/news` 右上角「补录」按钮 |
 | 原文链接 | Google News 检索源给的跳转链接在后台解析成真实文章地址并缓存（`news_items.real_url`），点「原文」直达文章页；解析失败回落原链接 |
+| 主题与自适应 | 顶栏右侧切「跟随系统 / 浅色 / 深色」，选择存本机（`localStorage`）、即切即生效，深色首屏不闪白；≤640px 窄屏顶栏换行、导航横向滑动、表单与卡片单列 |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 | 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
 | 页脚版本号 | 每页底部显示当前运行的 `vX.Y.Z`（含登录页），`/api/v1/health` 也回 `app_version` |
@@ -797,9 +798,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.3.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.4.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.3.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
+版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.4.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -842,19 +843,19 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:1.3.0
+  ghcr.io/kid941005/competitive-board:1.4.0
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=1.3.0 -t competitive-board:1.3.0 ./backend
+docker build --build-arg APP_VERSION=1.4.0 -t competitive-board:1.4.0 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:1.3.0
+  competitive-board:1.4.0
 ```
 
 ### 配置项在哪改
@@ -865,7 +866,7 @@ docker run -d --name competitive-board \
 
 | 位置 | 当前值 | 作用 |
 |---|---|---|
-| `image:` 的标签 | `1.3.0` | 镜像版本。升级就改这里，再 `docker compose pull` |
+| `image:` 的标签 | `1.4.0` | 镜像版本。升级就改这里，再 `docker compose pull` |
 | `user:` | `10001:10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）改这里，就不必 `chown` 目录；改 `"0:0"` 则以 root 运行 |
 | `ports:` | `127.0.0.1:8000:8000` | 宿主端口。只绑回环，对外访问需反向代理 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
@@ -944,7 +945,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布版本为 `1.3.0`（[发布说明](docs/releases/v1.3.0.md)），`latest` 与 GitHub Latest 均指向它。
+> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布版本为 `1.4.0`（[发布说明](docs/releases/v1.4.0.md)），`latest` 与 GitHub Latest 均指向它。
 
 ---
 
