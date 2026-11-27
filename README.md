@@ -2,11 +2,14 @@
 
 [![build-image](https://github.com/kid941005/competitive-board/actions/workflows/build-image.yml/badge.svg)](https://github.com/kid941005/competitive-board/actions/workflows/build-image.yml)
 
-压电领域友商竞品情报看板。两块已实现：
+压电领域友商竞品情报看板，两块能力：
 
-**第一部分：友商市场消息看板** —— 订阅 RSS/Atom 源，后台定时抓取入库，页面按发布时间倒序排成**按天分组的单列时间线**，滚到底自动加载下一页（见 [市场消息看板](#市场消息看板)）。
+- **市场消息看板**（`/news`，第一部分）—— 订阅 RSS / Atom 源，后台定时抓取入库，按发布时间倒序排成**按天分组的单列时间线**，滚到底自动加载下一页；可按公司 / 来源 / 关键词筛选，管理员可增删改源、手动抓取（见 [市场消息看板](#市场消息看板)）。
+- **手工补录**（`/news/clip`）—— 公众号或没有 RSS 的网页，把链接批量贴进来（每批 12 条），自动抓标题 / 摘要 / 发布时间入库，与 RSS 共用去重。
+- **原文链接解析** —— Google News 检索源给的跳转页在后台解析成**真实文章地址**并缓存，点「原文」直接到文章页；解析失败回落原链接。
+- **性能参数横向对比**（`/compare`，第二部分 P0）—— 三类压电器件、11 个型号、80+ 指标横向拉平：最优值高亮、差异 / 缺失过滤、溯源浮层、Excel / CSV / JSON 导出。
 
-**第二部分：性能参数横向对比**（P0），覆盖三类器件：
+型号覆盖（P0）：
 
 | 产品大类 | 代码 | 型号数 | 友商 |
 |---|---|---|---|
@@ -25,6 +28,20 @@
 > 还把 Google News 检索源的**跳转链接解析成真实原文地址**，点「原文」直接到文章页。
 > 数据库升到 v9（新增 `news_sources` / `news_items` 两张表；v9 给 `news_items` 加了 `real_url` 列，缓存解析出的原文地址）。
 > 变更明细见 [v1.3.0 发布说明](docs/releases/v1.3.0.md)。
+
+## 界面预览
+
+**市场消息（`/news`）** —— 按天分组的单列时间线：左侧本地时刻与时间轴圆点，卡片带来源、公司标签、标题、摘要与「原文」链接。
+
+![市场消息看板](docs/images/market-news.png)
+
+**参数对比（`/compare`）** —— 多型号指标横向拉平，最优值高亮、未公开灰显、表头带完整度进度条。
+
+![参数对比](docs/images/compare.png)
+
+**手工补录（`/news/clip`）** —— 批量贴链接，抓标题 / 摘要 / 发布时间入库，重复链接自动跳过。
+
+![手工补录](docs/images/news-clip.png)
 
 ---
 
@@ -168,6 +185,7 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 产品管理 | 管理员直接建公司、建型号，改型号元信息与参数值、增删参数、标记复核、删除型号；列表按大类分段，支持关键词 + 公司 + 大类筛选；型号详情页可记录并推进**客户采用**（谁在用这款泵、到哪一步） |
 | 市场消息 | `/news` 时间线看板：按发布时间倒序、按天分组的单列时间线、滚到底自动加载；按公司 / 来源 / 关键词筛选；管理员可增删改 RSS 源、手动刷新单个或全部源，抓取间隔在系统设置里调（见下节） |
 | 手工补录 | `/news/clip`：把公众号或没有 RSS 的网页链接批量贴进来（每批 12 条），抓标题 / 摘要 / 发布时间入库，与 RSS 共用去重；同一入口在 `/news` 右上角「补录」按钮 |
+| 原文链接 | Google News 检索源给的跳转链接在后台解析成真实文章地址并缓存（`news_items.real_url`），点「原文」直达文章页；解析失败回落原链接 |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 | 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
 | 页脚版本号 | 每页底部显示当前运行的 `vX.Y.Z`（含登录页），`/api/v1/health` 也回 `app_version` |
@@ -1046,8 +1064,9 @@ backend/
 │   ├── news.py           市场消息：查询 / 游标分页 / 抓取入库 / 定时任务 / 内置源预置
 │   ├── news_clip.py      手工补录：从网页 HTML 猜标题 / 摘要 / 发布时间并批量入库
 │   ├── news_fetch.py     RSS / Atom 抓取与解析（标准库 urllib，条件请求 + 拒 DTD）
+│   ├── news_link.py      原文链接解析：Google News 跳转页 → 真实地址（按需解析 + 后台回填）
 │   ├── news_sources.py   11 个内置订阅源清单
-│   ├── templates/        登录 / 对比 / 市场消息 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
+│   ├── templates/        登录 / 对比 / 市场消息 / 手工补录 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
 │   └── static/           app.css, filter.js, compare.js, products.js, datasheet.js,
 │                         import.js, product-edit.js, news.js（零依赖）
 ├── tests/                test_compare / test_datasheet / test_datasheet_import
@@ -1057,6 +1076,7 @@ backend/
 │                         test_datadir / test_empty_startup / test_user_profile
 │                         test_mcp_server（测 mcp/ 那一层，走真实 stdio + 假 API）
 │                         test_entity_meta / test_ui_contract / test_news / test_news_clip
+│                         test_news_link
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt
@@ -1066,7 +1086,7 @@ docker-compose.build.yml  叠加：改为本地源码构建（同名镜像标签
 mcp/                      MCP server（stdio，零依赖）：把 /api/v1 暴露成 MCP 工具
 docker-compose.pg.yml     叠加：换成 PostgreSQL
 .github/workflows/        build-image.yml（先测试，通过才构建并推 GHCR）
-docs/                     AI-API-设计.md（接口划分、I/O、扩展点）
+docs/                     releases/（版本发布说明）、images/（README 截图）、AI-API-设计.md（接口划分、I/O、扩展点）
 deploy/                   Docker 编排（infra + app 双 profile）
 ```
 
