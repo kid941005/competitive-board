@@ -17,7 +17,7 @@
 路由按「用途」分四组，而不是按对象分：
     查询  GET  /api/v1/{context,entities,metrics,products,matrix,changes}
     写入  POST/PATCH/DELETE /api/v1/products*, POST /api/v1/specs/batch
-    摄取  POST /api/v1/import
+    摄取  POST /api/v1/import, POST /api/v1/news
     发现  GET  /api/v1/tools
 """
 
@@ -42,7 +42,9 @@ from . import (
     auth,
     config,
     entity_names,
+    logging_setup,
     lookups,
+    news_fetch,
     references,
     search,
     settings_store,
@@ -55,6 +57,7 @@ from .api_schemas import (
     EntityIn,
     EntityPatch,
     ImportIn,
+    NewsPushIn,
     ProductIn,
     ProductPatch,
     SpecBatch,
@@ -69,6 +72,8 @@ from .models import (
     Adoption,
     ApiIdempotency,
     Entity,
+    NewsItem,
+    NewsSource,
     Product,
     ProductSpec,
     SpecMetric,
@@ -100,6 +105,10 @@ E: dict[str, int] = {
     "CONFIRM_REQUIRED": 400,
 }
 
+# Agent 推送的市场消息统一落在这个保留源下：它没有 feed 地址，不参与自动抓取。
+NEWS_PUSH_SOURCE_NAME = "Agent 推送"
+NEWS_PUSH_SOURCE_URL = "agent://push"
+
 
 class ApiError(Exception):
     def __init__(
@@ -122,8 +131,13 @@ class ApiError(Exception):
 
 
 # ── 信封 ───────────────────────────────────────────────────────────────────
+def _rid() -> str:
+    """同一次请求在访问日志、响应信封、审计记录里用同一个 ID。"""
+    return logging_setup.current_request_id() or uuid.uuid4().hex[:12]
+
+
 def _meta(**extra) -> dict:
-    m = {"request_id": uuid.uuid4().hex[:12]}
+    m = {"request_id": _rid()}
     m.update({k: v for k, v in extra.items() if v is not None})
     return m
 
@@ -836,7 +850,7 @@ def create_adoption(
         session, actor=actor, actor_kind=kind, action="create", object_type="adoption",
         object_id=row.id, label=f"{customer.name} · {product.model}", origin="api",
         changes=[{"field": "采用", "old": None, "new": ADOPTION_STATUS[body.status]}],
-        request_id=uuid.uuid4().hex[:12],
+        request_id=_rid(),
     )
     session.commit()
     return ok(_adoption_dict(row, session), status=201)
@@ -882,7 +896,7 @@ def patch_adoption(
     audit.record(
         session, actor=actor, actor_kind=kind, action="update", object_type="adoption",
         object_id=row.id, label=f"{after.get('customer')} · {after.get('model')}",
-        origin="api", changes=changed, request_id=uuid.uuid4().hex[:12],
+        origin="api", changes=changed, request_id=_rid(),
     )
     session.commit()
     return ok(after)
@@ -905,7 +919,7 @@ def delete_adoption(
         session, actor=actor, actor_kind=kind, action="delete", object_type="adoption",
         object_id=adoption_id, label=f"{data.get('customer')} · {data.get('model')}",
         origin="api", changes=[{"field": "采用", "old": "存在", "new": "已删除"}],
-        request_id=uuid.uuid4().hex[:12],
+        request_id=_rid(),
     )
     session.flush()
     references.delete_unreferenced_sources(session, source_ids)
@@ -1063,7 +1077,7 @@ def create_entity(
             session, actor=actor, actor_kind=kind, action="create", object_type="entity",
             object_id=ent.id, label=ent.name, origin="api",
             changes=[{"field": "公司", "old": None, "new": ent.name}],
-            request_id=uuid.uuid4().hex[:12],
+            request_id=_rid(),
         )
         resp = ok(data, status=201, created=True)
     if not dry and created:
@@ -1152,7 +1166,7 @@ def patch_entity(
     audit.record(
         session, actor=actor, actor_kind=actor_kind, action="update", object_type="entity",
         object_id=ent.id, label=before["name"], changes=changes, origin="api",
-        note="改公司元信息", request_id=uuid.uuid4().hex[:12],
+        note="改公司元信息", request_id=_rid(),
     )
     session.commit()
     return ok(after)
@@ -1208,7 +1222,7 @@ def create_product(
             session, actor=actor, actor_kind=kind, action="create", object_type="product",
             object_id=product.id, label=product.model, origin="api",
             changes=audit.diff({}, audit.product_snapshot(product), audit.PRODUCT_LABELS),
-            request_id=uuid.uuid4().hex[:12],
+            request_id=_rid(),
         )
         resp = ok(data, status=201)
     if not dry:
@@ -1277,7 +1291,7 @@ def patch_product(
         session, actor=actor, actor_kind=kind, action="update", object_type="product",
         object_id=product.id, label=product.model, origin="api",
         changes=audit.diff(before_meta, audit.product_snapshot(product), audit.PRODUCT_LABELS),
-        request_id=uuid.uuid4().hex[:12],
+        request_id=_rid(),
     )
     session.commit()
     return ok(
@@ -1314,7 +1328,7 @@ def delete_product(
         note=(
             f"删除型号、{len(specs)} 项参数及 {len(adoptions_rows)} 条客户采用记录"
         ),
-        request_id=uuid.uuid4().hex[:12],
+        request_id=_rid(),
     )
     source_ids = {s.source_id for s in specs if s.source_id is not None}
     source_ids.update(a.source_id for a in adoptions_rows if a.source_id is not None)
@@ -1383,7 +1397,7 @@ def batch_specs(
     results: list[dict] = []
     applied = 0
     dry = _is_dry(request, body)
-    rid = uuid.uuid4().hex[:12]
+    rid = _rid()
     actor, kind = _actor(principal)
     old_source_ids: set[int] = set()
     source_holder: list[SpecSource] = []
@@ -1576,13 +1590,221 @@ def api_import_rows(
     if not dry:
         actor, kind = _actor(principal)
         audit.log_import(session, report, actor=actor, actor_kind=kind, origin="api",
-                         request_id=uuid.uuid4().hex[:12])
+                         request_id=_rid())
         resp = ok(report.as_dict(), dry_run=False)
         _remember(session, key, "POST", "/api/v1/import", request_hash, resp)
         session.commit()
     else:
         session.rollback()
         resp = ok(report.as_dict(), dry_run=True)
+    return resp
+
+
+# ── 市场消息推送（Agent → /news 时间线）────────────────────────────────────
+def _news_push_source(session: Session) -> NewsSource:
+    """取或建 Agent 推送的保留源。所有推送消息都挂在它下面，便于统一清理。"""
+    row = session.exec(
+        select(NewsSource).where(NewsSource.url == NEWS_PUSH_SOURCE_URL)
+    ).first()
+    if row is None:
+        row = NewsSource(
+            name=NEWS_PUSH_SOURCE_NAME,
+            url=NEWS_PUSH_SOURCE_URL,
+            kind="push",
+            lang="zh",
+            enabled=True,
+        )
+        session.add(row)
+        session.flush()
+    else:
+        # 早前若被手工停用或改过 kind，推送仍应可用；这里只纠正，不动名称。
+        if row.kind != "push":
+            row.kind = "push"
+        if not row.enabled:
+            row.enabled = True
+        session.add(row)
+    return row
+
+
+def _news_push_entity(
+    session: Session, item, index: int
+) -> Entity | None:
+    """按 entity_id / entity_name 找公司；找不到就报错，不隐式新建档案。"""
+    if item.entity_id is not None:
+        ent = session.get(Entity, item.entity_id)
+        if ent is None:
+            raise ApiError(
+                "NOT_FOUND",
+                f"公司 id={item.entity_id} 不存在",
+                field=f"items[{index}].entity_id",
+            )
+        return ent
+    name = (item.entity_name or "").strip()
+    if not name:
+        return None
+    exact, similar = lookups.find_entity(session, name)
+    if exact is None:
+        hint = (
+            f"相近的公司是「{similar[0].name}」，改用它的 entity_id"
+            if similar
+            else "先用公司接口建好公司档案，再推送；或省略 entity 字段表示不归属"
+        )
+        raise ApiError(
+            "NOT_FOUND",
+            f"公司「{name}」不存在",
+            field=f"items[{index}].entity_name",
+            hint=hint,
+        )
+    return exact
+
+
+@router.post("/news")
+def push_news(
+    body: NewsPushIn,
+    request: Request,
+    principal: Principal = Depends(require_scope("ingest")),
+    session: Session = Depends(get_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    """Agent 批量把市场消息推进 /news 时间线。
+
+    只收标题、链接、摘要、发布时间与归属公司；链接按规范化地址去重，
+    同一条消息重复推送不会写两遍。首次写入会创建保留源「Agent 推送」。
+    """
+    key = _idem_key(principal, idempotency_key)
+    request_hash = _request_hash(body)
+    if (replayed := _replay(
+        session, key, "POST", "/api/v1/news", request_hash
+    )) is not None:
+        return replayed
+
+    source = _news_push_source(session)
+    source_id, source_name = source.id, source.name
+    default_lang = (settings_store.get_value(session, "news.default_lang") or "zh").strip().lower()
+    if default_lang not in ("zh", "en"):
+        default_lang = "zh"
+    now = datetime.now(timezone.utc)
+    prepared: list[dict] = []
+    for index, item in enumerate(body.items):
+        title = news_fetch.clean_text(item.title, news_fetch.TITLE_LIMIT)
+        if not title:
+            raise ApiError(
+                "VALIDATION_FAILED", "标题不能为空", field=f"items[{index}].title"
+            )
+        summary = news_fetch.clean_text(item.summary, news_fetch.SUMMARY_LIMIT) or None
+        raw_url = (item.url or "").strip()
+        url: str | None = None
+        if raw_url:
+            url = safe_url(raw_url)
+            if not url or not url.lower().startswith(("http://", "https://")):
+                raise ApiError(
+                    "VALIDATION_FAILED",
+                    "链接必须是 http(s) 地址",
+                    field=f"items[{index}].url",
+                )
+        published = item.published_at or now
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        published = published.astimezone(timezone.utc)
+        entity = _news_push_entity(session, item, index)
+        lang = (item.lang or default_lang).strip().lower()
+        if lang not in ("zh", "en"):
+            raise ApiError(
+                "VALIDATION_FAILED",
+                "lang 只能是 zh 或 en",
+                field=f"items[{index}].lang",
+            )
+        guid = (item.guid or "").strip()
+        if not guid and not url:
+            guid = "push:" + hashlib.sha1(
+                f"{title}|{published.isoformat()}".encode("utf-8")
+            ).hexdigest()
+        dedupe = news_fetch.dedupe_key(url, source.id or 0, guid or (url or ""))
+        prepared.append({
+            "title": title,
+            "url": url,
+            "summary": summary,
+            "published_at": published,
+            "entity": entity,
+            "entity_id": entity.id if entity else None,
+            "entity_name": entity.name if entity else None,
+            "lang": lang,
+            "guid": guid or (url or ""),
+            "dedupe_key": dedupe,
+        })
+
+    keys = [p["dedupe_key"] for p in prepared]
+    existing = set(session.exec(
+        select(NewsItem.dedupe_key).where(NewsItem.dedupe_key.in_(keys))
+    ).all())
+    seen: set[str] = set()
+    aligned: list[tuple[dict, NewsItem | None, str]] = []
+    created = duplicated = 0
+    for rec in prepared:
+        dedupe = rec["dedupe_key"]
+        if dedupe in existing or dedupe in seen:
+            duplicated += 1
+            aligned.append((rec, None, "duplicated"))
+            continue
+        seen.add(dedupe)
+        row = NewsItem(
+            source_id=source.id,
+            entity_id=rec["entity_id"],
+            guid=rec["guid"],
+            url=rec["url"],
+            title=rec["title"],
+            summary=rec["summary"],
+            lang=rec["lang"],
+            published_at=rec["published_at"],
+            fetched_at=now,
+            dedupe_key=dedupe,
+        )
+        session.add(row)
+        aligned.append((rec, row, "created"))
+        created += 1
+
+    dry = _is_dry(request, body)
+    if dry:
+        session.rollback()
+    else:
+        session.flush()
+        if created:
+            actor, kind = _actor(principal)
+            audit.record(
+                session,
+                actor=actor,
+                actor_kind=kind,
+                action="create",
+                object_type="news_item",
+                label=f"{created} 条市场消息",
+                origin="api",
+                changes=[{"field": "推送", "old": None, "new": f"{created} 条"}],
+                note=f"来源 {source.name}，重复 {duplicated} 条",
+                request_id=_rid(),
+            )
+
+    data_items = [
+        {
+            "id": row.id if row is not None else None,
+            "title": rec["title"],
+            "url": rec["url"],
+            "published_at": iso_utc(rec["published_at"]),
+            "entity": rec["entity_name"],
+            "status": status,
+        }
+        for rec, row, status in aligned
+    ]
+    data = {
+        "source": {"id": source_id, "name": source_name},
+        "items": data_items,
+        "created": created,
+        "duplicated": duplicated,
+    }
+    if dry:
+        return ok(data, dry_run=True, hint="预演：未落库，status=created 表示将会写入")
+    resp = ok(data, status=201 if created else 200)
+    _remember(session, key, "POST", "/api/v1/news", request_hash, resp)
+    session.commit()
     return resp
 
 
@@ -1618,7 +1840,7 @@ def create_token(
         session, actor=principal.name, actor_kind="token" if principal.kind == "token" else "user",
         action="create", object_type="token", object_id=row.id, label=row.name,
         changes=[{"field": "scope", "old": None, "new": row.scopes}],
-        note="通过 API 签发令牌", request_id=uuid.uuid4().hex[:12],
+        note="通过 API 签发令牌", request_id=_rid(),
     )
     session.commit()
     return ok({
@@ -1640,7 +1862,7 @@ def revoke_token(
         session, actor=_p.name, actor_kind="token" if _p.kind == "token" else "user",
         action="delete", object_type="token", object_id=token_id, label=f"令牌 #{token_id}",
         changes=[{"field": "状态", "old": "有效", "new": "已吊销"}],
-        note="通过 API 吊销令牌", request_id=uuid.uuid4().hex[:12],
+        note="通过 API 吊销令牌", request_id=_rid(),
     )
     session.commit()
     return ok({"id": token_id, "revoked": True})
@@ -2000,6 +2222,41 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
             },
         },
         {
+            "name": "push_news",
+            "method": "POST", "path": "/api/v1/news",
+            "description": (
+                "把市场消息批量推进「市场消息」时间线（/news）。每条只需标题；"
+                "有链接就按规范化地址去重，重复推送不会写两遍。"
+                "公司可传 entity_id 或 entity_name（必须是已有公司，不会隐式建档）。"
+                "支持 dry_run 与 Idempotency-Key。"
+            ),
+            "scope": "ingest",
+            "parameters": {
+                "type": "object", "required": ["items"],
+                "properties": {
+                    "dry_run": {"type": "boolean"},
+                    "items": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                            "type": "object", "required": ["title"],
+                            "properties": {
+                                "title": {"type": "string", "description": "消息标题"},
+                                "url": {"type": "string", "description": "原文链接，http(s)"},
+                                "summary": {"type": "string", "description": "摘要；可带简单 HTML，会清洗"},
+                                "published_at": {"type": "string", "format": "date-time",
+                                                 "description": "发布时间，ISO 8601；省略为当前时间"},
+                                "entity_id": {"type": "integer", "description": "归属公司 id"},
+                                "entity_name": {"type": "string", "description": "归属公司名；与 entity_id 二选一"},
+                                "lang": {"type": "string", "enum": ["zh", "en"]},
+                                "guid": {"type": "string", "description": "原站唯一 id；没有链接时用于去重"},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        {
             "name": "get_change_log",
             "method": "GET", "path": "/api/v1/audit",
             "description": "查变更日志：谁在什么时候把哪个型号的哪项参数从多少改成了多少。需 admin scope。",
@@ -2013,7 +2270,7 @@ def tool_manifest(_p: Principal = Depends(require_scope("read"))):
                     "action": {"type": "string", "enum": ["create", "update", "delete", "import"]},
                     "object_type": {"type": "string", "enum": [
                         "product", "spec", "entity", "adoption", "metric",
-                        "user", "token", "setting",
+                        "user", "token", "setting", "news_source", "news_item",
                     ]},
                     "q": {"type": "string", "description": "型号 / 指标 / 值关键词"},
                     "limit": {"type": "integer", "maximum": 500},

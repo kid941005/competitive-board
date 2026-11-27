@@ -24,6 +24,7 @@ LOG_OBJECTS = (
     # adoption = 客户采用关系；metric = 指标字典（迁移会写这条）
     ("adoption", "客户采用"), ("metric", "指标"),
     ("user", "账号"), ("token", "令牌"), ("setting", "系统参数"),
+    ("news_source", "消息源"), ("news_item", "市场消息"),
 )
 
 router = APIRouter()
@@ -298,7 +299,7 @@ def _render_tokens(request, user, auth_session, session, *, ok=None, err=None,
             scope_options=[
                 ("read", "读取", "查公司、型号、参数、对比矩阵、变更流"),
                 ("write", "写入", "新建/修改型号、批量写参数、删除型号"),
-                ("ingest", "批量摄取", "按行导入（与 Excel 导入同规则）"),
+                ("ingest", "批量摄取", "按行导入与推送市场消息（与 Excel 导入同规则）"),
                 ("admin", "管理", "签发/吊销令牌（隐含全部权限）"),
             ],
             api_base="/api/v1",

@@ -13,6 +13,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ["CIB_DATA_DIR"] = tempfile.mkdtemp(prefix="cib-link-")
 os.environ["CIB_ADMIN_PASSWORD"] = "link-test-pass-123"
@@ -98,7 +99,7 @@ def test_resolve_url_passthrough():
 def test_resolve_google_news_parses_signature(monkeypatch):
     calls = []
 
-    def fake_open(url, *, data=None, timeout=15.0):
+    def fake_open(url, *, data=None, timeout=15.0, proxy=None):
         calls.append((url, data))
         return PAGE if data is None else RESPONSE
 
@@ -243,6 +244,24 @@ def test_garturlreq_context_shape_is_the_two_element_form():
     assert isinstance(ctx[0], list) and len(ctx[0]) == 17
     assert ctx[1] == "X" and ctx[2] == "X" and ctx[3] == 1
     assert ctx[4] == [1, 1, 1]
+
+
+def test_resolve_google_news_passes_proxy_to_both_requests():
+    seen = []
+
+    def fake_open(url, **kw):
+        seen.append((url, kw.get("proxy")))
+        if "batchexecute" in url:
+            return RESPONSE
+        return PAGE
+
+    with patch.object(news_link, "_open", fake_open):
+        assert (
+            news_link.resolve_google_news(GOOGLE_URL, proxy="http://127.0.0.1:7890")
+            == REAL_URL
+        )
+    assert seen[0][1] == "http://127.0.0.1:7890"
+    assert seen[1][1] == "http://127.0.0.1:7890"
 
 
 def test_schema_has_real_url_column():

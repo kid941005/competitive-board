@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import re
 import threading
 import urllib.parse
@@ -30,8 +31,11 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from . import settings_store
 from .db import IS_SQLITE, WRITE_LOCK, engine
 from .models import NewsItem
+
+log = logging.getLogger("cib.news_link")
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -81,13 +85,32 @@ def is_google_news(url: str | None) -> bool:
     return parts.netloc.endswith("news.google.com") and "/articles/" in parts.path
 
 
-def _open(url: str, *, data: bytes | None = None, timeout: float = TIMEOUT) -> str:
+def _proxy_setting(session: Session) -> str | None:
+    """读 news.google_proxy；空串归一成 None，避免 build_opener 收到空代理。"""
+    raw = settings_store.get_value(session, "news.google_proxy")
+    return (raw or "").strip() or None
+
+
+def _open(
+    url: str,
+    *,
+    data: bytes | None = None,
+    timeout: float = TIMEOUT,
+    proxy: str | None = None,
+) -> str:
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
     if data is not None:
         headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8"
     request = urllib.request.Request(url, data=data, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        if proxy:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+            )
+            response_ctx = opener.open(request, timeout=timeout)
+        else:
+            response_ctx = urllib.request.urlopen(request, timeout=timeout)
+        with response_ctx as response:
             body = response.read(PAGE_MAX_BYTES)
             if (response.headers.get("Content-Encoding") or "").lower() == "gzip":
                 body = gzip.decompress(body)
@@ -111,10 +134,12 @@ def _signature(page: str) -> tuple[str, str]:
     return sig.group(1), ts.group(1)
 
 
-def resolve_google_news(url: str, *, timeout: float = TIMEOUT) -> str:
+def resolve_google_news(
+    url: str, *, timeout: float = TIMEOUT, proxy: str | None = None
+) -> str:
     """解析一条 Google News 跳转链接，返回原文地址。"""
     article = _article_id(url)
-    page = _open(url, timeout=timeout)
+    page = _open(url, timeout=timeout, proxy=proxy)
     sig, ts = _signature(page)
     request_body = json.dumps(
         ["garturlreq", _GARTURL_CONTEXT, article, ts, sig], separators=(",", ":")
@@ -124,6 +149,7 @@ def resolve_google_news(url: str, *, timeout: float = TIMEOUT) -> str:
         "https://news.google.com/_/DotsSplashUi/data/batchexecute",
         data=urllib.parse.urlencode({"f.req": payload}).encode(),
         timeout=timeout,
+        proxy=proxy,
     )
     # 响应里的内层 JSON 是转义过的字符串（\"garturlres\",\"https://...），
     # 所以先定位 garturlres，再取它后面第一个 http(s) 地址，别跟转义符较劲。
@@ -137,16 +163,24 @@ def resolve_google_news(url: str, *, timeout: float = TIMEOUT) -> str:
     return target
 
 
-def resolve_url(url: str | None, *, timeout: float = TIMEOUT) -> str:
+def resolve_url(
+    url: str | None, *, timeout: float = TIMEOUT, proxy: str | None = None
+) -> str:
     """非 Google 链接原样返回；Google 链接解析成原文。"""
     if not url:
         return ""
     if not is_google_news(url):
         return url
-    return resolve_google_news(url, timeout=timeout)
+    return resolve_google_news(url, timeout=timeout, proxy=proxy)
 
 
-def resolve_item(session: Session, item: NewsItem, *, timeout: float = TIMEOUT) -> str:
+def resolve_item(
+    session: Session,
+    item: NewsItem,
+    *,
+    timeout: float = TIMEOUT,
+    proxy: str | None = None,
+) -> str:
     """返回这条消息该跳转的地址；解析成功就把原文写回 item.real_url（不 commit）。
 
     调用方负责事务与写锁：路由里现解析一次，backfill 里批量解析。
@@ -155,7 +189,9 @@ def resolve_item(session: Session, item: NewsItem, *, timeout: float = TIMEOUT) 
         return item.real_url
     if not is_google_news(item.url):
         return item.url or ""
-    target = resolve_google_news(item.url, timeout=timeout)
+    if proxy is None:
+        proxy = _proxy_setting(session)
+    target = resolve_google_news(item.url, timeout=timeout, proxy=proxy)
     item.real_url = target
     session.add(item)
     return target
@@ -192,13 +228,14 @@ def backfill(limit: int = BACKFILL_BATCH, *, workers: int = BACKFILL_WORKERS) ->
     """
     with Session(engine) as session:
         todo = pending(session, limit)
+        proxy = _proxy_setting(session)
     if not todo:
         return 0
 
     def _one(pair: tuple[int, str]) -> tuple[int, str | None]:
         item_id, url = pair
         try:
-            return item_id, resolve_google_news(url)
+            return item_id, resolve_google_news(url, proxy=proxy)
         except LinkError:
             return item_id, None
 
@@ -249,9 +286,13 @@ def backfill_async() -> bool:
                     break
                 left = now_left
             if total:
-                print(f"[news] 原文链接解析：补了 {total} 条", flush=True)
-        except Exception as exc:
-            print(f"[news] 原文链接解析异常：{exc}", flush=True)
+                log.info(
+                    "原文链接解析：补了 %d 条",
+                    total,
+                    extra={"event": "news_link_backfill"},
+                )
+        except Exception:
+            log.exception("原文链接解析异常", extra={"event": "news_link_backfill_error"})
         finally:
             _BACKFILL_GUARD.release()
 

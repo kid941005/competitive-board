@@ -210,6 +210,10 @@ def get_current(
     hit = resolve_session(session, token)
     if hit is None:
         raise NotAuthenticated()
+    user, _auth_session = hit
+    # 结构化访问日志要能看出是谁的请求；这两个值只放在 request.state，不参与鉴权。
+    request.state.user = user.username
+    request.state.role = user.role
     return hit
 
 

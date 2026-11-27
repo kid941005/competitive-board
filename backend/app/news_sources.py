@@ -112,3 +112,25 @@ BUILTIN_SOURCES: list[dict] = [
         "lang": "en",
     },
 ]
+
+
+def company_source(name: str, name_en: str | None, *, lang: str) -> dict | None:
+    """把一家友商的公司名变成一条 Google News 检索源。
+
+    英文用 name_en（没有就退回中文名），中文用 name；检索词加引号当精确短语，
+    避免「Murata」这种短词把无关结果也捞进来。公司名本身就是用户要的关键词。
+    """
+    if lang == "en":
+        term = (name_en or name or "").strip()
+        suffix = "英文检索"
+    else:
+        term = (name or "").strip()
+        suffix = "中文检索"
+    if not term:
+        return None
+    return {
+        "name": f"{term} · {suffix}",
+        "url": google_news(f'"{term}"', lang=lang),
+        "kind": "rss",
+        "lang": lang,
+    }

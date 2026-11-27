@@ -17,16 +17,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from . import news_link, settings_store
 from .db import IS_SQLITE, WRITE_LOCK, engine
+
+log = logging.getLogger("cib.news")
 
 
 @contextmanager
@@ -58,6 +62,20 @@ PAGE_SIZE_DEFAULT = 24
 PAGE_SIZE_MAX = 60
 
 Fetcher = Callable[..., Any]
+
+
+def _proxy_for(session: Session, url: str) -> str | None:
+    """只有 Google News 的地址才走代理，国内官方源/行业站一律直连。
+
+    代理是给「这台机器打不开 news.google.com」准备的，若全局套代理，
+    反而会把本来能直连的源也拖慢甚至失败。
+    """
+    host = urlsplit(url).hostname or ""
+    if not (host == "news.google.com" or host.endswith(".news.google.com")):
+        return None
+    raw = settings_store.get_value(session, "news.google_proxy")
+    return (raw or "").strip() or None
+
 
 _WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 
@@ -98,13 +116,14 @@ def _fetch_entries(
     *,
     fetch: Fetcher,
     timeout: float,
+    proxy: str | None = None,
 ) -> tuple[FetchResult, list[FeedItem]]:
     """网络请求 + 解析，全部在**事务之外**完成。
 
     为什么要单独拆出来：SQLite 是单写库，事务期间持有写锁。若把一次最长 10s 的
     网络等待夹在事务里，期间所有写请求（登录、保存）都得排队，用户看到的是页面卡住。
     """
-    result = fetch(url, timeout=timeout, etag=etag, last_modified=last_modified)
+    result = fetch(url, timeout=timeout, etag=etag, last_modified=last_modified, proxy=proxy)
     if result.not_modified:
         return result, []
     return result, parse_feed(result.body, base_url=url)
@@ -142,9 +161,15 @@ def refresh_source(
     """抓一个源并入库。不 commit —— 由调用方决定事务边界。"""
     now = utcnow()
     source.last_fetch_at = now
+    proxy = _proxy_for(session, source.url)
     try:
         result, entries = _fetch_entries(
-            source.url, source.etag, source.last_modified, fetch=fetch, timeout=timeout
+            source.url,
+            source.etag,
+            source.last_modified,
+            fetch=fetch,
+            timeout=timeout,
+            proxy=proxy,
         )
     except FeedError as exc:
         source.last_status = "error"
@@ -225,19 +250,24 @@ def refresh_all(session: Session, *, fetch: Fetcher = fetch_feed) -> dict[str, i
     网络与解析放在写锁之外，只有入库那一下才拿 WRITE_LOCK —— 否则一次抓取
     就能把全站的写请求堵上十几秒（详见 _fetch_entries 的说明）。
     """
-    # 手工补录源没有 feed 地址（url 是 manual://clip），自动抓取要跳过它
+    # 手工补录源与 Agent 推送源都没有 feed 地址，自动抓取要跳过它们
     sources = session.exec(
         select(NewsSource)
-        .where(NewsSource.enabled.is_(True), NewsSource.kind != "manual")
+        .where(NewsSource.enabled.is_(True), NewsSource.kind.notin_(("manual", "push")))
         .order_by(NewsSource.id)
     ).all()
-    plan = [(s.id, s.url, s.etag, s.last_modified) for s in sources]
+    plan = [(s.id, s.url, s.etag, s.last_modified, _proxy_for(session, s.url)) for s in sources]
     session.commit()  # 结束只读事务，别把它带到网络等待里
     stats = {"sources": len(sources), "added": 0, "failed": 0}
-    for source_id, url, etag, last_modified in plan:
+    for source_id, url, etag, last_modified, proxy in plan:
         try:
             result, entries = _fetch_entries(
-                url, etag, last_modified, fetch=fetch, timeout=DEFAULT_TIMEOUT
+                url,
+                etag,
+                last_modified,
+                fetch=fetch,
+                timeout=DEFAULT_TIMEOUT,
+                proxy=proxy,
             )
         except FeedError as exc:
             with _write_lock():
@@ -284,15 +314,17 @@ def refresh_background() -> bool:
     def _run() -> None:
         try:
             stats = refresh_all_once()
-            print(
-                f"[news] 手动刷新：{stats['sources']} 个源，新增 {stats['added']} 条，"
-                f"失败 {stats['failed']} 个",
-                flush=True,
+            log.info(
+                "手动刷新：%d 个源，新增 %d 条，失败 %d 个",
+                stats["sources"],
+                stats["added"],
+                stats["failed"],
+                extra={"event": "news_refresh", "detail": {"trigger": "manual"}},
             )
             # 新进来的 Google News 条目顺手在后台换成原文地址
             news_link.backfill_async()
-        except Exception as exc:  # 后台线程异常不能把进程带走
-            print(f"[news] 手动刷新异常：{exc}", flush=True)
+        except Exception:  # 后台线程异常不能把进程带走
+            log.exception("手动刷新异常", extra={"event": "news_refresh_error"})
         finally:
             _REFRESH_GUARD.release()
 
@@ -493,14 +525,16 @@ async def _scheduler_loop() -> None:
         try:
             stats = await asyncio.to_thread(refresh_all_once)
             if stats["added"] or stats["failed"]:
-                print(
-                    f"[news] 定时刷新：{stats['sources']} 个源，新增 {stats['added']} 条，"
-                    f"失败 {stats['failed']} 个",
-                    flush=True,
+                log.info(
+                    "定时刷新：%d 个源，新增 %d 条，失败 %d 个",
+                    stats["sources"],
+                    stats["added"],
+                    stats["failed"],
+                    extra={"event": "news_refresh", "detail": {"trigger": "scheduler"}},
                 )
             news_link.backfill_async()
-        except Exception as exc:  # 后台任务抛异常不能把进程带走
-            print(f"[news] 定时刷新异常：{exc}", flush=True)
+        except Exception:  # 后台任务抛异常不能把进程带走
+            log.exception("定时刷新异常", extra={"event": "news_refresh_error"})
         await asyncio.sleep(minutes * 60)
 
 

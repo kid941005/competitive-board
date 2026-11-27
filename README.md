@@ -7,7 +7,11 @@
 - **第一部分 · 市场消息看板**（`/news`）—— 订阅 RSS / Atom 源，后台定时抓取入库，按发布时间倒序排成**按天分组的单列时间线**，滚到底自动加载下一页；可按公司 / 来源 / 关键词筛选，管理员可增删改源、手动抓取（见 [市场消息看板](#市场消息看板)）。
 - **第一部分 · 手工补录**（`/news/clip`）—— 公众号或没有 RSS 的网页，把链接批量贴进来（每批 12 条），自动抓标题 / 摘要 / 发布时间入库，与 RSS 共用去重。
 - **第一部分 · 原文链接解析** —— Google News 检索源给的跳转页在后台解析成**真实文章地址**并缓存，点「原文」直接到文章页；解析失败回落原链接。
+- **第一部分 · 友商关键词检索** —— `/admin/news` 可一键按友商公司名生成 Google News 检索源（中文名 / 英文名各一条），新增源语言默认中文，可切换英文或两者。
+- **第一部分 · Agent 推送（开放 API）** —— `POST /api/v1/news` 让 Agent / 脚本用 `ingest` 令牌把市场消息批量推进看板，支持 dry-run、幂等重试与去重（见 [API](#api)）。
 - **主题与自适应** —— 顶栏右侧可切「跟随系统 / 浅色 / 深色」，选择记在本机、即切即生效；≤640px 窄屏下顶栏换行、导航横向滑动、表单与卡片单列。
+- **液态玻璃界面** —— 顶栏、面板、表格、登录卡、新闻卡、表单与浮层统一换成半透明玻璃质感（高光描边 + 背景模糊 + 柔和阴影）；宽屏下页面铺满窗口、导航 dock 居中，消息时间轴整条贯通，覆盖层单独放在 `liquid-glass.css`，不改原有布局契约。
+- **结构化运行日志** —— 每个请求一行 JSON（时间 / 级别 / 请求 ID / 方法 / 路径 / 状态码 / 耗时 / 用户），请求 ID 同时回写响应头并显示在页脚，用户报问题时可直接对上日志（见 [运行日志](#运行日志)）。
 - **第二部分 · 性能参数横向对比**（`/compare`，P0）—— 三类压电器件、11 个型号、80+ 指标横向拉平：最优值高亮、差异 / 缺失过滤、溯源浮层、Excel / CSV / JSON 导出。
 
 型号覆盖（P0）：
@@ -24,10 +28,10 @@
 看板自带轻量 RSS/Atom 抓取，不需要外部采集组件；`deploy/` 里的采集栈编排草稿（RSSHub / changedetection）
 仍**不参与看板本体部署**——要抓没有 RSS 的站点，再用 RSSHub 生成 feed 喂进来即可。
 
-> 当前版本 **v1.4.0**（2026-11-27）。本版新增**主题切换（跟随系统 / 浅色 / 深色）与自适应界面**：
-> 顶栏右侧下拉框即切即生效、选择记在本机；≤640px 窄屏下顶栏换行、导航改为横向滑动、表单与卡片单列。
-> 这是纯前端改动，数据库仍是 **schema v9**，不新增迁移、不改 `/api/v1`。
-> 变更明细见 [v1.4.0 发布说明](docs/releases/v1.4.0.md)。
+> 当前版本 **v1.7.0**（2026-11-27）。本版新增**按友商公司名生成检索源**与**Agent 推送开放 API（`POST /api/v1/news`）**：
+> `/admin/news` 可一键把友商公司名变成 Google News 关键词源；Agent / 脚本可用 `ingest` 令牌把抓到的市场消息批量推进看板，
+> 支持 dry-run、幂等重试与全库统一去重。数据库仍是 **schema v9**，不新增迁移；既有页面与 `/api/v1` 接口保持兼容。
+> 变更明细见 [v1.7.0 发布说明](docs/releases/v1.7.0.md)。
 
 ## 界面预览
 
@@ -59,7 +63,7 @@ docker compose up -d
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
-  ghcr.io/kid941005/competitive-board:1.4.0
+  ghcr.io/kid941005/competitive-board:1.7.0
 ```
 
 镜像公开可拉，无需登录。首次启动的初始管理员密码在 `docker compose logs app`（或 `docker logs competitive-board`）里。
@@ -186,7 +190,10 @@ export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/ciboard"
 | 市场消息 | `/news` 时间线看板：按发布时间倒序、按天分组的单列时间线、滚到底自动加载；按公司 / 来源 / 关键词筛选；管理员可增删改 RSS 源、手动刷新单个或全部源，抓取间隔在系统设置里调（见下节） |
 | 手工补录 | `/news/clip`：把公众号或没有 RSS 的网页链接批量贴进来（每批 12 条），抓标题 / 摘要 / 发布时间入库，与 RSS 共用去重；同一入口在 `/news` 右上角「补录」按钮 |
 | 原文链接 | Google News 检索源给的跳转链接在后台解析成真实文章地址并缓存（`news_items.real_url`），点「原文」直达文章页；解析失败回落原链接 |
+| 友商关键词检索 | `/admin/news` 一键按友商公司名生成 Google News 检索源（中文名 / 英文名各一条），已有同名/同 URL 自动跳过 |
+| Agent 推送 | `POST /api/v1/news`：Agent / 脚本用 `ingest` 令牌批量推送市场消息，支持 dry-run、`Idempotency-Key` 与全库统一去重（见下节） |
 | 主题与自适应 | 顶栏右侧切「跟随系统 / 浅色 / 深色」，选择存本机（`localStorage`）、即切即生效，深色首屏不闪白；≤640px 窄屏顶栏换行、导航横向滑动、表单与卡片单列 |
+| 运行日志 | 访问日志一行 JSON（`ts` / `level` / `request_id` / `method` / `path` / `status` / `duration_ms` / `user`），4xx 记 warning、5xx 记 error；页脚显示当前请求 ID 与版本号，`X-Request-ID` 可被上游透传 |
 | AI / 脚本调用 | `/api/v1` 独立接口面：令牌鉴权、统一信封、幂等重试、dry-run 预演、批量与增量（见下节） |
 | 变更日志 | 记录「谁 / 何时 / 从哪个入口 / 把什么从多少改成了多少」，含删除快照（见下节） |
 | 页脚版本号 | 每页底部显示当前运行的 `vX.Y.Z`（含登录页），`/api/v1/health` 也回 `app_version` |
@@ -212,7 +219,7 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 
 页面是**按天分组的单列时间线**（版式参考 aihot.news）：日期组头显示「11月27日 星期五 · N 条」并可点击折叠，
 每条左侧是本地时刻与时间轴圆点，右侧卡片带来源、公司标签、标题、摘要和原文链接；滚到距底部一屏时自动取下一页，
-按钮「加载更多」保留给禁用 JS 的环境。
+按钮「加载更多」保留给禁用 JS 的环境。**时间线宽度随内容区域自适应，不设固定 `max-width`**，宽屏下铺满可用空间。
 
 ### 数据从哪来
 
@@ -252,6 +259,34 @@ AI 侧的对应入口是 `/api/v1/products?q=`、`/entities?q=`、`/metrics?q=` 
 - 后台任务在 `lifespan` 里起（`news.start_scheduler()`），关闭时 `finally` 里 cancel，不会留下悬挂任务；
 - 间隔来自系统设置 **市场消息自动抓取间隔 (分钟)**（`news.refresh_minutes`，默认 60，`0` = 关闭自动抓取，改完下一轮生效）；
 - **只适合单实例**：多副本会各自抓一遍。要扩容就把自动抓取关掉，改由外部定时任务打 `POST /admin/news/refresh`。
+
+### 消息源默认语言与 Google News 代理
+
+- **新增消息源默认语言**：系统设置 **新增消息源默认语言**（`news.default_lang`，默认 `zh`，可设 `en`）。
+  `/admin/news` 的「新增消息源」表单会按这个值预选语言；只影响新表单，已有源的语言不改。
+- **Google News 抓取代理**：系统设置 **Google News 抓取代理**（`news.google_proxy`，默认留空 = 直连）。
+  填 `http://127.0.0.1:7890` 这类 HTTP(S) 代理后，**只有** `news.google.com` 的 RSS 检索、跳转页原文解析会走代理；
+  官网 RSS、手工补录与其它国内站点仍直连。原因是国内网络里 Google 常被阻断，而国内源绕代理反而更慢。
+- 代理地址只接受 `http(s)://主机:端口`（可带账号密码），保存时会校验；填错不会写库，页面直接提示原因。
+
+### 友商公司名作为关键词
+
+内置检索源是手工挑的；友商名单变化时，`/admin/news` 的「按友商公司名生成检索源」面板可以一次补齐：
+
+- 取 `Entity.kind = competitor` 的公司，按**中文名**与**英文名**各生成一条 Google News 检索源（名称形如「村田制作所 · 中文检索」）。
+- 语言可选 **中文 / 英文 / 两者**；默认值跟随系统设置 **新增消息源默认语言**（`news.default_lang`）。
+- 同名或同 URL 已存在时跳过，重复点不会生成第二套；客户（`kind=customer`）与自家公司不参与。
+- 生成的是普通 RSS 源，之后照常随自动抓取更新，也可以在管理页单独停用/删除。
+
+### Agent 推送（`POST /api/v1/news`）
+
+Agent / 脚本抓到公开文章后，可以直接推进同一张时间线，不用先做 RSS 源：
+
+- 需要 `ingest` scope；单次最多 50 条，`dry_run: true` 只回执不写库，`Idempotency-Key` 保证重试不写两遍。
+- 每条支持 `title`（必填）/ `url` / `summary` / `published_at` / `entity_id` 或 `entity_name` / `lang` / `guid`；不传时间按推送时间入库，不传语言跟随系统默认。
+- 条目挂在固定源 **Agent 推送**（`url=agent://push`、`kind=push`）上，**不参与自动抓取**；管理页只读展示。
+- 去重与 RSS、手工补录共用：有链接用 `sha1(归一化链接)`，无链接用 `sha1(源:id|guid)`；重复返回 `duplicated`。
+- 公司传 `entity_id` 或精确 `entity_name`，找不到时整批 404 并提示，不会静默变成无归属；写入记变更日志（`origin=api`）。
 
 ### 手工补录（贴链接）
 
@@ -487,7 +522,7 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d 
 |---|---|---|
 | 查询 | `context` `metrics` `entities` `products` `matrix` `changes` | `read` |
 | 写入 | `POST/PATCH/DELETE products`、`specs/batch`、`POST/PATCH entities` | `write` |
-| 摄取 | `POST import`（与 Excel 导入同一套校验） | `ingest` |
+| 摄取 | `POST import`（与 Excel 导入同一套校验）、`POST news`（Agent 推送市场消息） | `ingest` |
 | 采用 | `GET/POST /adoptions`、`PATCH/DELETE /adoptions/{id}`（谁在用哪款泵） | `read` / `write` |
 | 发现 | `tools`（function-calling 清单）、令牌管理 | `read` / `admin` |
 
@@ -513,6 +548,11 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d 
 另有 `ETag`/`If-Match` 防覆盖、`/changes?since=` 做增量同步、`/tools` 供 function-calling 直接消费。
 
 > 令牌走 Bearer 头、不走 Cookie，所以**不校验 CSRF**——浏览器侧的防护一条都没放松。
+
+### 让 Agent 推送市场消息
+
+`POST /api/v1/news` 是给 Agent 用的入口：JSON 数组最多 50 条，逐条校验标题与链接，整批返回 `created` / `duplicated` 与每条状态。
+失败要么整批 4xx（参数错或公司找不到），要么单条计入失败，不会写半截。字段与边界见上文「Agent 推送」小节。
 
 ### 把访问权交给外部 AI 或脚本
 
@@ -595,6 +635,34 @@ Cursor、Cline…）都能直接发现并调用，不用自己拼 HTTP。**单�
 - 日志本身也会增长，默认保留 180 天（`audit.retention_days` 可调），启动时自动清一次，页面也有手动清理按钮。
 
 > 日志要求**管理员**权限：它包含所有人的操作记录，属于敏感数据。AI 侧对应 `/api/v1/audit`，需要 `admin` scope。
+
+---
+
+## 运行日志
+
+**看的是「请求流水」**，与上面的「变更日志」互补：变更日志回答「谁把哪个值改成了什么」，运行日志回答「这次请求成功了吗、慢在哪、是谁」。
+
+每个请求输出一行 JSON 到 stdout（容器日志直接可采）：
+
+```json
+{"ts":"2026-11-27T06:26:41.316Z","level":"info","logger":"cib.request","request_id":"trace-200","event":"http_request","msg":"GET /healthz 200","method":"GET","path":"/healthz","status":200,"duration_ms":45.3,"client":"172.18.0.1","user":"admin","role":"admin"}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `ts` / `level` / `logger` | UTC 时间、级别（info / warning / error）、产生日志的模块 |
+| `request_id` | 本次请求 ID：优先复用上游 `X-Request-ID`（仅接受 1–64 位安全字符），否则生成 12 位随机串；同时回写响应头并在页脚显示 |
+| `method` / `path` / `status` / `duration_ms` | 方法、路径、状态码、耗时（毫秒）；4xx 记 warning，5xx 记 error |
+| `user` / `role` | 已登录请求的用户名与角色（未登录为空） |
+| `event` | 事件名：`http_request` / `news_refresh` / `schema_migrate` / `bootstrap_admin` 等 |
+| `exc_type` / `exc_message` / `exc_stack` | 未处理异常时的异常类型、消息与堆栈（同一行 JSON 内，日志系统可直接检索） |
+
+配置：
+
+- `CIB_LOG_LEVEL`：默认 `INFO`，可设 `DEBUG` / `WARNING` / `ERROR`；
+- `CIB_LOG_FORMAT`：默认 `json`，本地开发可设 `plain` 输出人类可读文本。
+
+> 排查顺序建议：页脚「请求 ID」→ 在日志里搜该 ID → 看 `status` 与 `duration_ms`；5xx 直接看同一条的 `exc_stack`。
 
 ---
 
@@ -798,9 +866,9 @@ python -m app.seed --force
 
 镜像内已处理：非 root 用户（uid 10001，可在 compose 的 `user:` 行改）、时区、数据卷、健康检查、启动时等待 PostgreSQL。默认不灌示例数据，见上文「默认是空库」。
 
-镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.4.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
+镜像名统一为 `ghcr.io/kid941005/competitive-board`，由 GitHub Actions 在 `v*` 标签或手动触发时构建：**先跑静态检查与全部测试，通过才推**。推送 `main` 或 Pull Request 也会跑同一套质量门禁，但不构建镜像。标签有 `1.7.0`（版本号）、`latest`、`sha-<7位>`，仅 amd64，公开可拉、无需登录。
 
-版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.4.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
+版本直接写在 `docker-compose.yml` 的 `image:` 那行，当前 `1.7.0` —— **固定版本而不是跟 `latest`**，避免某次 `up` 之后环境悄悄变了。升级就改这一行再 `docker compose pull`。
 
 ### 方式一：compose 拉镜像（推荐）
 
@@ -843,19 +911,19 @@ docker run -d --name competitive-board \
   -e TZ=Asia/Shanghai \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  ghcr.io/kid941005/competitive-board:1.4.0
+  ghcr.io/kid941005/competitive-board:1.7.0
 ```
 
 自己构建（标签沿用同一命名规则，便于之后切回官方镜像）：
 
 ```bash
-docker build --build-arg APP_VERSION=1.4.0 -t competitive-board:1.4.0 ./backend
+docker build --build-arg APP_VERSION=1.7.0 -t competitive-board:1.7.0 ./backend
 
 docker run -d --name competitive-board \
   -p 127.0.0.1:8000:8000 \
   -v competitive-board-data:/app/data \
   --restart unless-stopped \
-  competitive-board:1.4.0
+  competitive-board:1.7.0
 ```
 
 ### 配置项在哪改
@@ -866,7 +934,7 @@ docker run -d --name competitive-board \
 
 | 位置 | 当前值 | 作用 |
 |---|---|---|
-| `image:` 的标签 | `1.4.0` | 镜像版本。升级就改这里，再 `docker compose pull` |
+| `image:` 的标签 | `1.7.0` | 镜像版本。升级就改这里，再 `docker compose pull` |
 | `user:` | `10001:10001` | 容器运行身份。数据目录属主是别的 uid 时（NAS 共享目录常见）改这里，就不必 `chown` 目录；改 `"0:0"` 则以 root 运行 |
 | `ports:` | `127.0.0.1:8000:8000` | 宿主端口。只绑回环，对外访问需反向代理 |
 | `CIB_DATA_DIR` | `/app/data` | 数据目录（SQLite + 规格书文件） |
@@ -945,7 +1013,7 @@ docker compose -f docker-compose.yml -f docker-compose.pg.yml exec -T db \
 
 采集栈里本应用对应 `api` 服务，`app` profile 才会启动，详见 `deploy/README.md`。
 
-> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布版本为 `1.4.0`（[发布说明](docs/releases/v1.4.0.md)），`latest` 与 GitHub Latest 均指向它。
+> 镜像由 GitHub Actions 在版本标签下构建并发布，测试、构建状态与产物以 [Actions](https://github.com/kid941005/competitive-board/actions) 记录为准；当前发布版本为 `1.7.0`（[发布说明](docs/releases/v1.7.0.md)），`latest` 与 GitHub Latest 均指向它。
 
 ---
 
@@ -960,15 +1028,17 @@ python tests/test_datasheet_import.py # 13 项：规格书导入建档（新公�
 python tests/test_import_export.py    # 22 项：宽表导入、液泵列映射、公司名括注归并、官方链接回填、温度范围往返、口径标注不被覆盖、报错封顶、损坏/超限文件拒绝、全量备份导出（含往返）
 python tests/test_product_edit.py     # 13 项：产品编辑、三类防护、公司列表口径
 python tests/test_api_v1.py           # 35 项：令牌鉴权、幂等、dry-run、ETag、批量回执、单位换算、来源网址、删除清理、公司括注归一
+python tests/test_news_push.py        #  8 项：Agent 推送（推送源、utm 去重、只读 403、非法 URL、dry-run、幂等重放、未知公司、guid 去重）
+python tests/test_news_company_sources.py # 2 项：按友商公司名生成检索源（面板、重复跳过、客户不生成、URL 编码）
 python tests/test_units.py            # 26 项：单位归一（同维度换算 / 跨维度拒绝 / Vp→Vpp / 口径歧义 / 温度上下限与「待补充（说明）」）
 python tests/test_adoptions.py        # 16 项：客户采用关系（页面 + API、重复拒收、同名复用、自采拦截、ETag、括号内分隔符、审计）
 python tests/test_audit.py            # 13 项：日志记录、旧值/新值、删除快照、保留期
 python tests/test_labels.py           #  6 项：自家公司用公司名，不出现「本方 / 我方」
 python tests/test_fixes.py            # 11 项：代码审查修复的回归（串号 / 幂等 / 置信度 / XSS / 批量上限）
 python tests/test_review_regressions.py # 12 项：上一轮审查的回归（CSRF 边界、ETag、增量游标、非有限数、MCP 请求头、导出防公式、旧库合并保留采用关系）
-python tests/test_auth.py             # 26 项：权限体系（含接口层拦截与 CSRF）
+python tests/test_auth.py             # 27 项：权限体系（含接口层拦截与 CSRF）
 python tests/test_channel_parity.py   # 13 项：四条写入通道的规则一致性（applies_to / 置信度 / 出处 / 日志时间）
-python tests/test_schema.py           #  9 项：表结构迁移（新库 / 老库升级去重 / v3 指标合并 / v5 温度拆两格 / v6 单位统一 / 版本过新拒启）
+python tests/test_schema.py           # 10 项：表结构迁移（新库 / 老库升级去重 / v3 指标合并 / v5 温度拆两格 / v6 单位统一 / v9 real_url 列 / 版本过新拒启）
 python tests/test_data_integrity.py   # 10 项：模板列宽、空白关键词、完整度容错、公司名括注归一、新建公司去重、采用进度审计、保存型号不清空备注、系统设置本地时间、seed --force 外键顺序
 python tests/test_retention.py        #  8 项：规格书原文保留（被引用的不删、过期的删、未到期留着、孤立来源、中断临时文件回收）
 python tests/test_throttle.py         #  5 项：登录失败退避与成功清零
@@ -979,12 +1049,18 @@ python tests/test_mcp_server.py       # 20 项：MCP 适配层（协议、参数
 python tests/test_entity_meta.py      # 13 项：建公司不丢字段、导入认自家公司、PATCH 改元信息、客户校验、审计
 python tests/test_ui_contract.py      # 10 项：页面渲染契约（StrictUndefined 下全页面、页脚版本号、选择器折叠与表头吸顶、flash 提示、403 页）
 python tests/test_search.py           # 13 项：检索（公司名/产品名/型号、多词 AND、通配符转义、matched）
+python tests/test_news.py             # 17 项：RSS/Atom 解析、条件请求 304、去重键、游标翻页、页面渲染与权限、默认语言与代理设置
+python tests/test_news_clip.py        # 10 项：手工补录（公众号字段、时间回退、批量增/重、单条失败隔离、权限）
+python tests/test_news_link.py        # 14 项：Google News 跳转页解析、按需跳转、后台回填、代理透传
+python tests/test_theme.py            #  5 项：主题选择、首屏无闪白、CSS data-theme 契约
+python tests/test_logging.py          #  6 项：JSON 日志字段、请求 ID 透传与页脚、访问日志字段、API meta 同源
+python tests/test_liquid_glass.py     #  3 项：玻璃层引入顺序、CSS 契约、静态资源可访问
 node tests/js/test_datasheet_ui.js    # 12 项：导入页交互（无浏览器依赖）
 node tests/js/test_filter.js          #  8 项：关键词过滤纯逻辑（与后端同一套语义）
 # 或 pytest tests/
 ```
 
-当前自动化测试共 **377 项**（后端 357 + 前端 20）；此数字以本仓库当前的 `pytest` 收集与 Node 测试为准。覆盖内容：
+当前自动化测试共 **444 项**（后端 424 + 前端 20）；此数字以本仓库当前逐文件 `pytest` 与 Node 测试为准。覆盖内容：
 
 - **对比逻辑**：最优值方向与并列、单一值不给最优、`target`/文本指标不判定、缺失不计零、容差不误判、完整度、指标按大类裁剪、CSV 导入四类错误
 - **规格书识别**：脚注防护、单位换算、**L/min 与 µL/min 必须换算而不是原样落库**、**紧贴数值的是别的单位时宁可不取**、**短英文别名不命中单词内部（kp ⊄ kPa）**、区间取上限（确认写入时温度会补出下限）、修饰语降权、别名不重复计数、多页页码
@@ -1066,10 +1142,10 @@ backend/
 │   ├── news_clip.py      手工补录：从网页 HTML 猜标题 / 摘要 / 发布时间并批量入库
 │   ├── news_fetch.py     RSS / Atom 抓取与解析（标准库 urllib，条件请求 + 拒 DTD）
 │   ├── news_link.py      原文链接解析：Google News 跳转页 → 真实地址（按需解析 + 后台回填）
-│   ├── news_sources.py   11 个内置订阅源清单
+│   ├── news_sources.py   内置订阅源清单 + 按友商公司名生成检索源
 │   ├── templates/        登录 / 对比 / 市场消息 / 手工补录 / 规格书 / 批量导入 / 产品管理 / 账号 / 令牌 / 设置 / 403
-│   └── static/           app.css, filter.js, compare.js, products.js, datasheet.js,
-│                         import.js, product-edit.js, news.js（零依赖）
+│   └── static/           app.css, liquid-glass.css, theme.js, filter.js, compare.js,
+│                         products.js, datasheet.js, import.js, product-edit.js, news.js（零依赖）
 ├── tests/                test_compare / test_datasheet / test_datasheet_import
 │                         test_import_export / test_product_edit / test_api_v1
 │                         test_audit / test_labels / test_fixes / test_auth
@@ -1077,7 +1153,7 @@ backend/
 │                         test_datadir / test_empty_startup / test_user_profile
 │                         test_mcp_server（测 mcp/ 那一层，走真实 stdio + 假 API）
 │                         test_entity_meta / test_ui_contract / test_news / test_news_clip
-│                         test_news_link
+│                         test_news_link / test_news_push / test_news_company_sources
 │                         js/test_datasheet_ui.js（Node + 最小 DOM 桩，无需浏览器）
 ├── tools/                make_sample_datasheet.py（生成合成规格书，用于验证识别链路）
 ├── requirements.txt

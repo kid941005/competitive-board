@@ -5,6 +5,7 @@
 
 代码分布（曾经是 2100 行的单个文件，连 api_v1 都要局部导入它来取矩阵计算）：
     main.py            装配：app / lifespan / 异常处理 / 健康检查
+    logging_setup.py   结构化日志：请求 ID、访问日志、JSON 格式
     selection.py       选中与矩阵组装（页面、导出、/api/v1 共用）
     web_shared.py      模板环境、权限依赖、表单校验、公司/型号查找
     routes_auth.py     登录、登出、首页
@@ -21,8 +22,8 @@
 
 from __future__ import annotations
 
+import logging
 import math
-import uuid
 from contextlib import asynccontextmanager
 from urllib.parse import quote, urlsplit
 
@@ -44,6 +45,7 @@ from . import (
     auth,
     config,
     datasheet_store,
+    logging_setup,
     news,
     news_link,
     news_sources,
@@ -59,6 +61,10 @@ from .routes_news import router as news_router
 from .routes_products import router as products_router
 from .timeutil import fmt_local
 from .web_shared import BASE, _safe_next, templates
+
+# 结构化日志必须在任何业务 logger 之前配好（db.init_db、news 后台线程都会用）。
+logging_setup.configure()
+log = logging.getLogger("cib.startup")
 
 
 @asynccontextmanager
@@ -82,22 +88,25 @@ async def lifespan(_app: FastAPI):
         seeded = news.seed_builtin(session, news_sources.BUILTIN_SOURCES)
         session.commit()
         if swept["removed"]:
-            print(
-                f"[startup] 清理未引用规格书 {swept['removed']} 份"
-                f"（{swept['bytes'] / 1024 / 1024:.1f} MB），"
-                f"保留在用 {swept['referenced']} 份、未到期 {swept['kept']} 份",
-                flush=True,
+            log.info(
+                "清理未引用规格书 %d 份（%.1f MB），保留在用 %d 份、未到期 %d 份",
+                swept["removed"],
+                swept["bytes"] / 1024 / 1024,
+                swept["referenced"],
+                swept["kept"],
+                extra={"event": "datasheet_purge"},
             )
     if seeded:
-        print(f"[startup] 预置 {seeded} 个内置消息源", flush=True)
+        log.info("预置 %d 个内置消息源", seeded, extra={"event": "news_seed"})
     if bootstrap:
         # 只在此打印一次。请立即登录后修改密码。
         admin_name, generated = bootstrap
-        print("=" * 62, flush=True)
-        print(f"  已创建初始管理员：{admin_name}", flush=True)
-        print(f"  初始密码：{generated}", flush=True)
-        print("  登录后请立刻在「账号管理」里修改密码。", flush=True)
-        print("=" * 62, flush=True)
+        log.warning(
+            "已创建初始管理员：%s；初始密码：%s；登录后请立刻在「账号管理」里修改密码。",
+            admin_name,
+            generated,
+            extra={"event": "bootstrap_admin"},
+        )
     # 存量消息里 Google News 的跳转链接在后台逐条换成原文地址（不阻塞启动）
     news_link.backfill_async()
     # 定时抓取放在后台任务里：抓 20 个源要几十秒，不能卡住启动和健康检查
@@ -109,7 +118,9 @@ async def lifespan(_app: FastAPI):
         await news.stop_scheduler(scheduler)
 
 
-app = FastAPI(title="竞品情报看板", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="竞品情报看板", version="1.7.0", lifespan=lifespan)
+# 请求 ID + 结构化访问日志（必须在路由与异常处理器之前安装）
+logging_setup.install(app)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 # 机器调用接口面（AI / 脚本）。独立命名空间，旧路由一条未动。
 app.include_router(api_v1.router)
@@ -126,6 +137,8 @@ templates.env.globals["asset_v"] = app.version
 # 页脚显示的版本号：与 app.version 同源（CI 会校验这个字面值与各 compose/README 一致），
 # 用户报问题时一眼能说出「我这是哪一版」。
 templates.env.globals["app_version"] = app.version
+# 页脚显示本次请求的 ID：用户报问题时能直接把日志里的一条记录对上。
+templates.env.globals["request_id"] = logging_setup.current_request_id
 # 库里存 UTC、界面按部署时区显示：模板里一律用 {{ ts | localtime }}，不要再裸 strftime
 templates.env.filters["localtime"] = fmt_local
 
@@ -212,7 +225,7 @@ async def _on_http_error(request: Request, exc: HTTPException):
                 "code": _V1_CODE_BY_STATUS.get(exc.status_code, "VALIDATION_FAILED"),
                 "message": str(exc.detail),
             },
-            "meta": {"request_id": uuid.uuid4().hex[:12]},
+            "meta": {"request_id": request.state.request_id},
         },
         status_code=exc.status_code,
         headers=exc.headers,
@@ -240,7 +253,7 @@ async def _on_validation_error(request: Request, exc: RequestValidationError):
                 "hint": "details 里逐项给出字段与原因",
                 "details": errors,
             },
-            "meta": {"request_id": uuid.uuid4().hex[:12]},
+            "meta": {"request_id": request.state.request_id},
         },
         status_code=422,
     )
@@ -330,7 +343,12 @@ def _rename_legacy_self(session: Session) -> None:
             old = ent.name           # 先存旧名：原实现先赋值再打印，输出成了「左蓝微 → 左蓝微」
             ent.name = config.SELF_COMPANY_NAME
             session.add(ent)
-            print(f"[startup] 自家公司名 {old} → {config.SELF_COMPANY_NAME}", flush=True)
+            log.info(
+                "自家公司名 %s → %s",
+                old,
+                config.SELF_COMPANY_NAME,
+                extra={"event": "rename_self_company"},
+            )
     session.commit()
 
 

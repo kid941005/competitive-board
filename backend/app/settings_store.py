@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from sqlmodel import Session, select
 
@@ -31,6 +31,7 @@ class SettingSpec:
     maximum: float | None = None
     choices: tuple[str, ...] | None = None
     help: str = ""
+    validator: Callable[[str], str | None] | None = None
 
     def parse(self, raw: Any) -> tuple[Any, str | None]:
         text = str(raw).strip()
@@ -58,6 +59,10 @@ class SettingSpec:
                 return None, f"不能大于 {self.maximum}"
             return value, None
 
+        if self.kind == "str" and self.validator is not None:
+            problem = self.validator(text)
+            if problem:
+                return None, problem
         if self.choices and text not in self.choices:
             return None, "取值不在允许范围内"
         return text, None
@@ -66,6 +71,27 @@ class SettingSpec:
         if self.kind == "float":
             return f"{float(value):g}"
         return str(value)
+
+
+def _proxy_problem(text: str) -> str | None:
+    """代理地址只接受 http(s)://host:port，避免把无 scheme 的串塞给 urllib。"""
+    if not text:
+        return None
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return "代理地址格式不正确"
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return "代理地址必须是 http(s)://主机:端口"
+    try:
+        _ = parts.port
+    except ValueError:
+        return "代理端口不合法"
+    if parts.path not in ("", "/"):
+        return "代理地址不要带路径"
+    return None
 
 
 SPECS: tuple[SettingSpec, ...] = (
@@ -97,6 +123,24 @@ SPECS: tuple[SettingSpec, ...] = (
         minimum=0,
         maximum=1440,
         help="0 表示关闭自动抓取，只能手动点「立即抓取」；改完下一轮生效，无需重启。",
+    ),
+    SettingSpec(
+        key="news.default_lang",
+        label="新增消息源默认语言",
+        group="市场消息",
+        kind="str",
+        default="zh",
+        choices=("zh", "en"),
+        help="新增消息源时语言下拉的默认值：zh=中文，en=英文；已有消息源不受影响。",
+    ),
+    SettingSpec(
+        key="news.google_proxy",
+        label="Google News 抓取代理",
+        group="市场消息",
+        kind="str",
+        default="",
+        validator=_proxy_problem,
+        help="仅抓取 news.google.com（RSS 检索与原文解析）时走该 HTTP(S) 代理，例如 http://127.0.0.1:7890；留空为直连，不影响其它源。",
     ),
     SettingSpec(
         key="datasheet.max_upload_mb",

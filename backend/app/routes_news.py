@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from . import audit, auth, news, news_clip, news_link, settings_store
+from . import audit, auth, news, news_clip, news_link, news_sources, settings_store
 from .auth import P_VIEW, P_WRITE
 from .db import get_session
 from .models import AuthSession, Entity, NewsItem, NewsSource, User
@@ -262,6 +262,9 @@ def admin_news_page(
 ):
     user, auth_session = pair
     sset = settings_store.all_values(session)
+    default_lang = settings_store.get_value(session, "news.default_lang")
+    if default_lang not in LANGS:
+        default_lang = "zh"
     sources = session.exec(
         select(NewsSource).order_by(NewsSource.enabled.desc(), NewsSource.name)
     ).all()
@@ -276,6 +279,7 @@ def admin_news_page(
         .where(Entity.kind.in_(("competitor", "customer", "self")))
         .order_by(Entity.kind, Entity.name)
     ).all()
+    competitor_count = sum(1 for e in entities if e.kind == "competitor")
     return templates.TemplateResponse(
         request=request,
         name="admin_news.html",
@@ -290,6 +294,8 @@ def admin_news_page(
             counts=counts,
             entities=entities,
             langs=LANGS,
+            default_lang=default_lang,
+            competitor_count=competitor_count,
             ok=ok,
             err=err,
         ),
@@ -398,6 +404,58 @@ def create_source(
     )
     session.commit()
     return _redirect("/admin/news", f"已添加「{source.name}」，点右侧「抓取」试一次")
+
+
+@router.post("/admin/news/company-keywords")
+def create_company_keyword_sources(
+    lang: str = Form(default="zh"),
+    _csrf: None = Depends(auth.verify_csrf),
+    actor: User = Depends(_perm_user(P_WRITE)),
+    session: Session = Depends(get_session),
+):
+    """按友商档案里的公司名批量生成 Google News 检索源。
+
+    公司名就是检索关键词；同名或同地址的源已经存在时自动跳过，重复点不会重复建。
+    """
+    if lang not in ("zh", "en", "both"):
+        return _redirect("/admin/news", "语言只能选中文、英文或中英各一份", "err")
+    companies = session.exec(
+        select(Entity).where(Entity.kind == "competitor").order_by(Entity.name)
+    ).all()
+    if not companies:
+        return _redirect("/admin/news", "还没有友商公司档案，先在「产品管理」里建公司", "err")
+    existing_names = set(session.exec(select(NewsSource.name)).all())
+    existing_urls = {u.strip().lower() for u in session.exec(select(NewsSource.url)).all()}
+    created = skipped = 0
+    for entity in companies:
+        for code in (("zh", "en") if lang == "both" else (lang,)):
+            spec = news_sources.company_source(entity.name, entity.name_en, lang=code)
+            if spec is None:
+                skipped += 1
+                continue
+            if spec["name"] in existing_names or spec["url"].lower() in existing_urls:
+                skipped += 1
+                continue
+            session.add(NewsSource(**spec, entity_id=entity.id, enabled=True))
+            existing_names.add(spec["name"])
+            existing_urls.add(spec["url"].lower())
+            created += 1
+    if created:
+        audit.record(
+            session,
+            actor=actor.username,
+            action="create",
+            object_type="news_source",
+            label=f"友商公司名检索源 {created} 个",
+            origin="web",
+            changes=[{"field": "生成方式", "old": None, "new": f"company-keywords/{lang}"}],
+            note=f"按 {len(companies)} 家友商的公司名生成检索源，跳过 {skipped} 个已存在",
+            request_id=_rid(),
+        )
+    session.commit()
+    if not created:
+        return _redirect("/admin/news", f"没有新建：{skipped} 个已存在或不适用")
+    return _redirect("/admin/news", f"已生成 {created} 个友商检索源，跳过 {skipped} 个")
 
 
 @router.post("/admin/news/{source_id}/update")

@@ -25,7 +25,7 @@
     <label class="ds-field">
       <span>语言</span>
       <select name="lang" class="ds-select">
-        {% for code, label in langs.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+        {% for code, label in langs.items() %}<option value="{{ code }}"{% if code == default_lang %} selected{% endif %}>{{ label }}</option>{% endfor %}
       </select>
     </label>
     <label class="ds-field">
@@ -44,6 +44,26 @@
 
 <section class="panel">
   <div class="panel-head">
+    <h2>按友商公司名生成检索源</h2>
+    <span class="hint">把公司档案里的名字当关键词，生成 Google News 检索 RSS；已存在的同名或同地址源会自动跳过</span>
+  </div>
+  <form method="post" action="/admin/news/company-keywords" class="userform">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label class="ds-field">
+      <span>检索语言</span>
+      <select name="lang" class="ds-select">
+        <option value="zh"{% if default_lang == 'zh' %} selected{% endif %}>中文</option>
+        <option value="en"{% if default_lang == 'en' %} selected{% endif %}>英文</option>
+        <option value="both">中英各一份</option>
+      </select>
+    </label>
+    <button type="submit" class="btn">生成</button>
+    <span class="hint">当前友商 {{ competitor_count }} 家 · 每家公司按中文名/英文名各生成一条</span>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
     <h2>全部消息源</h2>
     <span class="hint">{{ sources|length }} 个源 · 抓取失败会写明原因，改完地址点「抓取」重试</span>
   </div>
@@ -52,10 +72,10 @@
   <div class="source-list">
     {% for s in sources %}
     <div class="source-item{% if not s.enabled %} is-off{% endif %}">
-      {% if s.kind == 'manual' %}
+      {% if s.kind in ('manual', 'push') %}
       <div class="source-row">
         <strong>{{ s.name }}</strong>
-        <span class="hint">手工补录源 · 没有 feed 地址，不参与自动抓取</span>
+        <span class="hint">{% if s.kind == 'manual' %}手工补录源 · 没有 feed 地址，不参与自动抓取{% else %}Agent 推送源 · 由开放 API 写入，不参与自动抓取{% endif %}</span>
       </div>
       {% else %}
       <form method="post" action="/admin/news/{{ s.id }}/update" class="source-row">
@@ -92,7 +112,7 @@
           {% if s.last_fetch_at %}<span>上次抓取 {{ s.last_fetch_at | localtime }}</span>{% endif %}
         </span>
         <span class="source-btns">
-          {% if s.kind != 'manual' %}
+          {% if s.kind not in ('manual', 'push') %}
           <form method="post" action="/admin/news/{{ s.id }}/refresh" class="inline-form">
             <input type="hidden" name="_csrf" value="{{ csrf }}">
             <button type="submit" class="btn ghost sm">抓取</button>

@@ -75,6 +75,7 @@ def fetch_feed(
     max_bytes: int = MAX_BYTES,
     etag: str | None = None,
     last_modified: str | None = None,
+    proxy: str | None = None,
 ) -> FetchResult:
     """取一个源。304 原样返回（body 为空），由调用方决定「没更新」怎么记。"""
     headers = {
@@ -92,7 +93,16 @@ def fetch_feed(
 
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # 代理只由调用方按目标站点决定（目前只给 news.google.com 用），
+        # 不在这里读全局配置，避免把国内官方源也送进代理。
+        if proxy:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+            )
+            response_ctx = opener.open(request, timeout=timeout)
+        else:
+            response_ctx = urllib.request.urlopen(request, timeout=timeout)
+        with response_ctx as response:
             # 多读一个字节就能判断「超限」，不必等整包下载完
             body = response.read(max_bytes + 1)
             if len(body) > max_bytes:

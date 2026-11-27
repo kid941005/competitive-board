@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import threading
@@ -25,6 +26,8 @@ from .models import (  # noqa: F401  确保建表时模型已注册
     SpecMetric,
     SpecSource,
 )
+
+log = logging.getLogger("cib.db")
 
 _url = config.database_url()
 _is_sqlite = _url.startswith("sqlite")
@@ -147,8 +150,13 @@ def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     result = schema.migrate(engine)
     if result["applied"]:
-        print(f"[db] 表结构 {result['from']} → {result['to']}：" + "；".join(result["applied"]),
-              flush=True)
+        log.info(
+            "表结构 %d → %d：%s",
+            result["from"],
+            result["to"],
+            "；".join(result["applied"]),
+            extra={"event": "schema_migrate"},
+        )
 
 
 # 进程级写锁：SQLite 同时只允许一个写事务。默认的「先读后写」事务在 WAL 下

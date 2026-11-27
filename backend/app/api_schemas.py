@@ -1,6 +1,8 @@
 """V1 API request contracts, independent of routing and persistence."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 from . import config, tokens
@@ -92,3 +94,21 @@ class TokenIn(BaseModel):
     # 不要写可变默认值：Pydantic 会复制，但读代码的人不该靠「框架替我兜住了」来判断
     scopes: list[str] = Field(default_factory=lambda: ["read"])
     expires_days: int | None = Field(default=None, ge=1, le=tokens.MAX_EXPIRY_DAYS)
+
+
+class NewsPushItem(BaseModel):
+    """一条由 Agent 推送的市场消息。只收标题、链接、摘要、时间与归属公司。"""
+
+    title: str = Field(min_length=1, max_length=500)
+    url: str | None = Field(default=None, max_length=1000)
+    summary: str | None = Field(default=None, max_length=4000)
+    published_at: datetime | None = None
+    entity_id: int | None = None
+    entity_name: str | None = Field(default=None, max_length=200)
+    lang: str | None = None
+    guid: str | None = Field(default=None, max_length=500)
+
+
+class NewsPushIn(BaseModel):
+    items: list[NewsPushItem] = Field(min_length=1, max_length=50)
+    dry_run: bool = False

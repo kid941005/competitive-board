@@ -13,6 +13,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ["CIB_DATA_DIR"] = tempfile.mkdtemp(prefix="cib-news-")
 os.environ["CIB_ADMIN_PASSWORD"] = "AdminPass123"
@@ -23,7 +24,7 @@ from app import news, settings_store
 from app.db import engine, init_db
 from app.main import app
 from app.models import Entity, NewsItem, NewsSource
-from app.news_fetch import FeedError, FetchResult, dedupe_key, parse_feed
+from app.news_fetch import FeedError, FetchResult, dedupe_key, fetch_feed, parse_feed
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
@@ -285,6 +286,101 @@ def test_refresh_minutes_setting_is_registered():
     assert spec.kind == "int"
     assert spec.minimum == 0 and spec.maximum == 1440
     assert spec.group == "市场消息"
+
+
+def test_default_lang_setting_is_registered():
+    spec = settings_store.SPEC_INDEX["news.default_lang"]
+    assert spec.kind == "str"
+    assert spec.default == "zh"
+    assert spec.choices == ("zh", "en")
+
+
+def test_google_proxy_setting_validates_http_url():
+    spec = settings_store.SPEC_INDEX["news.google_proxy"]
+    assert spec.default == ""
+    assert spec.parse("") == ("", None)
+    assert spec.parse("http://127.0.0.1:7890") == ("http://127.0.0.1:7890", None)
+    # 没有 scheme、非 http(s)、带路径都不能存，避免 urllib 里报奇怪的错
+    assert spec.parse("127.0.0.1:7890")[1] is not None
+    assert spec.parse("ftp://127.0.0.1:7890")[1] is not None
+    assert spec.parse("http://127.0.0.1:7890/path")[1] is not None
+
+
+def test_admin_page_marks_default_lang_selected_and_has_proxy_setting():
+    client, _ = _boot()
+    try:
+        assert 'value="zh" selected' in client.get("/admin/news").text
+        assert 'name="news.google_proxy"' in client.get("/admin/settings").text
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_refresh_uses_proxy_only_for_google_sources():
+    with Session(engine) as session:
+        google = _add_source(
+            session,
+            name="谷歌代理源",
+            url="https://news.google.com/rss/search?q=proxy-test",
+        )
+        normal = _add_source(
+            session,
+            name="普通代理源",
+            url="https://example.com/proxy-normal/feed/",
+        )
+        ok, err = settings_store.update(session, "news.google_proxy", "http://127.0.0.1:7890", "test")
+        assert ok, err
+        session.commit()
+        calls = []
+
+        def fetch(url, **kw):
+            calls.append((url, kw.get("proxy")))
+            return FetchResult(status=304, body=b"", etag=None)
+
+        try:
+            news.refresh_source(session, google, fetch=fetch)
+            news.refresh_source(session, normal, fetch=fetch)
+        finally:
+            settings_store.update(session, "news.google_proxy", "", "test")
+            session.commit()
+    assert calls == [
+        ("https://news.google.com/rss/search?q=proxy-test", "http://127.0.0.1:7890"),
+        ("https://example.com/proxy-normal/feed/", None),
+    ]
+
+
+def test_fetch_feed_builds_proxy_opener_when_proxy_given():
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        def read(self, _n):
+            return b'<rss version="2.0"><channel></channel></rss>'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            return FakeResponse()
+
+    def fake_build(handler):
+        seen["handler"] = handler
+        return FakeOpener()
+
+    with patch("app.news_fetch.urllib.request.build_opener", fake_build):
+        result = fetch_feed(
+            "https://news.google.com/rss/search?q=x", proxy="http://127.0.0.1:7890"
+        )
+    assert result.status == 200
+    assert seen["handler"].proxies == {
+        "http": "http://127.0.0.1:7890",
+        "https": "http://127.0.0.1:7890",
+    }
 
 
 if __name__ == "__main__":
